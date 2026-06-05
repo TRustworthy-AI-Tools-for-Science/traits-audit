@@ -69,5 +69,5 @@ jobs:
       - name: Install package with docs extras
         run: uv pip install --system ".[docs]"
 
-      - name: Build Sphinx docs
-        run: make -C docs html SPHINXOPTS="-W"
+      - name: Build MkDocs docs
+        run: mkdocs build --strict

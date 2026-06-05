@@ -10,6 +10,21 @@
 
 A flexible uncertainty audit pipeline that hooks into any pre-existing active learning loop.
 
+## Documentation
+
+This repository uses **MkDocs Material** with docs source files in `docs/`.
+
+- Local preview:
+  ```bash
+  pip install -e ".[docs]"
+  mkdocs serve
+  ```
+- Production build:
+  ```bash
+  mkdocs build --strict
+  ```
+- Deployment: GitHub Pages is published by `.github/workflows/docs-pages.yml` on pushes to `main`.
+
 
 ## Installation
 

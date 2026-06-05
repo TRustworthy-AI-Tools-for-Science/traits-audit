@@ -1,0 +1,11 @@
+site_name: TRAITS Audit
+site_description: Passive uncertainty audit framework for active learning loops
+site_url: https://trustworthy-ai-tools-for-science.github.io/traits-audit/
+repo_url: https://github.com/TRustworthy-AI-Tools-for-Science/traits-audit
+repo_name: TRustworthy-AI-Tools-for-Science/traits-audit
+docs_dir: docs
+theme:
+  name: material
+nav:
+  - Home: index.md
+  - Hook & Pipeline map: hook_pipeline_map.md

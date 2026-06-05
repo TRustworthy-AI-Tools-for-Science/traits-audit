@@ -47,10 +47,8 @@ sdl     = ["self-driving-lab-demo", "ax-platform"]
 camd    = ["scikit-learn"]
 pybamm  = ["pybamm", "scikit-learn"]
 docs = [
-    "sphinx>=7",
-    "furo",
-    "myst-parser",
-    "sphinx-autodoc-typehints",
+    "mkdocs>=1.6",
+    "mkdocs-material>=9.5",
 ]
 dev = ["pytest>=8"]
 
