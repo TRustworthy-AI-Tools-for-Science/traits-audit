@@ -1,0 +1,61 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "traits-audit"
+version = "0.1.0"
+description = "Passive uncertainty audit framework for active learning loops"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+keywords = ["active learning", "uncertainty quantification", "Bayesian optimization", "MLflow", "calibration"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+authors = [
+    { name = "Ashley Dale", email = "trustworthyai4sci@gmail.com" },
+]
+dependencies = [
+    "matplotlib>=3.10.9",
+    "numpy>=1.21",
+    "scipy>=1.10.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/TRustworthy-AI-Tools-for-Science/traits-audit"
+Repository = "https://github.com/TRustworthy-AI-Tools-for-Science/traits-audit.git"
+Issues = "https://github.com/TRustworthy-AI-Tools-for-Science/traits-audit/issues"
+Documentation = "https://trustworthy-ai-tools-for-science.github.io/traits-audit/"
+
+[project.scripts]
+ta-demo        = "traits_audit._example:main"
+ta-sdl-demo    = "traits_audit._sdl_demo:main"
+ta-camd-demo   = "traits_audit._camd_demo:main"
+ta-pybamm-demo = "traits_audit._pybamm_demo:main"
+
+[project.optional-dependencies]
+mlflow  = ["mlflow", "plotly", "matplotlib"]
+sdl     = ["self-driving-lab-demo", "ax-platform"]
+camd    = ["scikit-learn"]
+pybamm  = ["pybamm", "scikit-learn"]
+docs = [
+    "sphinx>=7",
+    "furo",
+    "myst-parser",
+    "sphinx-autodoc-typehints",
+]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/traits_audit"]
