@@ -10,6 +10,21 @@
 
 A flexible uncertainty audit pipeline that hooks into any pre-existing active learning loop.
 
+## Documentation
+
+This repository uses **Sphinx** with docs source files in `docs/`.
+
+- Local preview:
+  ```bash
+  pip install -e ".[docs]"
+  make -C docs html SPHINXOPTS="-W"
+  ```
+- Production build:
+  ```bash
+  make -C docs html SPHINXOPTS="-W"
+  ```
+- Deployment: GitHub Pages is published by `.github/workflows/docs-pages.yml` on pushes to `main`, using `docs/_build/html`.
+
 
 ## Installation
 
