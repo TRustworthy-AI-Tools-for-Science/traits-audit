@@ -58,7 +58,7 @@ class IntervalCoverageCheck(AuditCheck):
             passed=delta <= self.tolerance,
             category=self.category,
             value=observed,
-            threshold=self.expected_coverage,
+            threshold=(lo, hi),
             message=(
                 f"1σ coverage = {observed:.3f}  "
                 f"(expected {self.expected_coverage:.3f} ± {self.tolerance},  "
