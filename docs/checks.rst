@@ -60,13 +60,46 @@ Summary table
 Calibration checks
 ------------------
 
+Calibration error
+~~~~~~~~~~~~~~~~~
+
+.. figure:: _static/built_in_metrics/calibration_error.png
+   :width: 90%
+   :alt: Example of good and bad calibration error.
+
+   Calibration error is the area between the collected data scatter plot 
+   and the parity line. (Left) Example with minimal calibration error. (Right)
+   Example with high calibration error.
+
 .. autoclass:: traits_audit.checks.CalibrationErrorCheck
    :members:
    :no-index:
 
+Interval coverage
+~~~~~~~~~~~~~~~~~
+
+.. figure:: _static/built_in_metrics/interval_coverage.png
+   :width: 90%
+   :alt: Example of interval coverage metric.
+
+   Interval coverage checks that most points are within the variance of the 
+   model. (Left) Example of passing interval coverage. (Right) Example of
+   failing interval coverage.
+
 .. autoclass:: traits_audit.checks.IntervalCoverageCheck
    :members:
    :no-index:
+
+Variance alignment
+~~~~~~~~~~~~~~~~~~
+
+.. figure:: _static/built_in_metrics/variance_alignment.png
+   :width: 90%
+   :alt: Example of variance alignment.
+   
+   The variance and error should agree. (Left) Example of agreement between the
+   predicted variance and the mean empirical squared error. (Right) Example of
+   disagreement between predicted variance and mean empirical squared error.
 
 .. autoclass:: traits_audit.checks.VarianceAlignmentCheck
    :members:
@@ -76,13 +109,45 @@ Calibration checks
 Uncertainty evolution checks
 -----------------------------
 
+Uncertainty evolution
+~~~~~~~~~~~~~~~~~~~~~
+
+.. figure:: _static/built_in_metrics/uncertainty_evolution.png
+   :width: 90%
+   :alt: Example of uncertainty evolution.
+
+   Imposes a linear constraint on how uncertainty changes as the system evolves. Example
+   shown is for updates during active learning (AL). (Left) Uncertainty decreases linearly
+   as more data is acquired. (Right) Uncertainty decreases monotonically but not linearly.
+
 .. autoclass:: traits_audit.checks.UncertaintyEvolutionCheck
    :members:
    :no-index:
 
+Uncertainty anomalies
+~~~~~~~~~~~~~~~~~~~~~~
+
+.. figure:: _static/built_in_metrics/uncertainty_anomaly.png
+   :width: 90%
+   :alt: Example of uncertainty anomalies.
+
+   Requires that uncertainty estimates stay within 3 ..math:`\sigma` of the mean uncertainty. 
+   (Left) Example with no uncertainty anomalies. (Right) Example with multiple anomalies.
+
 .. autoclass:: traits_audit.checks.UncertaintyAnomalyCheck
    :members:
    :no-index:
+
+Variance-error correlation
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. figure:: _static/built_in_metrics/variance_error_correlation.png
+   :width: 90%
+   :alt: Example of variance-error correlation.
+
+   Requires that the predicted variance is positively correlated with the empirical error. 
+   (Left) Example with positive correlation between predicted variance and absolute error.
+   (Right) Example with negative correlation between predicted variance and absolute error.
 
 .. autoclass:: traits_audit.checks.VarianceErrorCorrelationCheck
    :members:
@@ -91,6 +156,14 @@ Uncertainty evolution checks
 
 Lyapunov stability check
 ------------------------
+
+.. figure:: _static/built_in_metrics/lyapunov_stability.png
+   :width: 90%
+   :alt: Example of Lyapunov stability check.
+
+   Requires that the maximum eigenvalue of the Jacobian is less than a threshold. (Left) Example
+   with all operating points having :math:`|\lambda_{\max}|` < 1. (Right) Example with some operating
+   points having :math:`|\lambda_{\max}|` > 1.
 
 .. autoclass:: traits_audit.checks.LyapunovStabilityCheck
    :members:
