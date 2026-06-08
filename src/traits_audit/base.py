@@ -28,7 +28,7 @@ class AuditResult:
     passed:    bool
     category:  AuditCategory
     value:     Optional[float]       = None
-    threshold: Optional[float]       = None
+    threshold: Optional[Any]         = None
     message:   str                   = ""
     details:   Dict[str, Any]        = field(default_factory=dict)
 
