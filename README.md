@@ -7,8 +7,25 @@
 ![version](https://img.shields.io/badge/version-0.1.0-blue)
 ![python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![license](https://img.shields.io/badge/license-MIT-green)
+![tests](https://github.com/TRustworthy-AI-Tools-for-Science/traits-audit/actions/workflows/ci.yml/badge.svg)
+![docs](https://github.com/TRustworthy-AI-Tools-for-Science/traits-audit/actions/workflows/docs-pages.yml/badge.svg)
+
 
 A flexible uncertainty audit pipeline that hooks into any pre-existing active learning loop.
+
+
+## Installation
+
+```bash
+# as a uv workspace member (recommended — editable, no reinstall needed)
+uv sync --all-packages
+
+# standalone into any environment
+pip install ./traits-audit
+
+# Install all components at once
+pip install "./traits-audit[pybamm,camd,sdl]"
+```
 
 ## Documentation
 
@@ -25,28 +42,6 @@ This repository uses **Sphinx** with docs source files in `docs/`.
   ```
 - Deployment: GitHub Pages is published by `.github/workflows/docs-pages.yml` on pushes to `main`, using `docs/_build/html`.
 
-
-## Installation
-
-```bash
-# as a uv workspace member (recommended — editable, no reinstall needed)
-uv sync --all-packages
-
-# standalone into any environment
-pip install ./traits-audit
-```
-
-```bash
-# Install all components at once
-pip install "./traits-audit[pybamm,camd,sdl]"
-```
-
-Or in the uv workspace:
-
-```bash
-uv sync --all-packages
-```
-
 ## Quickstart — run the demo
 
 The package ships with a self-contained demo: a bootstrap-ensemble surrogate
@@ -61,12 +56,59 @@ ta-demo --help
 The demo source is at `bin/example_al_pipeline.py` (delegates to
 `traits_audit._example`).
 
+## Built-in checks
+
+| Check | Category | What it tests | Required data |
+|---|---|---|---|
+| `CalibrationErrorCheck` | Aleatoric (model) | [Kuleshov et al. (2018)][kuleshov2018] calibration error | `y_true`, `y_pred_mean`, `y_pred_std` |
+| `IntervalCoverageCheck` | Aleatoric (model) | Empirical 1-sigma coverage vs 68.3 % ([Kuleshov et al. (2018)][kuleshov2018]) | `y_true`, `y_pred_mean`, `y_pred_std` |
+| `VarianceAlignmentCheck` | Aleatoric (model) | Ratio of predicted to empirical variance ([Levi et al. (2022)][levi2022]) | `y_true`, `y_pred_mean`, `y_pred_std` |
+| `UncertaintyEvolutionCheck` | Epistemic | Trend of uncertainty over iterations | `uncertainties` or per-step `uncertainty` |
+| `UncertaintyAnomalyCheck` | Epistemic | Z-score anomaly detection on uncertainty | `uncertainties` or per-step `uncertainty` |
+| `VarianceErrorCorrelationCheck` | Epistemic | Spearman ρ between std and \|error\| ([Lakshminarayanan et al. (2017)][lakshminarayanan2017]) | `y_true`, `y_pred_mean`, `y_pred_std` |
+
+
+### Basic usage — active run
+
+```python
+from traits_audit import AuditHook, AuditPipeline
+from traits_audit.checks import CalibrationErrorCheck, UncertaintyEvolutionCheck
+
+pipeline = AuditPipeline([
+    CalibrationErrorCheck(threshold=0.1),
+    UncertaintyEvolutionCheck(),
+])
+
+hook = AuditHook(pipeline)
+
+for step in my_loop:
+    mu, sigma = model.predict_with_uncertainty(X)
+    hook.on_step(
+        uncertainty=float(sigma.mean()),
+        entropy=float(0.5 * np.log(2 * np.pi * np.e * sigma ** 2).mean()),
+    )
+
+report = hook.on_end(y_true=y_test, y_pred_mean=mu_test, y_pred_std=sigma_test)
+```
+
+
+## Uncertainty taxonomy
+
+| Category | Meaning |
+|---|---|
+| `ALEATORIC_IRREDUCIBLE` | Cannot be reduced by more data (measurement noise, process stochasticity) |
+| `ALEATORIC_MODEL` | Calibration error — the model's stated uncertainty does not match empirical coverage |
+| `EPISTEMIC` | Reducible uncertainty — shrinks as more observations are collected |
+| `UNKNOWN` | Source not yet characterised |
+
 ## Run case studies
 
 Four self-contained case studies ship with the package, each demonstrating the
 audit on a different active learning domain.  All run without real hardware.
 
 ### Demo 1 — Calibration scenarios (1-D benchmark)
+
+> Same as quick start
 
 Compares four calibration regimes (perfectly calibrated, well calibrated,
 overconfident, underconfident) on the Forrester benchmark function using a
@@ -123,52 +165,6 @@ ta-sdl-demo --n-iter 40 --seed 7
 ta-sdl-demo --out-dir _results/sdl
 ta-sdl-demo --help
 ```
-
-## Built-in checks
-
-| Check | Category | What it tests | Required data |
-|---|---|---|---|
-| `CalibrationErrorCheck` | Aleatoric (model) | [Kuleshov et al. (2018)][kuleshov2018] calibration error | `y_true`, `y_pred_mean`, `y_pred_std` |
-| `IntervalCoverageCheck` | Aleatoric (model) | Empirical 1-sigma coverage vs 68.3 % ([Kuleshov et al. (2018)][kuleshov2018]) | `y_true`, `y_pred_mean`, `y_pred_std` |
-| `VarianceAlignmentCheck` | Aleatoric (model) | Ratio of predicted to empirical variance ([Levi et al. (2022)][levi2022]) | `y_true`, `y_pred_mean`, `y_pred_std` |
-| `UncertaintyEvolutionCheck` | Epistemic | Trend of uncertainty over iterations | `uncertainties` or per-step `uncertainty` |
-| `UncertaintyAnomalyCheck` | Epistemic | Z-score anomaly detection on uncertainty | `uncertainties` or per-step `uncertainty` |
-| `VarianceErrorCorrelationCheck` | Epistemic | Spearman ρ between std and \|error\| ([Lakshminarayanan et al. (2017)][lakshminarayanan2017]) | `y_true`, `y_pred_mean`, `y_pred_std` |
-
-
-### Basic usage — active run
-
-```python
-from traits_audit import AuditHook, AuditPipeline
-from traits_audit.checks import CalibrationErrorCheck, UncertaintyEvolutionCheck
-
-pipeline = AuditPipeline([
-    CalibrationErrorCheck(threshold=0.1),
-    UncertaintyEvolutionCheck(),
-])
-
-hook = AuditHook(pipeline)
-
-for step in my_loop:
-    mu, sigma = model.predict_with_uncertainty(X)
-    hook.on_step(
-        uncertainty=float(sigma.mean()),
-        entropy=float(0.5 * np.log(2 * np.pi * np.e * sigma ** 2).mean()),
-    )
-
-report = hook.on_end(y_true=y_test, y_pred_mean=mu_test, y_pred_std=sigma_test)
-```
-
-
-## Uncertainty taxonomy
-
-| Category | Meaning |
-|---|---|
-| `ALEATORIC_IRREDUCIBLE` | Cannot be reduced by more data (measurement noise, process stochasticity) |
-| `ALEATORIC_MODEL` | Calibration error — the model's stated uncertainty does not match empirical coverage |
-| `EPISTEMIC` | Reducible uncertainty — shrinks as more observations are collected |
-| `UNKNOWN` | Source not yet characterised |
-
 
 ## References
 
