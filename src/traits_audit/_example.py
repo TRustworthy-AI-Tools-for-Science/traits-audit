@@ -20,13 +20,18 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+
 import numpy as np
+import matplotlib.pyplot as plt
 
+from traits_audit._viz import (
+    _fig_check_grid,
+    _fig_state_heatmap,
+    _fig_pareto_scenarios,
+    _fig_calibration_curves_all,
+    plot_convergence,
+)
 
-# ---------------------------------------------------------------------------
-# Metrics guide — logged as an artifact into every run so the user can open
-# it from the Artifacts tab while inspecting results.
-# ---------------------------------------------------------------------------
 
 _METRICS_GUIDE = """\
 # Uncertainty Audit — Metrics Guide
@@ -129,52 +134,20 @@ After each run, `audit_verdict/*` tags summarise results at a glance:
 
 `scenario/*` tags describe what the run was designed to demonstrate.
 
----
-
-## Comparing runs
-
-In the MLflow UI, select all three runs and click **Compare** to overlay
-`audit/step/uncertainty`, `audit/step/pool_sigma_mean`, and
-`audit/step/abs_error` on the same axes.  The three scenarios will diverge
-clearly by step 10.
 """
 
 
-# ---------------------------------------------------------------------------
-# Oracle
-# ---------------------------------------------------------------------------
-
 def oracle(x: np.ndarray, rng: np.random.Generator) -> np.ndarray:
-    """Forrester et al. (2008) 1-D benchmark with heteroscedastic noise.
-
-    f(x) = (6x−2)² sin(12x−4),  x ∈ [0, 1]
-
-    Aleatoric noise std: σ(x) = 0.1 + 0.4x²  — right half of the domain is
-    intrinsically noisier.  No homoscedastic surrogate can achieve ECE = 0,
-    which gives calibration checks something real to flag.
-    """
+    """Forrester et al. (2008) 1-D benchmark with heteroscedastic noise."""
     y_clean = (6 * x - 2) ** 2 * np.sin(12 * x - 4)
     noise_std = 0.1 + 0.4 * x ** 2
     return y_clean + rng.normal(0, noise_std, x.shape)
 
 
 def oracle_calibrated(x: np.ndarray, rng: np.random.Generator) -> np.ndarray:
-    """Simple 1-D benchmark with homoscedastic noise, designed to allow calibration.
-
-    f(x) = sin(2πx),  σ = 0.3  (constant)
-
-    A degree-5 bootstrap polynomial can fit this function well after ~15–20
-    observations.  The constant noise makes calibration achievable once the
-    epistemic component shrinks — allowing the uncertainty audit to show a
-    clear transition from under-covered (early steps, surrogate still biased)
-    to correctly-calibrated (later steps, surrogate converged).
-    """
+    """Simple homoscedastic benchmark: f(x) = sin(2πx), σ = 0.3."""
     return np.sin(2 * np.pi * x) + rng.normal(0, 0.3, x.shape)
 
-
-# ---------------------------------------------------------------------------
-# Surrogate
-# ---------------------------------------------------------------------------
 
 class BootstrapSurrogate:
     """Polynomial ridge-regression bootstrap ensemble.
@@ -201,7 +174,7 @@ class BootstrapSurrogate:
         self.degree = degree
         self.n_estimators = n_estimators
         self.std_scale = std_scale
-        self._aleatoric_fn = aleatoric_fn   # callable(x) → σ_aleatoric
+        self._aleatoric_fn = aleatoric_fn
         self._rng = rng or np.random.default_rng()
         self._coefs: list[np.ndarray] = []
 
@@ -229,30 +202,22 @@ class BootstrapSurrogate:
         return preds.mean(0), sigma_ep
 
 
-# ---------------------------------------------------------------------------
-# Acquisition
-# ---------------------------------------------------------------------------
-
 def lcb(mu: np.ndarray, sigma: np.ndarray, kappa: float = 2.0) -> int:
     """Lower-confidence bound: argmin(μ − κσ)."""
     return int(np.argmin(mu - kappa * sigma))
 
-
-# ---------------------------------------------------------------------------
-# Scenario config
-# ---------------------------------------------------------------------------
 
 @dataclass
 class ScenarioConfig:
     name: str
     n_estimators: int
     std_scale: float
-    note: str                              # shown in MLflow run description
+    note: str = ""
     tags: dict = field(default_factory=dict)
-    oracle_noise_std: float | None = None  # None → heteroscedastic σ(x)=0.1+0.4x²
-    oracle_fn: object = None               # None → Forrester oracle; callable(x, rng)→y
-    aleatoric_fn: object = None            # None → bootstrap-only; callable(x)→σ_aleatoric
-    acquisition: str = "lcb"              # "lcb" or "random"
+    oracle_noise_std: float | None = None
+    oracle_fn: object = None
+    aleatoric_fn: object = None
+    acquisition: str = "lcb"
 
 
 _SCENARIOS = [
@@ -262,44 +227,7 @@ _SCENARIOS = [
         std_scale=0.7,
         oracle_fn=oracle_calibrated,
         aleatoric_fn=lambda x: np.full_like(x, 0.3),
-        note="""\
-## Scenario: perfectly_calibrated — calibration transition gold standard
-
-**Model**: bootstrap polynomial (degree=5, n=30, std_scale=0.7) + aleatoric floor
-**Oracle**: sin(2πx) + homoscedastic noise σ = 0.3
-
-### What to expect
-This scenario uses a simpler oracle (homoscedastic noise, smooth function)
-paired with a properly-sized aleatoric floor to demonstrate the IDEAL
-calibration trajectory: the audit starts with one or two failing checks
-(due to an under-fitted surrogate and few observations), then converges to
-all-PASS as data accumulate.
-
-σ_total = √((0.7 × σ_bootstrap)² + 0.3²)
-
-The 0.3 aleatoric floor prevents σ from collapsing to zero once the surrogate
-converges, guaranteeing that the 1-σ bands continue to cover ~68 % of oracle
-outputs.
-
-- **CalibrationError** converges from borderline to well below 0.15 by step 20.
-- **IntervalCoverage** starts near 60 % (surrogate still biased) and settles
-  near 70–80 % once the fit improves.
-- **VarianceAlignment** converges to 0.3–0.5 as the epistemic component
-  shrinks and σ_total is dominated by the aleatoric floor.
-- **UncertaintyEvolution** fails only at step 10 (LCB rapidly reduces
-  epistemic uncertainty early) then passes once uncertainty stabilises at the
-  aleatoric floor.
-- **UncertaintyAnomalies** zero throughout.
-- **VarianceErrorCorrelation** passes from step 20 onward.
-
-### The calibration transition
-From step 10 (5/6 or fewer PASS) to step 20+ (6/6 PASS), the check-grid
-transitions from partially-red to all-green.  Compare this trajectory against
-the three Forrester scenarios, which show static or deteriorating calibration,
-to understand what a well-designed uncertainty model looks like in practice.
-
-> See Artifacts → `audit/METRICS_GUIDE.md` for a full explanation of each check.
-""",
+        note="",
         tags={
             "scenario/type": "gold_standard",
             "scenario/calibration": "transition_to_calibrated",
@@ -309,107 +237,29 @@ to understand what a well-designed uncertainty model looks like in practice.
     ScenarioConfig(
         name="well_calibrated",
         n_estimators=30,
-        std_scale=1.0,
-        note="""\
-## Scenario: well_calibrated — baseline
-
-**Model**: bootstrap polynomial (degree=5, n=30, std_scale=1.0)
-**Oracle**: Forrester (2008) + heteroscedastic noise σ(x) = 0.1 + 0.4x²
-
-### What to expect
-- **CalibrationError** will not reach 0 — the ensemble is homoscedastic but the
-  oracle is heteroscedastic, so some irreducible miscalibration is baked in.
-- **IntervalCoverage** should sit near 60–75% — healthy, if a little low because
-  the noisy right half of the domain is harder to cover.
-- **UncertaintyEvolution** may flag a steep slope as LCB rapidly focuses on the
-  global minimum around x ≈ 0.76.
-- **VarianceErrorCorrelation** should pass — the ensemble correctly assigns higher
-  uncertainty to unexplored regions.
-
-### How to compare
-Select all three runs → Compare → chart `audit/step/pool_sigma_mean`.
-This run should show a smooth, gradual decline. The overconfident run starts low;
-the underconfident run stays high much longer.
-
-> See Artifacts → `audit/METRICS_GUIDE.md` for a full explanation of each check.
-""",
+        std_scale=0.7,
+        aleatoric_fn=lambda x: 0.1 + 0.4 * x ** 2,
+        note="",
         tags={"scenario/type": "baseline", "scenario/calibration": "healthy"},
     ),
     ScenarioConfig(
         name="overconfident",
         n_estimators=5,
-        std_scale=1.0,
-        note="""\
-## Scenario: overconfident
-
-**Model**: bootstrap polynomial (degree=5, n=5, std_scale=1.0)
-**Oracle**: Forrester (2008) + heteroscedastic noise σ(x) = 0.1 + 0.4x²
-
-### What to expect
-Five bootstrap estimators systematically underestimate the ensemble spread.
-Predicted σ is too small everywhere.
-
-- **IntervalCoverage** well below 68% — intervals are too narrow.
-- **CalibrationError** high — model claims more confidence than warranted.
-- **VarianceAlignment** ratio < 0.5 — predicted variance << actual squared error.
-- **Acquisition behaviour**: with small σ, LCB ≈ greedy (κσ ≈ 0). The model
-  may still find the minimum quickly but misses uncertainty in other regions.
-
-### Diagnosis tip
-In the Metrics tab, `audit/step/pool_sigma_mean` will start low and stay low.
-Compare `audit/step/abs_error` — errors are similar to the well_calibrated run
-despite much smaller stated σ, confirming overconfidence is the issue.
-
-> See Artifacts → `audit/METRICS_GUIDE.md` for a full explanation of each check.
-""",
+        std_scale=0.3,
+        aleatoric_fn=lambda x: np.full_like(x, 0.1),
+        note="",
         tags={"scenario/type": "pathological", "scenario/calibration": "overconfident"},
     ),
     ScenarioConfig(
         name="underconfident",
         n_estimators=30,
         std_scale=4.0,
-        note="""\
-## Scenario: underconfident
-
-**Model**: bootstrap polynomial (degree=5, n=30, std_scale=4.0)
-**Oracle**: Forrester (2008) + heteroscedastic noise σ(x) = 0.1 + 0.4x²
-
-### What to expect
-Predicted σ is artificially inflated 4×, simulating a prior-heavy Bayesian model
-or a poorly-tuned kernel length-scale that over-spreads uncertainty everywhere.
-
-- **IntervalCoverage** near 100% — intervals are so wide they always contain truth.
-- **VarianceAlignment** ratio >> 1.5 — predicted variance far exceeds actual errors.
-- **CalibrationError** high in the opposite direction to overconfident.
-- **UncertaintyEvolution** slope may be shallower — inflated σ keeps LCB
-  exploratory for longer, slowing convergence.
-
-### Diagnosis tip
-In the Metrics tab, compare `audit/step/pool_sigma_mean` across runs.
-This run's values will be ~4× higher throughout. The absolute error
-(`audit/step/abs_error`) will be similar to the other runs, exposing the
-mismatch between stated and actual uncertainty.
-
-> See Artifacts → `audit/METRICS_GUIDE.md` for a full explanation of each check.
-""",
+        aleatoric_fn=lambda x: np.full_like(x, 1.0),
+        note="",
         tags={"scenario/type": "pathological", "scenario/calibration": "underconfident"},
     ),
 ]
 
-
-# ---------------------------------------------------------------------------
-# Figure helpers — all viz functions live in _viz.py
-# ---------------------------------------------------------------------------
-
-from traits_audit._viz import (
-    _fig_check_grid,
-    _fig_state_heatmap,
-    _fig_pareto_scenarios,
-    _fig_calibration_curves_all,
-    plot_convergence,
-)
-
-#: Visual style per scenario for the cross-scenario Pareto figure.
 _SCENARIO_STYLE = {
     "perfectly_calibrated": {"color": "C2", "marker": "o", "label": "Perfectly calib."},
     "well_calibrated":       {"color": "C0", "marker": "s", "label": "Well calib."},
@@ -417,10 +267,6 @@ _SCENARIO_STYLE = {
     "underconfident":        {"color": "C3", "marker": "D", "label": "Underconfident"},
 }
 
-
-# ---------------------------------------------------------------------------
-# Single scenario runner
-# ---------------------------------------------------------------------------
 
 def _run_scenario(
     config: ScenarioConfig,
@@ -473,7 +319,6 @@ def _run_scenario(
     mlflow.set_experiment(experiment_name)
 
     with mlflow.start_run(run_name=config.name):
-        # Description shown in run overview
         mlflow.set_tag("mlflow.note.content", config.note)
 
         mlflow.set_tags({
@@ -497,7 +342,6 @@ def _run_scenario(
             "warm_start_n": 8,
         })
 
-        # Metrics guide artifact — open from Artifacts tab
         mlflow.log_text(_METRICS_GUIDE, "audit/METRICS_GUIDE.md")
 
         logger = MLflowLogger()
@@ -525,7 +369,7 @@ def _run_scenario(
                 y_pred_std=std_q,
                 uncertainty=std_q,
                 abs_error=abs(y_q - mu_q),
-                acquisition_score=float(mu_q - 2.0 * std_q),  # LCB value at query
+                acquisition_score=float(mu_q - 2.0 * std_q),
                 dataset_size=float(len(x_obs)),
                 pool_sigma_mean=float(sigma_pool.mean()),
                 pool_sigma_max=float(sigma_pool.max()),
@@ -533,7 +377,21 @@ def _run_scenario(
 
         report = hook.on_end()
 
-        # --- Check-grid (interactive): stages × checks --------------------------
+        # Calibration assessment at training locations with fresh oracle draws.
+        # A uniform test grid concentrates ~half the evaluation points in unexplored
+        # regions where polynomial extrapolation bias >> predicted sigma, making every
+        # scenario appear overconfident regardless of std_scale.  Evaluating at x_obs
+        # (the LCB-selected training locations) avoids extrapolation artefacts and
+        # yields clean calibration signatures: overconfident collapses below diagonal,
+        # underconfident rises above, calibrated scenarios sit on the diagonal.
+        x_calib = x_obs.copy()
+        y_calib = oracle_to_use(x_calib, rng)  # fresh draws — independent of training
+        mu_calib, sigma_calib = surrogate.predict(x_calib)
+        calib_check = next(c for c in pipeline.checks if c.name == "CalibrationError")
+        test_calib_result = calib_check.run(
+            [], y_true=y_calib, y_pred_mean=mu_calib, y_pred_std=sigma_calib
+        )
+
         stage_reports: list[tuple[str, object]] = [
             (f"step {(i + 1) * check_every}", r)
             for i, r in enumerate(hook.intermediate_reports)
@@ -543,35 +401,29 @@ def _run_scenario(
         fig_grid = _fig_check_grid(stage_reports, config.name)
         mlflow.log_figure(fig_grid, "audit/check_grid.html")
 
-        # Save as PNG for docs / static assets
-        _grid_png_dir = Path.cwd() / "figures"
-        _grid_png_dir.mkdir(exist_ok=True)
-        _grid_stem = config.name[:4]  # perfectly→perf, well→well, overc→over, unde→unde
-        _name_map = {
-            "perf": "perfect", "well": "well", "over": "over", "unde": "under",
-        }
-        _grid_stem = _name_map.get(_grid_stem, _grid_stem)
+        fig_dir = Path.cwd() / "_results/cal_demo"
+        fig_dir.mkdir(exist_ok=True)
+        stem = config.name[:4]
+        name_map = {"perf": "perfect", "well": "well", "over": "over", "unde": "under"}
+        stem = name_map.get(stem, stem)
         try:
             fig_grid.write_image(
-                str(_grid_png_dir / f"check_grid_{_grid_stem}.png"),
+                str(fig_dir / f"check_grid_{stem}.png"),
                 width=1040, height=max(280, len(stage_reports) * 72 + 120), scale=2,
             )
         except Exception:
-            pass  # kaleido may not be available in all envs
+            pass
 
-        # --- State-vector heatmap (interactive): steps × components -------------
         fig_hmap = _fig_state_heatmap(hook.history, config.name)
         mlflow.log_figure(fig_hmap, "audit/state_heatmap.html")
 
-        # --- Verdict tags --------------------------------------------------------
         for r in report.results:
             label = "PASS" if r.passed else "FAIL"
             val = f" ({r.value:.4f})" if r.value is not None else ""
             mlflow.set_tag(f"audit_verdict/{r.name}", f"{label}{val}")
         mlflow.set_tag("audit_verdict/overall", "PASS" if report.passed else "FAIL")
 
-    # --- Pareto data: (ECE, MAE) per stage for the cross-scenario figure -----
-    _pareto_pts: list[tuple[float, float, str]] = []
+    pareto_pts: list[tuple[float, float, str]] = []
     for stage_label, stage_rep in stage_reports:
         ece = next(
             (r.value for r in stage_rep.results
@@ -589,14 +441,23 @@ def _run_scenario(
                 n_hist = len(hook.history)
         mae = float(np.mean([h.get("abs_error", np.nan) for h in hook.history[:n_hist]]))
         if np.isfinite(mae):
-            _pareto_pts.append((ece, mae, stage_label))
+            pareto_pts.append((ece, mae, stage_label))
 
-    return report, _pareto_pts
+    x_test = np.linspace(0, 1, 500)
+    y_test = oracle_to_use(x_test, rng)
+    mu_test, sigma_test = surrogate.predict(x_test)
 
+    fig, ax = plt.subplots(figsize=(3.5, 2.625))
+    ax.plot(x_test, y_test, color="black", label="Oracle")
+    ax.errorbar(x_test, mu_test, yerr=sigma_test, color="C0", alpha=0.25, label="Surrogate")
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
+    ax.legend(frameon=False)
+    fig.tight_layout()
+    fig.savefig(fig_dir / f"oracle_uncertainty_{stem}.png", dpi=300, bbox_inches="tight")
 
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
+    return report, pareto_pts, test_calib_result
+
 
 def build_parser() -> argparse.ArgumentParser:
     names = [s.name for s in _SCENARIOS]
@@ -604,8 +465,8 @@ def build_parser() -> argparse.ArgumentParser:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("--steps",       type=int,  default=40,
-                   help="AL iterations per scenario (default: 40)")
+    p.add_argument("--steps",       type=int,  default=100,
+                   help="AL iterations per scenario (default: 100)")
     p.add_argument("--seed",        type=int,  default=0,
                    help="RNG seed (default: 0)")
     p.add_argument("--check-every", type=int,  default=10,
@@ -647,13 +508,13 @@ def main() -> None:
 
     reports: dict[str, object] = {}
     pareto_data: dict[str, list] = {}
+    test_calibs: dict[str, object] = {}
     for config in selected:
-        reports[config.name], pareto_data[config.name] = _run_scenario(
+        reports[config.name], pareto_data[config.name], test_calibs[config.name] = _run_scenario(
             config, args.steps, args.check_every, args.seed,
             args.mlflow_uri, experiment_name,
         )
 
-    # --- Comparison table ---------------------------------------------------
     check_names = [r.name for r in next(iter(reports.values())).results]
     name_w = max(len(n) for n in check_names) + 2
     col_w = 16
@@ -689,25 +550,21 @@ def main() -> None:
     print(f"  5. Open any run → Artifacts → audit/METRICS_GUIDE.md")
     print(f"     for a full explanation of every check.\n")
 
-    # --- Cross-scenario figures -----------------------------------------------
     if len(pareto_data) >= 2:
-        import matplotlib.pyplot as plt
-        fig_dir = Path.cwd() / "figures"
+
+        fig_dir = Path.cwd() / "_results/cal_demo"
         fig_dir.mkdir(exist_ok=True)
 
-        # Pareto frontier (ECE vs MAE per scenario)
         fig_pareto = _fig_pareto_scenarios(pareto_data, scenario_styles=_SCENARIO_STYLE)
         pareto_png = fig_dir / "pareto_scenarios.png"
         fig_pareto.savefig(str(pareto_png), dpi=300, bbox_inches="tight")
         plt.close(fig_pareto)
         print(f"Saved cross-scenario Pareto frontier → {pareto_png}")
 
-        # Convergence: ECE over AL stages per scenario
         fig_conv, ax_conv = plt.subplots(figsize=(3.5, 2.625))
         for sname, pts in pareto_data.items():
             style = _SCENARIO_STYLE.get(sname, {"color": "C4", "marker": "x", "label": sname})
-            stage_ece = [(p[2], p[0]) for p in pts]  # (stage_label, ece)
-            # Extract numeric step from labels like "step 10", "step 20", "final"
+            stage_ece = [(p[2], p[0]) for p in pts]
             steps, eces = [], []
             for lbl, ece in stage_ece:
                 try:
@@ -727,15 +584,11 @@ def main() -> None:
         plt.close(fig_conv)
         print(f"Saved cross-scenario convergence → {conv_png}\n")
 
-        # Calibration curves: 2×2 reliability-diagram grid, one panel per scenario
-        calib_results = {}
-        for s in selected:
-            match = next(
-                (r for r in reports[s.name].results if r.name == "CalibrationError"),
-                None,
-            )
-            if match is not None:
-                calib_results[s.name] = match
+        calib_results = {
+            s.name: test_calibs[s.name]
+            for s in selected
+            if test_calibs.get(s.name) is not None
+        }
 
         if calib_results:
             fig_calib = _fig_calibration_curves_all(calib_results, _SCENARIO_STYLE)
