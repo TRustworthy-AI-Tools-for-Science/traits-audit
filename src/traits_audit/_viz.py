@@ -518,9 +518,13 @@ def _result_intensity(result: Any) -> float:
         span = max(1.0 - t, 0.30)
         signed = (v - t) / span
     elif name == "IntervalCoverage":
-        # Toward-target; best when v ≈ t (expected coverage)
-        tol = 0.15
-        signed = (tol - abs(v - t)) / tol
+        # t is (lo, hi) band; derive target and tolerance from it
+        if isinstance(t, tuple):
+            target = (t[0] + t[1]) / 2
+            tol = max((t[1] - t[0]) / 2, 1e-6)
+        else:
+            target, tol = t, 0.15
+        signed = (tol - abs(v - target)) / tol
     elif name == "VarianceAlignment":
         # Toward-target (ideal ratio = 1.0 = t); tolerance ≈ 0.5
         tol = 0.50
@@ -555,9 +559,13 @@ def _fig_check_grid(
         for result in rep.results:
             z_row.append(_result_intensity(result))
             text_row.append(f"{result.value:.3f}" if result.value is not None else "—")
-            thresh = (
-                f"{result.threshold:.3f}" if result.threshold is not None else "—"
-            )
+            t = result.threshold
+            if t is None:
+                thresh = "—"
+            elif isinstance(t, tuple):
+                thresh = f"[{t[0]:.3f}, {t[1]:.3f}]"
+            else:
+                thresh = f"{t:.3f}"
             hover_row.append(
                 f"<b>{result.name}</b><br>"
                 f"Stage: {label}<br>"
