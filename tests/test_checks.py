@@ -12,6 +12,7 @@ import pytest
 
 from traits_audit.checks import (
     CalibrationErrorCheck,
+    ConformalCoverageCheck,
     IntervalCoverageCheck,
     LyapunovStabilityCheck,
     VarianceAlignmentCheck,
@@ -262,6 +263,59 @@ def test_variance_error_correlation_reads_from_history():
         for i in range(n)
     ]
     result = VarianceErrorCorrelationCheck(min_correlation=0.0).run(history)
+    assert result.passed
+
+
+# ── ConformalCoverageCheck ───────────────────────────────────────────────────
+
+def test_conformal_passes_on_calibrated_data():
+    # Well-calibrated data: y_true ~ N(mu, sigma) → q̂ ≈ z_{1-α/2} → q_ratio ≈ 1
+    result = ConformalCoverageCheck(target_coverage=0.9, max_q_ratio=1.5).run([], **_calibrated(n=500))
+    assert result.passed
+    assert result.value <= 1.5
+
+
+def test_conformal_fails_on_overconfident_data():
+    # sigma is 100× too small → normalised residuals ≫ 1 → q̂ ≫ z → q_ratio ≫ 1
+    result = ConformalCoverageCheck(target_coverage=0.9, max_q_ratio=1.5).run([], **_overconfident(n=500))
+    assert not result.passed
+    assert result.value > 1.5
+
+
+def test_conformal_skips_when_no_data():
+    result = ConformalCoverageCheck().run([])
+    assert result.passed
+    assert "Skipped" in result.message
+
+
+def test_conformal_skips_too_few_samples():
+    rng = np.random.default_rng(0)
+    mu = rng.standard_normal(5)
+    sigma = np.ones(5) * 0.5
+    y_true = mu + sigma * rng.standard_normal(5)
+    result = ConformalCoverageCheck().run([], y_true=y_true, y_pred_mean=mu, y_pred_std=sigma)
+    assert result.passed
+    assert "Too few" in result.message
+
+
+def test_conformal_details_keys():
+    result = ConformalCoverageCheck().run([], **_calibrated(n=200))
+    for key in ("q_hat", "z_expected", "q_ratio", "empirical_coverage", "n_samples", "alpha"):
+        assert key in result.details
+    assert result.details["n_samples"] == 200
+
+
+def test_conformal_reads_from_history():
+    rng = np.random.default_rng(2)
+    n = 300
+    mu = rng.standard_normal(n)
+    sigma = np.abs(rng.standard_normal(n)) + 0.5
+    y_true = mu + sigma * rng.standard_normal(n)
+    history = [
+        {"y_true": float(y_true[i]), "y_pred_mean": float(mu[i]), "y_pred_std": float(sigma[i])}
+        for i in range(n)
+    ]
+    result = ConformalCoverageCheck(target_coverage=0.9, max_q_ratio=1.5).run(history)
     assert result.passed
 
 

@@ -31,6 +31,7 @@ def _make_pipeline(check_every: int, logger=None):
     from traits_audit import AuditHook, AuditPipeline
     from traits_audit.checks import (
         CalibrationErrorCheck,
+        ConformalCoverageCheck,
         IntervalCoverageCheck,
         VarianceAlignmentCheck,
         UncertaintyEvolutionCheck,
@@ -40,6 +41,7 @@ def _make_pipeline(check_every: int, logger=None):
     pipeline = AuditPipeline(
         checks=[
             CalibrationErrorCheck(threshold=0.15),
+            ConformalCoverageCheck(target_coverage=0.9, max_q_ratio=1.5),
             IntervalCoverageCheck(expected_coverage=0.683, tolerance=0.15),
             VarianceAlignmentCheck(tolerance=0.5),
             UncertaintyEvolutionCheck(slope_threshold=-0.05),

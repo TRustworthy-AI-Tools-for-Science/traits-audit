@@ -420,7 +420,94 @@ def plot_variance_error_correlation(out_dir: Path) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 7. LyapunovStabilityCheck
+# 7. ConformalCoverageCheck
+# ─────────────────────────────────────────────────────────────────────────────
+
+def plot_conformal_coverage(out_dir: Path) -> None:
+    """Nonconformity score distributions with conformal q̂ vs. expected Gaussian z.
+
+    ConformalCoverageCheck computes s_i = |y_i − ŷ_i| / σ_i and estimates the
+    conformal quantile q̂ at target coverage 90 %.  The ratio q̂ / z_{1-α/2}
+    (where z_{1-α/2} ≈ 1.645 for α = 0.10) measures whether σ is already
+    scaled correctly for valid coverage.  A calibrated model has q̂ ≈ z and
+    ratio ≈ 1; an overconfident model (σ too small) has scores spread beyond z,
+    pushing q̂ and the ratio upward.
+    """
+    rng             = np.random.default_rng(7)
+    n               = 300
+    target_coverage = 0.9
+    alpha           = 1.0 - target_coverage
+    max_q_ratio     = 1.5
+    z_exp           = float(sp_stats.norm.ppf(1.0 - alpha / 2.0))   # ≈ 1.645
+
+    mu     = rng.standard_normal(n)
+    sigma  = np.abs(rng.standard_normal(n)) * 0.4 + 0.4
+    y_true = mu + sigma * rng.standard_normal(n)
+
+    level = min(float(np.ceil((n + 1) * (1.0 - alpha)) / n), 1.0)
+
+    def _stats(sig):
+        scores = np.abs(y_true - mu) / np.maximum(sig, 1e-12)
+        q_hat  = float(np.quantile(scores, level))
+        return scores, q_hat, q_hat / z_exp
+
+    # Healthy: σ matches residual scale → scores ~ HalfNormal(1) → ratio ≈ 1
+    scores_h, q_hat_h, ratio_h = _stats(sigma)
+    # Unhealthy: σ 2.5× too small (overconfident) → scores spread far beyond z → ratio > 1
+    scores_u, q_hat_u, ratio_u = _stats(sigma * 0.40)
+
+    fig, (ax_h, ax_u) = plt.subplots(1, 2, figsize=(7, 3.5))
+
+    for ax, scores, q_hat, ratio in (
+        (ax_h, scores_h, q_hat_h, ratio_h),
+        (ax_u, scores_u, q_hat_u, ratio_u),
+    ):
+        passed = ratio <= max_q_ratio
+        c      = PASS_COLOR if passed else FAIL_COLOR
+        x_max  = max(z_exp * 2.5, q_hat * 1.8)
+        xs     = np.linspace(0, x_max, 500)
+
+        # KDE of nonconformity scores
+        kde = sp_stats.gaussian_kde(
+            np.clip(scores, 0, x_max * 1.5), bw_method="scott"
+        )
+        ys = kde(xs)
+        ax.fill_between(xs, ys, alpha=0.20, color=c, lw=0)
+        ax.plot(xs, ys, color=c, lw=1.3, label="Score density")
+
+        # Half-normal reference — what a perfectly calibrated model would give
+        ax.plot(xs, sp_stats.halfnorm.pdf(xs, scale=1.0),
+                color=GRAY, lw=1.0, ls=":", label="Ideal (HalfNormal, σ=1)")
+
+        # Expected Gaussian quantile and actual conformal quantile
+        ax.axvline(z_exp,  color=GRAY, lw=1.2, ls="--",
+                   label=f"z = {z_exp:.2f}")
+        ax.axvline(q_hat,  color=c,    lw=1.5, ls="-",
+                   label=f"q̂ = {q_hat:.2f}")
+
+        # Shade the gap between z and q̂ when overconfident
+        if q_hat > z_exp:
+            ax.axvspan(z_exp, min(q_hat, x_max),
+                       alpha=0.08, color=FAIL_COLOR, zorder=0)
+
+        ax.set_xlabel("Nonconformity score  s = |y − ŷ| / σ")
+        ax.set_ylabel("Density")
+        ax.set_xlim(0, x_max)
+        ax.set_ylim(bottom=0)
+        ax.legend(loc="lower center", bbox_to_anchor=(0.5, 1.0), ncol=2, fontsize=8)
+        _ann(ax,
+             f"q-ratio = {ratio:.2f}\n"
+             f"threshold ≤ {max_q_ratio:.1f}",
+             x=0.5, y=-0.28, ha="center", va="top")
+        _badge(ax, passed)
+
+    fig.tight_layout()
+    fig.savefig(out_dir / "conformal_coverage.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 8. LyapunovStabilityCheck
 # ─────────────────────────────────────────────────────────────────────────────
 
 def plot_lyapunov_stability(out_dir: Path) -> None:
@@ -508,6 +595,7 @@ _PLOT_FUNCTIONS = [
     plot_calibration_error,
     plot_interval_coverage,
     plot_variance_alignment,
+    plot_conformal_coverage,
     plot_uncertainty_evolution,
     plot_uncertainty_anomaly,
     plot_variance_error_correlation,
