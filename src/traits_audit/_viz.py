@@ -541,7 +541,7 @@ def _fig_check_grid(
     stage_reports: "list[tuple[str, Any]]",
     run_name: str,
 ) -> Any:
-    """Plotly heatmap: rows = pipeline stages, cols = audit checks.
+    """Plotly heatmap: rows = audit checks, cols = pipeline stages.
 
     Cell intensity encodes how far the metric sits from the pass/fail
     threshold: dark green = deeply passing, white = at threshold,
@@ -553,7 +553,8 @@ def _fig_check_grid(
     abbrevs = [_CHECK_ABBREV.get(n, n) for n in check_names]
     stage_labels = [label for label, _ in stage_reports]
 
-    z, text, hover = [], [], []
+    # Build [stage][check] intermediate arrays then transpose to [check][stage].
+    z_by_stage, text_by_stage, hover_by_stage = [], [], []
     for label, rep in stage_reports:
         z_row, text_row, hover_row = [], [], []
         for result in rep.results:
@@ -574,14 +575,21 @@ def _fig_check_grid(
                 f"{'✓ PASS' if result.passed else '✗ FAIL'}<br>"
                 f"<i>{result.message}</i>"
             )
-        z.append(z_row)
-        text.append(text_row)
-        hover.append(hover_row)
+        z_by_stage.append(z_row)
+        text_by_stage.append(text_row)
+        hover_by_stage.append(hover_row)
+
+    # Transpose so rows = checks, cols = stages.
+    n_checks = len(check_names)
+    n_stages = len(stage_labels)
+    z     = [[z_by_stage[s][c]     for s in range(n_stages)] for c in range(n_checks)]
+    text  = [[text_by_stage[s][c]  for s in range(n_stages)] for c in range(n_checks)]
+    hover = [[hover_by_stage[s][c] for s in range(n_stages)] for c in range(n_checks)]
 
     fig = go.Figure(go.Heatmap(
         z=z,
-        x=abbrevs,
-        y=stage_labels,
+        x=stage_labels,
+        y=abbrevs,
         text=text,
         customdata=hover,
         texttemplate="<b>%{text}</b>",
@@ -606,10 +614,11 @@ def _fig_check_grid(
             text=f"Audit check summary — {run_name}",
             font=dict(size=15),
         ),
-        xaxis=dict(title="Audit check", side="top", tickfont=dict(size=12)),
-        yaxis=dict(title="Pipeline stage", tickfont=dict(size=12)),
-        height=max(280, len(stage_reports) * 72 + 120),
-        margin=dict(l=100, r=30, t=100, b=30),
+        xaxis=dict(title="Pipeline stage", side="top", tickfont=dict(size=12)),
+        yaxis=dict(title="Audit check", tickfont=dict(size=12), autorange="reversed"),
+        height=max(300, n_checks * 65 + 120),
+        width=max(500, n_stages * 160 + 200),
+        margin=dict(l=130, r=30, t=100, b=30),
         plot_bgcolor="#f8f9fa",
     )
     return fig

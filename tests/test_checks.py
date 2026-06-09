@@ -1,5 +1,5 @@
 """
-Tests for all six built-in AuditChecks.
+Tests for all built-in AuditChecks.
 
 Data helpers use fixed seeds for reproducibility.  Each check gets:
   - a pass case (well-calibrated / healthy data)
@@ -13,6 +13,10 @@ import pytest
 from traits_audit.checks import (
     CalibrationErrorCheck,
     ConformalCoverageCheck,
+    CRPSCheck,
+    NegativeLogLikelihoodCheck,
+    PITUniformityCheck,
+    IntervalScoreCheck,
     IntervalCoverageCheck,
     LyapunovStabilityCheck,
     VarianceAlignmentCheck,
@@ -410,3 +414,247 @@ def test_lyapunov_callable_unstable():
         [], surrogate_fn=f, op_states=op_states
     )
     assert not result.passed
+
+
+# ── CRPSCheck ────────────────────────────────────────────────────────────────
+
+def test_crps_passes_no_threshold_calibrated():
+    # No threshold → always passes; calibrated data should give low CRPS.
+    result = CRPSCheck().run([], **_calibrated(n=500))
+    assert result.passed
+    assert result.value is not None
+    assert result.value > 0
+
+
+def test_crps_calibrated_lower_than_overconfident():
+    # Calibrated CRPS should be lower than overconfident CRPS (sigma 100x too small).
+    cal = CRPSCheck().run([], **_calibrated(n=500))
+    over = CRPSCheck().run([], **_overconfident(n=500))
+    assert cal.value < over.value
+
+
+def test_crps_fails_when_threshold_exceeded():
+    # Explicit low threshold; overconfident data (CRPS ≈ MAE >> 0) should fail.
+    result = CRPSCheck(threshold=0.3).run([], **_overconfident(n=500))
+    assert not result.passed
+    assert result.value > 0.3
+
+
+def test_crps_passes_when_threshold_met():
+    result = CRPSCheck(threshold=10.0).run([], **_calibrated(n=500))
+    assert result.passed
+
+
+def test_crps_skips_when_no_data():
+    result = CRPSCheck().run([])
+    assert result.passed
+    assert "Skipped" in result.message
+
+
+def test_crps_skips_too_few_samples():
+    rng = np.random.default_rng(0)
+    mu = rng.standard_normal(4)
+    result = CRPSCheck().run([], y_true=mu + 0.1, y_pred_mean=mu, y_pred_std=np.ones(4))
+    assert result.passed
+    assert "Too few" in result.message
+
+
+def test_crps_details_keys():
+    result = CRPSCheck().run([], **_calibrated(n=200))
+    for key in ("mean_crps", "crps_reference", "n_samples"):
+        assert key in result.details
+    assert result.details["n_samples"] == 200
+    assert result.details["crps_reference"] > 0
+
+
+def test_crps_reads_from_history():
+    rng = np.random.default_rng(3)
+    n = 300
+    mu = rng.standard_normal(n)
+    sigma = np.abs(rng.standard_normal(n)) + 0.5
+    y_true = mu + sigma * rng.standard_normal(n)
+    history = [
+        {"y_true": float(y_true[i]), "y_pred_mean": float(mu[i]), "y_pred_std": float(sigma[i])}
+        for i in range(n)
+    ]
+    result = CRPSCheck().run(history)
+    assert result.passed
+    assert result.value > 0
+
+
+# ── NegativeLogLikelihoodCheck ───────────────────────────────────────────────
+
+def test_nll_passes_no_threshold_calibrated():
+    result = NegativeLogLikelihoodCheck().run([], **_calibrated(n=500))
+    assert result.passed
+    assert result.value is not None
+
+
+def test_nll_calibrated_lower_than_overconfident():
+    cal = NegativeLogLikelihoodCheck().run([], **_calibrated(n=500))
+    over = NegativeLogLikelihoodCheck().run([], **_overconfident(n=500))
+    assert cal.value < over.value
+
+
+def test_nll_fails_when_threshold_exceeded():
+    result = NegativeLogLikelihoodCheck(threshold=2.0).run([], **_overconfident(n=500))
+    assert not result.passed
+    assert result.value > 2.0
+
+
+def test_nll_passes_when_threshold_met():
+    result = NegativeLogLikelihoodCheck(threshold=100.0).run([], **_calibrated(n=500))
+    assert result.passed
+
+
+def test_nll_skips_when_no_data():
+    result = NegativeLogLikelihoodCheck().run([])
+    assert result.passed
+    assert "Skipped" in result.message
+
+
+def test_nll_skips_too_few_samples():
+    rng = np.random.default_rng(0)
+    mu = rng.standard_normal(4)
+    result = NegativeLogLikelihoodCheck().run([], y_true=mu + 0.1, y_pred_mean=mu, y_pred_std=np.ones(4))
+    assert result.passed
+    assert "Too few" in result.message
+
+
+def test_nll_details_keys():
+    result = NegativeLogLikelihoodCheck().run([], **_calibrated(n=200))
+    for key in ("mean_nll", "nll_reference", "n_samples"):
+        assert key in result.details
+    assert result.details["n_samples"] == 200
+
+
+def test_nll_reads_from_history():
+    rng = np.random.default_rng(4)
+    n = 300
+    mu = rng.standard_normal(n)
+    sigma = np.abs(rng.standard_normal(n)) + 0.5
+    y_true = mu + sigma * rng.standard_normal(n)
+    history = [
+        {"y_true": float(y_true[i]), "y_pred_mean": float(mu[i]), "y_pred_std": float(sigma[i])}
+        for i in range(n)
+    ]
+    result = NegativeLogLikelihoodCheck().run(history)
+    assert result.passed
+    assert result.value is not None
+
+
+# ── PITUniformityCheck ───────────────────────────────────────────────────────
+
+def test_pit_passes_on_calibrated_data():
+    # Large n gives enough power; calibrated PIT should be uniform.
+    result = PITUniformityCheck(alpha=0.05).run([], **_calibrated(n=500))
+    assert result.passed
+    assert result.value >= 0.05
+
+
+def test_pit_fails_on_overconfident_data():
+    # sigma 100x too small → PIT values cluster near 0 and 1 → non-uniform → FAIL.
+    result = PITUniformityCheck(alpha=0.05).run([], **_overconfident(n=500))
+    assert not result.passed
+    assert result.value < 0.05
+
+
+def test_pit_skips_when_no_data():
+    result = PITUniformityCheck().run([])
+    assert result.passed
+    assert "Skipped" in result.message
+
+
+def test_pit_skips_too_few_samples():
+    rng = np.random.default_rng(0)
+    mu = rng.standard_normal(15)
+    result = PITUniformityCheck().run([], y_true=mu + 0.1, y_pred_mean=mu, y_pred_std=np.ones(15))
+    assert result.passed
+    assert "Too few" in result.message
+
+
+def test_pit_details_keys():
+    result = PITUniformityCheck().run([], **_calibrated(n=200))
+    for key in ("ks_statistic", "p_value", "n_samples", "alpha"):
+        assert key in result.details
+    assert result.details["n_samples"] == 200
+    assert 0.0 <= result.details["ks_statistic"] <= 1.0
+    assert 0.0 <= result.details["p_value"] <= 1.0
+
+
+def test_pit_reads_from_history():
+    rng = np.random.default_rng(5)
+    n = 300
+    mu = rng.standard_normal(n)
+    sigma = np.abs(rng.standard_normal(n)) + 0.5
+    y_true = mu + sigma * rng.standard_normal(n)
+    history = [
+        {"y_true": float(y_true[i]), "y_pred_mean": float(mu[i]), "y_pred_std": float(sigma[i])}
+        for i in range(n)
+    ]
+    result = PITUniformityCheck(alpha=0.05).run(history)
+    assert result.passed
+
+
+# ── IntervalScoreCheck ────────────────────────────────────────────────────────
+
+def test_interval_score_passes_no_threshold_calibrated():
+    result = IntervalScoreCheck().run([], **_calibrated(n=500))
+    assert result.passed
+    assert result.value is not None
+    assert result.value > 0
+
+
+def test_interval_score_calibrated_lower_than_overconfident():
+    # Overconfident model incurs heavy coverage penalty (2/alpha * violations).
+    cal = IntervalScoreCheck().run([], **_calibrated(n=500))
+    over = IntervalScoreCheck().run([], **_overconfident(n=500))
+    assert cal.value < over.value
+
+
+def test_interval_score_fails_when_threshold_exceeded():
+    result = IntervalScoreCheck(threshold=1.0).run([], **_overconfident(n=500))
+    assert not result.passed
+    assert result.value > 1.0
+
+
+def test_interval_score_passes_when_threshold_met():
+    result = IntervalScoreCheck(threshold=1000.0).run([], **_calibrated(n=500))
+    assert result.passed
+
+
+def test_interval_score_skips_when_no_data():
+    result = IntervalScoreCheck().run([])
+    assert result.passed
+    assert "Skipped" in result.message
+
+
+def test_interval_score_skips_too_few_samples():
+    rng = np.random.default_rng(0)
+    mu = rng.standard_normal(4)
+    result = IntervalScoreCheck().run([], y_true=mu + 0.1, y_pred_mean=mu, y_pred_std=np.ones(4))
+    assert result.passed
+    assert "Too few" in result.message
+
+
+def test_interval_score_details_keys():
+    result = IntervalScoreCheck().run([], **_calibrated(n=200))
+    for key in ("mean_is", "is_reference", "alpha", "z_critical", "n_samples"):
+        assert key in result.details
+    assert result.details["n_samples"] == 200
+    assert result.details["alpha"] == pytest.approx(0.1)
+
+
+def test_interval_score_reads_from_history():
+    rng = np.random.default_rng(6)
+    n = 300
+    mu = rng.standard_normal(n)
+    sigma = np.abs(rng.standard_normal(n)) + 0.5
+    y_true = mu + sigma * rng.standard_normal(n)
+    history = [
+        {"y_true": float(y_true[i]), "y_pred_mean": float(mu[i]), "y_pred_std": float(sigma[i])}
+        for i in range(n)
+    ]
+    result = IntervalScoreCheck().run(history)
+    assert result.passed
+    assert result.value > 0
