@@ -7,14 +7,13 @@ name = "traits-audit"
 version = "0.1.0"
 description = "Passive uncertainty audit framework for active learning loops"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = {text = "MIT"}
 keywords = ["active learning", "uncertainty quantification", "Bayesian optimization", "MLflow", "calibration"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -24,9 +23,9 @@ authors = [
     { name = "Ashley Dale", email = "trustworthyai4sci@gmail.com" },
 ]
 dependencies = [
-    "kaleido[mlflow]>=1.3.0",
-    "matplotlib>=3.10.9",
-    "numpy>=1.21",
+    "kaleido>=1.3.0",
+    "matplotlib",
+    "numpy",
     "scipy>=1.10.0",
 ]
 
@@ -44,8 +43,8 @@ ta-pybamm-demo = "traits_audit._pybamm_demo:main"
 
 [project.optional-dependencies]
 mlflow  = ["mlflow", "plotly", "matplotlib"]
-sdl     = ["self-driving-lab-demo", "ax-platform"]
-camd    = ["scikit-learn"]
+sdl     = ["self-driving-lab-demo", "ax-platform>=1.3.0"]
+camd    = ["scikit-learn", "pandas", "pymatgen", "matminer", "django", "PuLP"]
 pybamm  = ["pybamm", "scikit-learn"]
 docs = [
     "sphinx>=7",

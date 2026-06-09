@@ -65,15 +65,39 @@ def _make_pipeline(check_every: int, logger=None):
 # ── Data loading ───────────────────────────────────────────────────────────────
 
 def _load_data():
-    """Load the CAMD test dataset; fall back to synthetic data."""
+    """Load OQMD binary-compound data from matr.io cache; fall back to synthetic data.
+
+    Downloads oqmd_1.2_voronoi_magpie_fingerprints.pickle (~150 MB) on first
+    run and caches it under ~/.cache/traits_audit/.  Subsequent runs load from
+    the local file.  Mirrors camd.utils.data.load_default_atf_data() without
+    requiring pymatgen / matminer imports.
+    """
+    import pandas as pd
+    cache_file = Path.home() / ".cache" / "traits_audit" / "oqmd_1.2_voronoi_magpie_fingerprints.pickle"
+    url = "https://data.matr.io/3/api/v1/file/5e39ce2cd9f13e075b7dfaaf/download"
     try:
-        from camd.utils.data import load_dataframe
-        df = load_dataframe("test")
-        print(f"  Loaded CAMD test dataset: {df.shape}")
+        if not cache_file.exists():
+            import urllib.request
+            cache_file.parent.mkdir(parents=True, exist_ok=True)
+            print("  Downloading OQMD dataset (~150 MB, cached after first run) …")
+            urllib.request.urlretrieve(url, cache_file)
+        # Shim for pickles created with pandas <2.0: Int64Index etc. were
+        # merged into Index in pandas 2.0 and the submodule was removed.
+        import sys, types
+        if "pandas.core.indexes.numeric" not in sys.modules:
+            _m = types.ModuleType("pandas.core.indexes.numeric")
+            _m.Int64Index = pd.Index
+            _m.Float64Index = pd.Index
+            _m.UInt64Index = pd.Index
+            sys.modules["pandas.core.indexes.numeric"] = _m
+        df = pd.read_pickle(cache_file)
+        # Mirror load_default_atf_data: binary compounds, 20 % sample
+        if "N_species" in df.columns:
+            df = df[df["N_species"] == 2].sample(frac=0.2, random_state=42)
+        print(f"  Loaded OQMD dataset: {df.shape}")
         return df
     except Exception as exc:
-        print(f"  CAMD test dataset unavailable ({exc}); using synthetic data")
-        import pandas as pd
+        print(f"  OQMD dataset unavailable ({exc}); using synthetic data")
         rng = np.random.default_rng(42)
         n, d = 300, 12
         X = rng.standard_normal((n, d))
@@ -208,7 +232,7 @@ def run(
     rng     = np.random.default_rng(seed)
     df_full = _load_data()
     feat    = _feature_cols(df_full)
-    target  = "stability"
+    target  = "delta_e"
 
     print(f"  Features: {len(feat)}  Total materials: {len(df_full)}")
 
@@ -228,7 +252,6 @@ def run(
         agent = AgentStabilityAdaBoost(
             n_query=n_query,
             n_estimators=20,
-            random_state=int(seed),
         )
         _use_camd_agent = True
     else:
@@ -264,8 +287,6 @@ def run(
             hypotheses = agent.get_hypotheses(
                 candidate_data=cand_data,
                 seed_data=seed_data,
-                n_query=min(n_query, len(cand_data)),
-                seeded=False,
             )
             X_hyp   = hypotheses[feat].values.astype(float)
             mu_hyp, std_hyp = _committee_predict(agent, X_hyp)
