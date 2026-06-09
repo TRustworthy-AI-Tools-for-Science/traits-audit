@@ -293,7 +293,8 @@ def _run_scenario(
         VarianceErrorCorrelationCheck,
     )
 
-    rng = np.random.default_rng(seed)
+    oracle_rng = np.random.default_rng(seed)
+    surrogate_rng = np.random.default_rng(seed + 2**31)
 
     pipeline = AuditPipeline(
         checks=[
@@ -318,12 +319,12 @@ def _run_scenario(
         n_estimators=config.n_estimators,
         std_scale=config.std_scale,
         aleatoric_fn=config.aleatoric_fn,
-        rng=rng,
+        rng=surrogate_rng,
     )
     pool = np.linspace(0, 1, 300)
 
-    x_obs = rng.uniform(0, 1, size=8)
-    y_obs = oracle_to_use(x_obs, rng)
+    x_obs = oracle_rng.uniform(0, 1, size=8)
+    y_obs = oracle_to_use(x_obs, oracle_rng)
 
     mlflow.set_tracking_uri(mlflow_uri)
     mlflow.set_experiment(experiment_name)
@@ -366,7 +367,7 @@ def _run_scenario(
             mu_pool, sigma_pool = surrogate.predict(pool)
             idx = lcb(mu_pool, sigma_pool)
             x_q = pool[idx]
-            y_q = float(oracle_to_use(np.array([x_q]), rng)[0])
+            y_q = float(oracle_to_use(np.array([x_q]), oracle_rng)[0])
             mu_q = float(mu_pool[idx])
             std_q = float(sigma_pool[idx])
 
@@ -388,14 +389,12 @@ def _run_scenario(
         report = hook.on_end()
 
         # Calibration assessment at training locations with fresh oracle draws.
-        # A uniform test grid concentrates ~half the evaluation points in unexplored
-        # regions where polynomial extrapolation bias >> predicted sigma, making every
-        # scenario appear overconfident regardless of std_scale.  Evaluating at x_obs
-        # (the LCB-selected training locations) avoids extrapolation artefacts and
-        # yields clean calibration signatures: overconfident collapses below diagonal,
-        # underconfident rises above, calibrated scenarios sit on the diagonal.
+        # A uniform test grid concentrates points in unexplored regions where
+        # polynomial extrapolation bias >> predicted sigma, making every scenario
+        # appear overconfident regardless of std_scale.  Evaluating at x_obs avoids
+        # extrapolation artefacts; fresh oracle draws avoid re-using training labels.
         x_calib = x_obs.copy()
-        y_calib = oracle_to_use(x_calib, rng)  # fresh draws — independent of training
+        y_calib = oracle_to_use(x_calib, oracle_rng)
         mu_calib, sigma_calib = surrogate.predict(x_calib)
         calib_check = next(c for c in pipeline.checks if c.name == "CalibrationError")
         test_calib_result = calib_check.run(
@@ -419,7 +418,7 @@ def _run_scenario(
         try:
             fig_grid.write_image(
                 str(fig_dir / f"check_grid_{stem}.png"),
-                width=1040, height=max(280, len(stage_reports) * 72 + 120), scale=2,
+                width=fig_grid.layout.width, height=fig_grid.layout.height, scale=2,
             )
         except Exception:
             pass
@@ -454,19 +453,19 @@ def _run_scenario(
             pareto_pts.append((ece, mae, stage_label))
 
     x_test = np.linspace(0, 1, 500)
-    y_test = oracle_to_use(x_test, rng)
+    if config.oracle_fn is oracle_calibrated:
+        y_clean   = np.sin(2 * np.pi * x_test)
+        noise_std = np.full_like(x_test, 0.3)
+    else:
+        y_clean   = (6 * x_test - 2) ** 2 * np.sin(12 * x_test - 4)
+        noise_std = 0.1 + 0.4 * x_test ** 2
     mu_test, sigma_test = surrogate.predict(x_test)
 
-    fig, ax = plt.subplots(figsize=(3.5, 2.625))
-    ax.plot(x_test, y_test, color="black", label="Oracle")
-    ax.errorbar(x_test, mu_test, yerr=sigma_test, color="C0", alpha=0.25, label="Surrogate")
-    ax.set_xlabel("x")
-    ax.set_ylabel("y")
-    ax.legend(frameon=False)
-    fig.tight_layout()
-    fig.savefig(fig_dir / f"oracle_uncertainty_{stem}.png", dpi=300, bbox_inches="tight")
-
-    return report, pareto_pts, test_calib_result
+    oracle_plot = dict(
+        x_test=x_test, y_clean=y_clean, noise_std=noise_std,
+        mu_test=mu_test, sigma_test=sigma_test,
+    )
+    return report, pareto_pts, test_calib_result, oracle_plot
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -519,8 +518,14 @@ def main() -> None:
     reports: dict[str, object] = {}
     pareto_data: dict[str, list] = {}
     test_calibs: dict[str, object] = {}
+    oracle_data: dict[str, dict] = {}
     for config in selected:
-        reports[config.name], pareto_data[config.name], test_calibs[config.name] = _run_scenario(
+        (
+            reports[config.name],
+            pareto_data[config.name],
+            test_calibs[config.name],
+            oracle_data[config.name],
+        ) = _run_scenario(
             config, args.steps, args.check_every, args.seed,
             args.mlflow_uri, experiment_name,
         )
@@ -607,6 +612,48 @@ def main() -> None:
                 fig_calib.savefig(str(calib_png), dpi=300, bbox_inches="tight")
                 plt.close(fig_calib)
                 print(f"Saved calibration curves → {calib_png}\n")
+
+        _scenario_order = [
+            "perfectly_calibrated", "well_calibrated", "overconfident", "underconfident"
+        ]
+        _panel_titles = {
+            "perfectly_calibrated": "Perfectly calibrated",
+            "well_calibrated":      "Well calibrated",
+            "overconfident":        "Overconfident",
+            "underconfident":       "Underconfident",
+        }
+        if oracle_data:
+            from matplotlib.lines import Line2D
+            from matplotlib.patches import Patch
+            fig_oracle, axes = plt.subplots(2, 2, figsize=(7, 5.25))
+            for ax, sname in zip(axes.flat, _scenario_order):
+                if sname not in oracle_data:
+                    ax.set_visible(False)
+                    continue
+                d = oracle_data[sname]
+                ax.fill_between(
+                    d["x_test"], d["y_clean"] - d["noise_std"], d["y_clean"] + d["noise_std"],
+                    color="black", alpha=0.12,
+                )
+                ax.plot(d["x_test"], d["y_clean"], color="black", linewidth=0.8)
+                ax.errorbar(d["x_test"], d["mu_test"], yerr=d["sigma_test"],
+                            color="C0", alpha=0.25)
+                ax.set_title(_panel_titles.get(sname, sname), fontsize=9)
+                ax.set_xlabel("x", fontsize=8)
+                ax.set_ylabel("y", fontsize=8)
+                ax.tick_params(labelsize=7)
+            legend_handles = [
+                Patch(facecolor="black", alpha=0.12, label="Oracle ±1σ"),
+                Line2D([0], [0], color="black", linewidth=0.8, label="Oracle f(x)"),
+                Line2D([0], [0], color="C0", alpha=0.6, label="Surrogate"),
+            ]
+            fig_oracle.tight_layout()
+            fig_oracle.legend(handles=legend_handles, loc="lower center", ncol=3,
+                              frameon=False, fontsize=8, bbox_to_anchor=(0.5, 0))
+            oracle_png = fig_dir / "oracle_uncertainty_panel.png"
+            fig_oracle.savefig(str(oracle_png), dpi=300, bbox_inches="tight")
+            plt.close(fig_oracle)
+            print(f"Saved oracle uncertainty panel → {oracle_png}\n")
 
     if args.ui:
         print(f"Launching MLflow UI — open http://127.0.0.1:5000\n")

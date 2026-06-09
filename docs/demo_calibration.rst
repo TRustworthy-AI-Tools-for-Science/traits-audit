@@ -220,36 +220,20 @@ The results below are from a 250-step run with ``--seed 0``.
 Prediction results
 ~~~~~~~~~~~~~~~~~~
 
-.. figure:: _static/demo_calibration/oracle_uncertainty_perfect.png
+.. figure:: _static/demo_calibration/oracle_uncertainty_panel.png
    :width: 90%
    :align: center
-   :alt: Oracle prediction, surrogate prediction with uncertainty for perfectly calibrated model
+   :alt: Oracle prediction, surrogate prediction for different uncertainty cases
 
-   The perfectly calibrated surrogate model finds the minimum of the function
-   and has aleatoric uncertainty that cannot be reduced without overfitting.
+The perfectly calibrated surrogate model finds the minimum of the function
+and has aleatoric uncertainty that cannot be reduced without overfitting.
 
-.. figure:: _static/demo_calibration/oracle_uncertainty_well.png
-   :width: 90%
-   :align: center
-   :alt: Oracle prediction, surrogate prediction with uncertainty for well calibrated model
+The well calibrated surrogate model finds the minimum of the function
+and has uncertainty that is smaller than the oracle.
 
-   The well calibrated surrogate model finds the minimum of the function
-   and has uncertainty that is smaller than the oracle.
+The underconfident surrogate model has uncertainty that is larger than the error.
 
-.. figure:: _static/demo_calibration/oracle_uncertainty_under.png
-   :width: 90%
-   :align: center
-   :alt: Oracle prediction, surrogate prediction with uncertainty for underconfident model
-
-   The underconfident surrogate model has uncertainty that is larger than the error.
-
-.. figure:: _static/demo_calibration/oracle_uncertainty_over.png
-   :width: 90%
-   :align: center
-   :alt: Oracle prediction, surrogate prediction with uncertainty for overconfident model
-
-   The overconfident surrogate model has uncertainty that is smaller than the error.
-
+The overconfident surrogate model has uncertainty that is smaller than the error.
 
 Check-grid heatmap
 ~~~~~~~~~~~~~~~~~~
