@@ -109,7 +109,7 @@ def plot_calibration_error(out_dir: Path) -> None:
         ax.set_ylabel("Observed coverage")
         ax.legend(loc="lower center", bbox_to_anchor=(0.5, 1.0), ncol=2, fontsize=8)
         _ann(ax, f"CE = {ce:.3f}   (threshold ≤ {threshold:.2f})",
-             x=0.5, y=-0.20, ha="center", va="top")
+             x=0.5, y=-0.28, ha="center", va="top")
         _badge(ax, passed)
 
     fig.tight_layout()
@@ -225,7 +225,7 @@ def plot_variance_alignment(out_dir: Path) -> None:
                    lw=1.2, ls="--", label="Ideal (ratio = 1)")
         ax.legend(loc="lower center", bbox_to_anchor=(0.5, 1.0), ncol=1, fontsize=8)
         _ann(ax, f"Ratio = {ratio:.2f}\nideal = 1.0 ± {tolerance:.1f}",
-             x=0.5, y=-0.20, ha="center", va="top")
+             x=0.5, y=-0.28, ha="center", va="top")
         _badge(ax, passed, x=0.03, y=0.97, ha="left", va="top")
 
     fig.tight_layout()
@@ -281,7 +281,7 @@ def plot_uncertainty_evolution(out_dir: Path) -> None:
         _ann(ax,
              f"slope = {rel:+.4f}/step\n"
              f"thr   ≥ {slope_thr:+.2f}/step",
-             x=0.5, y=-0.20, ha="center", va="top")
+             x=0.5, y=-0.28, ha="center", va="top")
         _badge(ax, passed)
 
     fig.tight_layout()
@@ -351,7 +351,7 @@ def plot_uncertainty_anomaly(out_dir: Path) -> None:
         _ann(ax,
              f"Anomaly fraction = {frac:.1%}\n"
              f"Threshold ≤ {max_frac:.0%}  (|z| > {z_thr:.0f})",
-             x=0.5, y=-0.20, ha="center", va="top")
+             x=0.5, y=-0.28, ha="center", va="top")
         _badge(ax, passed)
 
     fig.tight_layout()
@@ -410,7 +410,7 @@ def plot_variance_error_correlation(out_dir: Path) -> None:
         _ann(ax,
              f"Spearman ρ = {rho:+.3f}\n"
              f"Threshold  ≥ {min_corr:.1f}",
-             x=0.5, y=-0.20, ha="center", va="top")
+             x=0.5, y=-0.28, ha="center", va="top")
         _badge(ax, passed)
 
     fig.tight_layout()
@@ -579,11 +579,242 @@ def plot_lyapunov_stability(out_dir: Path) -> None:
         _ann(ax,
              f"frac stable = {frac:.2f}\n"
              f"threshold  ≥ {min_stable_frac:.1f}",
-             x=0.5, y=-0.20, ha="center", va="top")
+             x=0.5, y=-0.28, ha="center", va="top")
         _badge(ax, passed)
 
     fig.tight_layout()
     fig.savefig(out_dir / "lyapunov_stability.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 9. CRPSCheck
+# ─────────────────────────────────────────────────────────────────────────────
+
+def plot_crps(out_dir: Path) -> None:
+    """Histogram of per-sample CRPS with mean and calibrated reference marked.
+
+    CRPSCheck is a proper scoring rule: lower is better.  For a calibrated
+    Gaussian the expected CRPS equals mean(σ) / √π.  An overconfident model
+    (σ too small) has CRPS ≈ |y − μ| which is systematically higher than the
+    calibrated reference.
+    """
+    rng = np.random.default_rng(10)
+    n = 300
+    mu = rng.standard_normal(n)
+    y_true = mu + rng.standard_normal(n)   # true noise σ = 1
+
+    sigma_h = np.ones(n) * 1.0   # calibrated
+    sigma_u = np.ones(n) * 0.25  # 4× underestimate → CRPS ≈ MAE
+    threshold = 0.65              # calibrated ≈ 0.564, overconfident ≈ 0.798
+
+    def _crps(sigma):
+        s = np.maximum(sigma, 1e-12)
+        z = (y_true - mu) / s
+        return s * (2.0 * sp_stats.norm.pdf(z)
+                    + z * (2.0 * sp_stats.norm.cdf(z) - 1.0)
+                    - 1.0 / np.sqrt(np.pi))
+
+    crps_h, crps_u = _crps(sigma_h), _crps(sigma_u)
+
+    fig, (ax_h, ax_u) = plt.subplots(1, 2, figsize=(7, 3.5))
+
+    for ax, crps, sigma in ((ax_h, crps_h, sigma_h), (ax_u, crps_u, sigma_u)):
+        mean_crps = float(np.mean(crps))
+        crps_ref  = float(np.mean(sigma)) / np.sqrt(np.pi)
+        passed    = mean_crps <= threshold
+        c = PASS_COLOR if passed else FAIL_COLOR
+
+        ax.hist(crps, bins=30, density=True, color=c, alpha=0.55, edgecolor="none")
+        ax.axvline(mean_crps, color=c,    lw=1.5, label="Mean CRPS")
+        ax.axvline(crps_ref,  color=GRAY, lw=1.2, ls="--", label="Calibrated ref.")
+        ax.axvline(threshold, color="k",  lw=0.9, ls=":", label="Threshold")
+        ax.set_xlabel("Per-sample CRPS")
+        ax.set_ylabel("Density")
+        ax.legend(loc="lower center", bbox_to_anchor=(0.5, 1.0), ncol=3, fontsize=7.5)
+        _ann(ax,
+             f"Mean CRPS = {mean_crps:.3f}\n"
+             f"threshold ≤ {threshold}",
+             x=0.5, y=-0.28, ha="center", va="top")
+        _badge(ax, passed)
+
+    fig.tight_layout()
+    fig.savefig(out_dir / "crps.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 10. NegativeLogLikelihoodCheck
+# ─────────────────────────────────────────────────────────────────────────────
+
+def plot_nll(out_dir: Path) -> None:
+    """Histogram of per-sample NLL with mean and calibrated reference marked.
+
+    NegativeLogLikelihoodCheck penalises overconfidence more severely than
+    CRPS: the log(σ) term drops and the squared z-score soars when σ is too
+    small.  A calibrated Gaussian with unit residuals gives NLL ≈ 1.419.
+    """
+    rng = np.random.default_rng(11)
+    n = 300
+    mu = rng.standard_normal(n)
+    y_true = mu + rng.standard_normal(n)   # true noise σ = 1
+
+    sigma_h = np.ones(n) * 1.0   # calibrated
+    sigma_u = np.ones(n) * 0.3   # 3× underestimate → large z² terms
+    threshold = 3.0              # calibrated ≈ 1.42, overconfident ≈ 5.3
+
+    def _nll(sigma):
+        s = np.maximum(sigma, 1e-12)
+        z = (y_true - mu) / s
+        return 0.5 * np.log(2.0 * np.pi) + np.log(s) + 0.5 * z ** 2
+
+    nll_h, nll_u = _nll(sigma_h), _nll(sigma_u)
+
+    fig, (ax_h, ax_u) = plt.subplots(1, 2, figsize=(7, 3.5))
+
+    for ax, nll, sigma in ((ax_h, nll_h, sigma_h), (ax_u, nll_u, sigma_u)):
+        mean_nll = float(np.mean(nll))
+        nll_ref  = (0.5 * np.log(2.0 * np.pi)
+                    + float(np.mean(np.log(np.maximum(sigma, 1e-12)))) + 0.5)
+        passed   = mean_nll <= threshold
+        c = PASS_COLOR if passed else FAIL_COLOR
+
+        clip_hi  = float(np.percentile(nll, 99))
+        ax.hist(np.clip(nll, None, clip_hi), bins=30, density=True,
+                color=c, alpha=0.55, edgecolor="none")
+        ax.axvline(mean_nll,  color=c,    lw=1.5, label="Mean NLL")
+        ax.axvline(nll_ref,   color=GRAY, lw=1.2, ls="--", label="Calibrated ref.")
+        ax.axvline(threshold, color="k",  lw=0.9, ls=":", label="Threshold")
+        ax.set_xlabel("Per-sample NLL")
+        ax.set_ylabel("Density")
+        ax.legend(loc="lower center", bbox_to_anchor=(0.5, 1.0), ncol=3, fontsize=7.5)
+        _ann(ax,
+             f"Mean NLL = {mean_nll:.3f}\n"
+             f"threshold ≤ {threshold}",
+             x=0.5, y=-0.28, ha="center", va="top")
+        _badge(ax, passed)
+
+    fig.tight_layout()
+    fig.savefig(out_dir / "nll.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 11. PITUniformityCheck
+# ─────────────────────────────────────────────────────────────────────────────
+
+def plot_pit_uniformity(out_dir: Path) -> None:
+    """PIT histograms: uniform for calibrated model, U-shaped for overconfident.
+
+    PITUniformityCheck computes U_i = Φ((y_i − μ_i) / σ_i) and tests for
+    uniformity via a KS test.  A well-calibrated model produces a flat PIT
+    histogram; an overconfident model (σ too small) concentrates values near
+    0 and 1 because observations fall far from the predicted mean in units of σ.
+    """
+    from scipy.stats import kstest
+
+    rng = np.random.default_rng(12)
+    n = 500     # larger n for cleaner histograms
+    mu = rng.standard_normal(n)
+    y_true = mu + rng.standard_normal(n)   # true noise σ = 1
+
+    sigma_h = np.ones(n) * 1.0    # calibrated
+    sigma_u = np.ones(n) * 0.05   # 20× underestimate → U-shaped PIT
+    alpha   = 0.05
+
+    def _pit_stats(sigma):
+        s   = np.maximum(sigma, 1e-12)
+        pit = sp_stats.norm.cdf((y_true - mu) / s)
+        ks, p = kstest(pit, "uniform")
+        return pit, float(ks), float(p)
+
+    pit_h, ks_h, p_h = _pit_stats(sigma_h)
+    pit_u, ks_u, p_u = _pit_stats(sigma_u)
+
+    fig, (ax_h, ax_u) = plt.subplots(1, 2, figsize=(7, 3.5))
+
+    for ax, pit, p in ((ax_h, pit_h, p_h), (ax_u, pit_u, p_u)):
+        passed = p >= alpha
+        c = PASS_COLOR if passed else FAIL_COLOR
+
+        ax.hist(pit, bins=20, density=True, color=c, alpha=0.60,
+                edgecolor="white", linewidth=0.5)
+        ax.axhline(1.0, color=GRAY, lw=1.2, ls="--",
+                   label="Uniform density = 1")
+        ax.set_xlim(0.0, 1.0)
+        ax.set_xlabel("PIT value  U = Φ((y − μ) / σ)")
+        ax.set_ylabel("Density")
+        ax.legend(loc="lower center", bbox_to_anchor=(0.5, 1.0), ncol=1, fontsize=8)
+        _ann(ax,
+             f"KS p-value = {p:.4f}\n"
+             f"threshold ≥ {alpha}",
+             x=0.5, y=-0.28, ha="center", va="top")
+        _badge(ax, passed)
+
+    fig.tight_layout()
+    fig.savefig(out_dir / "pit_uniformity.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 12. IntervalScoreCheck
+# ─────────────────────────────────────────────────────────────────────────────
+
+def plot_interval_score(out_dir: Path) -> None:
+    """Histogram of per-sample Winkler interval scores.
+
+    IntervalScoreCheck penalises both unnecessary width and coverage failures.
+    A calibrated model produces a compact score distribution around the expected
+    reference; an overconfident model (σ too small) incurs heavy per-sample
+    penalties for intervals that miss the majority of observations.
+    """
+    rng = np.random.default_rng(13)
+    n = 300
+    mu = rng.standard_normal(n)
+    y_true = mu + rng.standard_normal(n)   # true noise σ = 1
+
+    alpha_int = 0.1                                                   # 90% intervals
+    z_crit    = float(sp_stats.norm.ppf(1.0 - alpha_int / 2.0))      # ≈ 1.645
+    sigma_h   = np.ones(n) * 1.0   # calibrated
+    sigma_u   = np.ones(n) * 0.2   # 5× underestimate → heavy miss penalty
+    threshold = 6.0                # calibrated ≈ 4.1, overconfident >> 6
+
+    def _is(sigma):
+        s  = np.maximum(sigma, 1e-12)
+        lo = mu - z_crit * s
+        hi = mu + z_crit * s
+        return (hi - lo
+                + (2.0 / alpha_int) * np.maximum(lo - y_true, 0.0)
+                + (2.0 / alpha_int) * np.maximum(y_true - hi,  0.0))
+
+    is_h, is_u = _is(sigma_h), _is(sigma_u)
+
+    fig, (ax_h, ax_u) = plt.subplots(1, 2, figsize=(7, 3.5))
+
+    for ax, is_vals, sigma in ((ax_h, is_h, sigma_h), (ax_u, is_u, sigma_u)):
+        mean_is = float(np.mean(is_vals))
+        is_ref  = (2.0 * z_crit * float(np.mean(sigma))
+                   + 2.0 * float(sp_stats.norm.pdf(z_crit)) / alpha_int)
+        passed  = mean_is <= threshold
+        c = PASS_COLOR if passed else FAIL_COLOR
+
+        clip_hi = float(np.percentile(is_vals, 98))
+        ax.hist(np.clip(is_vals, None, clip_hi), bins=30, density=True,
+                color=c, alpha=0.55, edgecolor="none")
+        ax.axvline(mean_is,   color=c,    lw=1.5, label="Mean IS")
+        ax.axvline(is_ref,    color=GRAY, lw=1.2, ls="--", label="Calibrated ref.")
+        ax.axvline(threshold, color="k",  lw=0.9, ls=":", label="Threshold")
+        ax.set_xlabel("Per-sample interval score")
+        ax.set_ylabel("Density")
+        ax.legend(loc="lower center", bbox_to_anchor=(0.5, 1.0), ncol=3, fontsize=7.5)
+        _ann(ax,
+             f"Mean IS = {mean_is:.2f}\n"
+             f"threshold ≤ {threshold}",
+             x=0.5, y=-0.28, ha="center", va="top")
+        _badge(ax, passed)
+
+    fig.tight_layout()
+    fig.savefig(out_dir / "interval_score.png", dpi=300, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -596,6 +827,10 @@ _PLOT_FUNCTIONS = [
     plot_interval_coverage,
     plot_variance_alignment,
     plot_conformal_coverage,
+    plot_crps,
+    plot_nll,
+    plot_pit_uniformity,
+    plot_interval_score,
     plot_uncertainty_evolution,
     plot_uncertainty_anomaly,
     plot_variance_error_correlation,
