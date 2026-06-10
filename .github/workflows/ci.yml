@@ -29,7 +29,14 @@ jobs:
         run: uv pip install --system ".[dev]"
 
       - name: Run tests
-        run: pytest tests/ -v
+        run: pytest tests/ -v --cov=traits_audit --cov-report=xml
+
+      - name: Upload coverage to Codecov
+        if: matrix.python-version == '3.12'
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.xml
+          fail_ci_if_error: false
 
   smoke:
     runs-on: ubuntu-latest

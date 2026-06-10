@@ -32,6 +32,11 @@ def _make_pipeline(check_every: int, logger=None):
     from traits_audit import AuditHook, AuditPipeline
     from traits_audit.checks import (
         CalibrationErrorCheck,
+        ConformalCoverageCheck,
+        CRPSCheck,
+        NegativeLogLikelihoodCheck,
+        PITUniformityCheck,
+        IntervalScoreCheck,
         IntervalCoverageCheck,
         VarianceAlignmentCheck,
         UncertaintyEvolutionCheck,
@@ -41,6 +46,11 @@ def _make_pipeline(check_every: int, logger=None):
     pipeline = AuditPipeline(
         checks=[
             CalibrationErrorCheck(threshold=0.15),
+            ConformalCoverageCheck(target_coverage=0.9, max_q_ratio=1.5),
+            CRPSCheck(),
+            NegativeLogLikelihoodCheck(),
+            PITUniformityCheck(),
+            IntervalScoreCheck(),
             IntervalCoverageCheck(expected_coverage=0.683, tolerance=0.15),
             VarianceAlignmentCheck(tolerance=0.5),
             UncertaintyEvolutionCheck(slope_threshold=-0.05),
@@ -55,20 +65,44 @@ def _make_pipeline(check_every: int, logger=None):
 # ── Data loading ───────────────────────────────────────────────────────────────
 
 def _load_data():
-    """Load the CAMD test dataset; fall back to synthetic data."""
+    """Load OQMD binary-compound data from matr.io cache; fall back to synthetic data.
+
+    Downloads oqmd_1.2_voronoi_magpie_fingerprints.pickle (~150 MB) on first
+    run and caches it under ~/.cache/traits_audit/.  Subsequent runs load from
+    the local file.  Mirrors camd.utils.data.load_default_atf_data() without
+    requiring pymatgen / matminer imports.
+    """
+    import pandas as pd
+    cache_file = Path.home() / ".cache" / "traits_audit" / "oqmd_1.2_voronoi_magpie_fingerprints.pickle"
+    url = "https://data.matr.io/3/api/v1/file/5e39ce2cd9f13e075b7dfaaf/download"
     try:
-        from camd.utils.data import load_dataframe
-        df = load_dataframe("test")
-        print(f"  Loaded CAMD test dataset: {df.shape}")
+        if not cache_file.exists():
+            import urllib.request
+            cache_file.parent.mkdir(parents=True, exist_ok=True)
+            print("  Downloading OQMD dataset (~150 MB, cached after first run) …")
+            urllib.request.urlretrieve(url, cache_file)
+        # Shim for pickles created with pandas <2.0: Int64Index etc. were
+        # merged into Index in pandas 2.0 and the submodule was removed.
+        import sys, types
+        if "pandas.core.indexes.numeric" not in sys.modules:
+            _m = types.ModuleType("pandas.core.indexes.numeric")
+            _m.Int64Index = pd.Index
+            _m.Float64Index = pd.Index
+            _m.UInt64Index = pd.Index
+            sys.modules["pandas.core.indexes.numeric"] = _m
+        df = pd.read_pickle(cache_file)
+        # Mirror load_default_atf_data: binary compounds, 20 % sample
+        if "N_species" in df.columns:
+            df = df[df["N_species"] == 2].sample(frac=0.2, random_state=42)
+        print(f"  Loaded OQMD dataset: {df.shape}")
         return df
     except Exception as exc:
-        print(f"  CAMD test dataset unavailable ({exc}); using synthetic data")
-        import pandas as pd
+        print(f"  OQMD dataset unavailable ({exc}); using synthetic data")
         rng = np.random.default_rng(42)
         n, d = 300, 12
         X = rng.standard_normal((n, d))
         y = -np.sum(X[:, :3] ** 2, axis=1) + rng.normal(0, 0.3, n)
-        cols = [f"feature_{i}" for i in range(d)] + ["stability"]
+        cols = [f"feature_{i}" for i in range(d)] + ["delta_e"]
         return pd.DataFrame(np.column_stack([X, y]), columns=cols)
 
 
@@ -85,19 +119,145 @@ def _feature_cols(df) -> list[str]:
 
 # ── Committee uncertainty extraction ──────────────────────────────────────────
 
+try:
+    import json as _json
+    import os as _os
+    import pandas as _pd
+    from sklearn.ensemble import AdaBoostRegressor as _AdaBoostRegressor
+    from sklearn.preprocessing import StandardScaler as _StandardScaler
+    from sklearn.model_selection import cross_val_score as _cvs, KFold as _KFold
+    from sklearn.pipeline import Pipeline as _Pipeline
+    from camd.agent.stability import (
+        AgentStabilityAdaBoost as _AgentBase,
+        diverse_quant as _diverse_quant,
+    )
+
+    class _ExposedAdaBoost(_AgentBase):
+        """AgentStabilityAdaBoost that stores its fitted AdaBoost and scaler.
+
+        Identical to the parent in every respect except that ``get_hypotheses``
+        saves ``self._adaboost`` and ``self._scaler`` so that committee
+        predictions and uncertainty are accessible after selection.
+        """
+
+        def __init__(self, *args, random_state=None, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._adaboost:    "_AdaBoostRegressor | None" = None
+            self._scaler:      "_StandardScaler | None"   = None
+            self._random_state: "int | None"              = random_state
+
+        def get_hypotheses(self, candidate_data, seed_data=None):
+            X_cand, X_seed, y_seed = self.update_data(candidate_data, seed_data)
+
+            # Diagnostic cross-validation (unchanged from parent)
+            _ada_cv  = _AdaBoostRegressor(
+                estimator=self.model, n_estimators=self.n_estimators,
+                random_state=self._random_state,
+            )
+            _pipe = _Pipeline([("scaler", _StandardScaler()), ("ML", _ada_cv)])
+            cv = _cvs(
+                _pipe, X_seed, y_seed,
+                cv=_KFold(3, shuffle=True, random_state=self._random_state),
+                scoring="neg_mean_absolute_error",
+            )
+            self.cv_score = float(np.mean(cv)) * -1
+
+            # Fit production model and STORE it.
+            # Convert DataFrames to numpy so the scaler has no feature names —
+            # committee_predict always passes numpy arrays and sklearn warns on mismatch.
+            self._scaler   = _StandardScaler()
+            X_scaled       = self._scaler.fit_transform(np.asarray(X_seed))
+            self._adaboost = _AdaBoostRegressor(
+                estimator=self.model, n_estimators=self.n_estimators,
+                random_state=self._random_state,
+            )
+            self._adaboost.fit(X_scaled, np.asarray(y_seed))
+
+            # Score candidates (unchanged from parent)
+            X_cand_sc = self._scaler.transform(np.asarray(X_cand))
+            expected  = self._adaboost.predict(X_cand_sc)
+            if self.uncertainty:
+                if self.dynamic_alpha and _os.path.exists("iteration.json"):
+                    with open("iteration.json") as f:
+                        _iter = _json.load(f)
+                    expected -= (
+                        min(0.1 * _iter, self.alpha)
+                        * self._get_unc_ada(self._adaboost, X_cand_sc)
+                    )
+                else:
+                    expected -= self.alpha * self._get_unc_ada(
+                        self._adaboost, X_cand_sc
+                    )
+
+            self.update_candidate_stabilities(expected, sort=True, floor=-6.0)
+
+            # Exploit / explore selection (unchanged from parent)
+            stability_filter = (
+                self.candidate_data["pred_stability"] <= self.hull_distance
+            )
+            within_hull    = self.candidate_data[stability_filter]
+            n_exploitation = int(self.n_query * self.exploit_fraction)
+
+            if self.diversify:
+                to_compute = _diverse_quant(
+                    within_hull.index.tolist(), n_exploitation,
+                    self.candidate_data, feature_filter=self.feature_labels,
+                )
+            else:
+                to_compute = within_hull.head(n_exploitation).index.tolist()
+
+            remaining  = within_hull.tail(len(within_hull) - n_exploitation)
+            remaining  = _pd.concat(
+                [remaining, self.candidate_data[~stability_filter]]
+            )
+            n_exploration = min(self.n_query - n_exploitation, len(remaining))
+            to_compute.extend(remaining.sample(n_exploration, random_state=self._random_state).index.tolist())
+
+            return candidate_data.loc[to_compute]
+
+        def committee_predict(self, X: np.ndarray):
+            """Return (mean, std) on raw (unscaled) X using the last fitted model.
+
+            Applies the stored StandardScaler before predicting, so X should
+            be in the original feature space.  Returns zero arrays if called
+            before the first ``get_hypotheses``.
+            """
+            if self._adaboost is None or self._scaler is None:
+                return np.zeros(len(X)), np.zeros(len(X))
+            X_sc = self._scaler.transform(X)
+            mean = self._adaboost.predict(X_sc)
+            std  = self._get_unc_ada(self._adaboost, X_sc)
+            return mean, std
+
+except ImportError:
+    _ExposedAdaBoost = None
+
+
 def _committee_predict(agent, X: np.ndarray):
     """Return (mean, std) from the AdaBoost committee.
 
-    Looks for individual estimators under several attribute paths used
-    across CAMD agent versions.
+    Dispatches to agent.committee_predict(X) when available (e.g.
+    _ExposedAdaBoost), otherwise searches for estimators_ under the
+    attribute paths used across CAMD agent versions.
     """
+    if hasattr(agent, "committee_predict"):
+        return agent.committee_predict(X)
+
     estimators = (
         getattr(agent, "estimators_", None)
         or getattr(getattr(agent, "regressor", None), "estimators_", None)
         or getattr(getattr(getattr(agent, "cv_result", None), "best_estimator_", None),
                    "estimators_", None)
-        or []
     )
+
+    # Recursive fallback: search all first-level attributes for an object
+    # that carries estimators_ (handles any CAMD agent wrapper layout).
+    if not estimators:
+        for val in vars(agent).values():
+            estimators = getattr(val, "estimators_", None)
+            if estimators:
+                break
+
     if estimators:
         preds = np.stack([e.predict(X) for e in estimators])  # (n_trees, n_pts)
         return preds.mean(axis=0), preds.std(axis=0)
@@ -107,8 +267,12 @@ def _committee_predict(agent, X: np.ndarray):
         m = getattr(agent, attr, None)
         if m is not None and hasattr(m, "predict"):
             pred = m.predict(X)
+            print("  WARNING: no committee estimators found — uncertainty set to zero. "
+                  f"(agent type: {type(agent).__name__})")
             return np.asarray(pred), np.zeros(len(X))
 
+    print("  WARNING: agent has no predict method — returning zero predictions and uncertainty. "
+          f"(agent type: {type(agent).__name__})")
     return np.zeros(len(X)), np.zeros(len(X))
 
 
@@ -116,12 +280,13 @@ def _committee_predict(agent, X: np.ndarray):
 
 def run(
     n_seed: int = 25,
-    n_iter: int = 50,
+    n_iter: int = 100,
     n_query: int = 4,
     out_dir: Path = Path("_results/camd_demo"),
     seed: int = 0,
     check_every: int = 5,
     n_pca: int = 5,
+    max_cand: int = 3000,
     mlflow_uri: str | None = None,
     run_name: str = "camd_demo",
 ) -> dict:
@@ -144,6 +309,10 @@ def run(
     n_pca : int
         PCA components for the Lyapunov state space (reduces dimensionality
         to make the Jacobian computation tractable).
+    max_cand : int
+        Maximum candidate pool size.  The CAMD agent's uncertainty loop is
+        O(n_candidates), so capping at ~3 000 keeps each step to ~5 s.
+        Pass 0 or None to use the full OQMD pool (~14 k entries, ~25 s/step).
     """
     import pandas as pd
 
@@ -177,7 +346,6 @@ def run(
     _camd_available = True
     try:
         from camd.agent.stability import AgentStabilityAdaBoost
-        from camd.experiment.base import ATFSampler
     except ImportError:
         _camd_available = False
         print("  camd not installed — using sklearn BaggingRegressor fallback")
@@ -198,7 +366,7 @@ def run(
     rng     = np.random.default_rng(seed)
     df_full = _load_data()
     feat    = _feature_cols(df_full)
-    target  = "stability"
+    target  = "delta_e"
 
     print(f"  Features: {len(feat)}  Total materials: {len(df_full)}")
 
@@ -207,34 +375,50 @@ def run(
     cand_idx = np.setdiff1d(np.arange(len(df_full)), seed_idx)
     seed_data = df_full.iloc[seed_idx].copy().reset_index(drop=True)
     cand_data = df_full.iloc[cand_idx].copy().reset_index(drop=True)
+    if max_cand and len(cand_data) > max_cand:
+        cand_data = cand_data.sample(max_cand, random_state=int(seed)).reset_index(drop=True)
+        print(f"  Candidate pool capped at {max_cand} (pass --max-cand 0 for full pool)")
 
-    # Fit PCA on seed features once, keep it fixed for consistent Lyapunov space
-    _n_comp_live = min(n_pca, len(feat), len(seed_data) - 1)
-    _pca_live = _PCA(n_components=_n_comp_live)
-    _pca_live.fit(df_full[feat].values.astype(float))
+    from sklearn.ensemble import BaggingRegressor
+    from sklearn.tree import DecisionTreeRegressor
+    _surrogate = BaggingRegressor(
+        estimator=DecisionTreeRegressor(max_depth=5),
+        n_estimators=20,
+        random_state=int(seed),
+    )
 
-    if _camd_available:
-        atf   = ATFSampler(dataframe=df_full)
-        agent = AgentStabilityAdaBoost(
-            n_query=n_query,
-            n_estimators=20,
-            random_state=int(seed),
+    if _camd_available and _ExposedAdaBoost is not None:
+        # alpha=0.5 matches the paper's best-performing "AB-ε0-α0.5" agent
+        # (Montoya et al. 2020, https://doi.org/10.1039/D0SC01101K).
+        agent = _ExposedAdaBoost(
+            n_query=n_query, n_estimators=20, random_state=int(seed), alpha=0.5,
         )
         _use_camd_agent = True
     else:
-        # sklearn BaggingRegressor as drop-in QBC committee
-        from sklearn.ensemble import BaggingRegressor
-        from sklearn.tree import DecisionTreeRegressor
-        agent = BaggingRegressor(
-            estimator=DecisionTreeRegressor(max_depth=5),
-            n_estimators=20,
-            random_state=int(seed),
-        )
+        agent = None
         _use_camd_agent = False
+
+    # Feature set for PCA / Lyapunov: CAMD agent uses its own feature_labels
+    # (which may differ from _feature_cols() by one column), sklearn path uses feat.
+    _feat_pca = agent.feature_labels if _use_camd_agent else feat
+
+    # Fit PCA on all data with the correct feature set, keep fixed for Lyapunov space.
+    _n_comp_live = min(n_pca, len(_feat_pca), len(seed_data) - 1)
+    _pca_live = _PCA(n_components=_n_comp_live)
+    _pca_live.fit(df_full[_feat_pca].values.astype(float))
+
+    # Pre-fit the PCA scaler on the full pool so it's stable across all steps.
+    # Per-step KRRs are then fitted in this fixed scaled PCA space.
+    from sklearn.kernel_ridge import KernelRidge as _KernelRidge
+    from sklearn.preprocessing import StandardScaler as _KRRScaler
+    _krr_scaler = _KRRScaler()
+    _krr_scaler.fit(_pca_live.transform(df_full[_feat_pca].values.astype(float)))
 
     hook = _make_pipeline(check_every, logger=_mlflow_logger)
 
+    initial_seed = seed_data.copy()
     uncertainties: list[float] = []
+    queried_batches: list = []
     queried_feature_vecs: list[np.ndarray] = []
     lambda_max_per_step: list[float] = []    # |λ_max| at each step using live model
 
@@ -245,30 +429,34 @@ def run(
             print("  Candidate pool exhausted — stopping early")
             break
 
-        X_seed = seed_data[feat].values.astype(float)
-        y_seed = seed_data[target].values.astype(float)
-        X_cand = cand_data[feat].values.astype(float)
-
         if _use_camd_agent:
-            # CAMD path: agent selects hypotheses internally
+            # CAMD path: _ExposedAdaBoost fits internally and stores the model;
+            # _committee_predict dispatches to agent.committee_predict().
             hypotheses = agent.get_hypotheses(
                 candidate_data=cand_data,
                 seed_data=seed_data,
-                n_query=min(n_query, len(cand_data)),
-                seeded=False,
             )
-            X_hyp   = hypotheses[feat].values.astype(float)
+            # Use agent.feature_labels (= _feat_pca) so feature count matches
+            # the StandardScaler fitted inside get_hypotheses().
+            X_hyp   = hypotheses[_feat_pca].values.astype(float)
             mu_hyp, std_hyp = _committee_predict(agent, X_hyp)
             y_true  = hypotheses[target].values.astype(float)
             drop_idx = cand_data.index.isin(hypotheses.index)
             seed_data = pd.concat([seed_data, hypotheses], ignore_index=True)
             cand_data = cand_data.loc[~drop_idx].reset_index(drop=True)
         else:
-            # sklearn fallback: fit BaggingRegressor, select by max uncertainty
-            agent.fit(X_seed, y_seed)
-            mu_cand, std_cand = _committee_predict(agent, X_cand)
+            # sklearn fallback: fit surrogate, select by max committee uncertainty
+            X_seed = seed_data[feat].values.astype(float)
+            y_seed = seed_data[target].values.astype(float)
+            X_cand = cand_data[feat].values.astype(float)
+            _surrogate.fit(X_seed, y_seed)
+            mu_cand, std_cand = _committee_predict(_surrogate, X_cand)
             q = min(n_query, len(cand_data))
-            query_loc = np.argsort(std_cand)[-q:]
+            # LCB with α=0.5, matching the paper's best agent (Montoya et al. 2020).
+            # Selects the q candidates with the lowest predicted stability under
+            # uncertainty — lower delta_e = more stable, so we take the minimum.
+            _lcb = mu_cand - 0.5 * std_cand
+            query_loc = np.argsort(_lcb)[:q]
             hypotheses = cand_data.iloc[query_loc].copy()
             X_hyp   = X_cand[query_loc]
             mu_hyp  = mu_cand[query_loc]
@@ -277,51 +465,54 @@ def run(
             seed_data = pd.concat([seed_data, hypotheses], ignore_index=True)
             cand_data = cand_data.drop(cand_data.index[query_loc]).reset_index(drop=True)
 
+        # Collect batch for exploration map
+        _qcols = [c for c in ["Composition", target] + feat if c in hypotheses.columns]
+        queried_batches.append(hypotheses[_qcols].copy())
+
         # Track one representative operating point per step (for Lyapunov)
         queried_feature_vecs.append(X_hyp[0])
 
-        # Per-step |λ_max| using the CURRENT live model in PCA space
+        # Per-step |λ_max|: fit a smooth RBF KRR on accumulated seed data
+        # in scaled PCA space (same basis as the post-hoc final analysis).
+        # Tree ensembles are piecewise-constant so their finite-difference
+        # Hessian is 0 within a leaf, collapsing every eigenvalue to 1+0i.
         try:
             from traits_audit._lyapunov import (
                 make_gd_predictor, numerical_jacobian, eigenvalues_and_stability,
             )
-            _current_agent = agent  # closure over current fit
+            _X_step_scaled = _krr_scaler.transform(
+                _pca_live.transform(seed_data[_feat_pca].values.astype(float))
+            )
+            _y_step = seed_data[target].values.astype(float)
+            _step_krr = _KernelRidge(kernel="rbf", alpha=1.0).fit(
+                _X_step_scaled, _y_step
+            )
 
-            def _live_scalar(state_pca: np.ndarray) -> float:
-                s_orig = _pca_live.inverse_transform(state_pca.reshape(1, -1)).flatten()
-                mu, _ = _committee_predict(_current_agent, s_orig.reshape(1, -1))
-                return float(mu[0])
+            def _live_scalar(state_scaled: np.ndarray) -> float:
+                return float(_step_krr.predict(state_scaled.reshape(1, -1))[0])
 
-            # alpha=0.05: balances eigenvalue spread against numerical stability;
-            # keeps |λ| near the unit circle across smooth and piecewise-constant
-            # surrogates alike.
-            # eps=1e-3: large enough to cross decision-tree leaf boundaries so
-            # the finite-difference gradient is non-trivial for piecewise-constant
-            # tree ensembles.
-            _live_pred = make_gd_predictor(_live_scalar, alpha=0.05, eps=1e-3)
-            _q_pca = _pca_live.transform(X_hyp[0].reshape(1, -1)).flatten()
-            _J = numerical_jacobian(_live_pred, _q_pca, dx=1e-3)
+            _live_pred = make_gd_predictor(_live_scalar, alpha=1.0, eps=1e-3)
+            _q_scaled = _krr_scaler.transform(
+                _pca_live.transform(X_hyp[0].reshape(1, -1))
+            ).flatten()
+            _J = numerical_jacobian(_live_pred, _q_scaled, dx=1e-3)
             lambda_max_per_step.append(eigenvalues_and_stability(_J)["lambda_max"])
         except Exception:
             lambda_max_per_step.append(float("nan"))
 
-        mean_mu  = float(mu_hyp.mean())
         mean_std = float(std_hyp.mean())
-        mean_y   = float(y_true.mean())
-
         uncertainties.append(mean_std)
 
         hook.on_step(
-            y_true=mean_y,
-            y_pred_mean=mean_mu,
-            y_pred_std=mean_std,
+            y_true=y_true,
+            y_pred_mean=mu_hyp,
+            y_pred_std=std_hyp,
             uncertainty=mean_std,
             abs_error=float(np.abs(y_true - mu_hyp).mean()),
             dataset_size=float(len(seed_data)),
         )
 
         if (step + 1) % 5 == 0:
-            n_stable = sum(r["is_stable"] for r in [])  # placeholder
             print(f"  Step {step + 1}/{n_iter}: "
                   f"seed={len(seed_data)}  cand={len(cand_data)}  "
                   f"uncertainty={mean_std:.4f}")
@@ -344,8 +535,8 @@ def run(
 
     # ── Lyapunov analysis ──────────────────────────────────────────────────────
     print("\n[2/3] Lyapunov stability analysis …")
-    from sklearn.decomposition import PCA
     from traits_audit._viz import (
+        _fig_check_grid,
         make_gd_predictor,
         run_lyapunov_analysis,
         plot_uncertainty_evolution,
@@ -353,31 +544,66 @@ def run(
         plot_audit_evolution,
         plot_pareto_frontier,
         plot_convergence,
+        plot_exploration_campaign,
+        plot_discovery_rate,
     )
 
+    # Re-use _pca_live (fitted on full df_full) so per-step lambda_max and
+    # the final Lyapunov analysis share the same basis.
     op_states_raw = np.array(queried_feature_vecs)   # (N, D_feat)
-    n_components  = min(n_pca, op_states_raw.shape[1], len(op_states_raw) - 1)
-    print(f"  PCA: D={op_states_raw.shape[1]} → {n_components} components")
+    op_states_pca = _pca_live.transform(op_states_raw)  # (N, n_pca)
+    print(f"  PCA: D={op_states_raw.shape[1]} → {_pca_live.n_components_} components")
 
-    pca = PCA(n_components=n_components)
-    op_states_pca = pca.fit_transform(op_states_raw)  # (N, n_pca)
+    _post_pred = agent if _use_camd_agent else _surrogate
 
-    def _camd_mean_pca(state_pca: np.ndarray) -> float:
-        state_orig = pca.inverse_transform(state_pca.reshape(1, -1)).flatten()
-        mu, _ = _committee_predict(agent, state_orig.reshape(1, -1))
-        return float(mu[0])
+    # Fit a smooth RBF surrogate in SCALED PCA space for Jacobian computation.
+    #
+    # Two reasons to work in scaled PCA space rather than the full 274-D feature space:
+    #
+    # 1. Tree ensembles are piecewise-constant: finite-difference perturbations that
+    #    stay within a single leaf give zero gradient, collapsing every eigenvalue to
+    #    1+0i (one apparent pole on the diagram). The C∞-smooth RBF KRR has a
+    #    well-defined, non-zero Hessian everywhere.
+    #
+    # 2. The OQMD PCA components have stds of 193–1454 in raw feature units. If the
+    #    KRR is fitted on original features and the Jacobian is computed via finite
+    #    differences of size eps=1e-3 in raw PCA space, the StandardScaler inside the
+    #    KRR maps that perturbation to ~7e-7 in scaled space — below the level where
+    #    the RBF kernel changes, so the numerical Hessian is ~1e-8 regardless of alpha.
+    #    Fitting and evaluating the KRR directly in scaled PCA space avoids this: the
+    #    perturbation lands in the kernel's sensitive range and the Hessian is ~0.2,
+    #    giving eigenvalue spread of [0.97, 1.59] with gd_alpha=1.0.
+    _X_lyap_raw = seed_data[_feat_pca].values.astype(float)
+    _X_lyap_pca = _pca_live.transform(_X_lyap_raw)     # (N, n_pca) raw PCA coords
+    _y_lyap = seed_data[target].values.astype(float)
+    _X_lyap_scaled = _krr_scaler.transform(_X_lyap_pca)  # unit variance per PC (scaler pre-fitted on full pool)
+    _smooth_surr = _KernelRidge(kernel="rbf", alpha=1.0)
+    _smooth_surr.fit(_X_lyap_scaled, _y_lyap)
+    print(f"  Smooth RBF surrogate fitted on {len(_X_lyap_scaled)} points "
+          f"for Jacobian computation")
 
-    def _camd_std_pca(state_pca: np.ndarray) -> float:
-        state_orig = pca.inverse_transform(state_pca.reshape(1, -1)).flatten()
-        _, std = _committee_predict(agent, state_orig.reshape(1, -1))
+    # State space for Lyapunov analysis: scaled PCA coordinates.
+    # All predictor calls and finite differences run in this space.
+    op_states_scaled = _krr_scaler.transform(op_states_pca)  # (N, n_pca)
+
+    def _camd_mean_scaled(state_scaled: np.ndarray) -> float:
+        return float(_smooth_surr.predict(state_scaled.reshape(1, -1))[0])
+
+    def _camd_std_scaled(state_scaled: np.ndarray) -> float:
+        state_pca = _krr_scaler.inverse_transform(state_scaled.reshape(1, -1))
+        state_orig = _pca_live.inverse_transform(state_pca).flatten()
+        _, std = _committee_predict(_post_pred, state_orig.reshape(1, -1))
         return float(std[0])
 
-    gd_pred = make_gd_predictor(_camd_mean_pca, alpha=0.05, eps=1e-3)
+    # gd_alpha=1.0: with the KRR Hessian ~0.2 in scaled PCA space, this gives
+    # eigenvalue spread [0.97, 1.59] across typical operating points — meaningful
+    # variation around the stability boundary without numerical blowup.
+    gd_pred = make_gd_predictor(_camd_mean_scaled, alpha=1.0, eps=1e-3)
 
     lyap = run_lyapunov_analysis(
         predictor=gd_pred,
-        op_states=op_states_pca,
-        gp_std_fn=_camd_std_pca,
+        op_states=op_states_scaled,
+        gp_std_fn=_camd_std_scaled,
         model_label="AdaBoost-QBC (CAMD)",
         out_dir=fig_dir,
     )
@@ -403,6 +629,31 @@ def run(
         snapshot_every=4,
     )
 
+    # Check-grid heatmap: rows = audit checks, cols = snapshot steps.
+    # Columns come from hook.intermediate_reports (fired every check_every steps)
+    # plus a "final" column from the end-of-run report.
+    fig_grid = None
+    if hook.intermediate_reports:
+        stage_reports = [
+            (f"step {(i + 1) * check_every}", r)
+            for i, r in enumerate(hook.intermediate_reports)
+        ]
+        stage_reports.append(("final", report))
+        fig_grid = _fig_check_grid(stage_reports, "AdaBoost-QBC (CAMD)")
+        _grid_png = fig_dir / "fig10_check_grid.png"
+        try:
+            fig_grid.write_image(
+                str(_grid_png),
+                width=fig_grid.layout.width,
+                height=fig_grid.layout.height,
+                scale=2,
+            )
+            print("  Saved fig10_check_grid.png")
+        except Exception:
+            _grid_html = fig_dir / "fig10_check_grid.html"
+            fig_grid.write_html(str(_grid_html))
+            print(f"  Saved fig10_check_grid.html (install kaleido for PNG export)")
+
     abs_errors_al = [h.get("abs_error", float("nan")) for h in hook.history]
     plot_pareto_frontier(
         x_vals=np.array(uncertainties),
@@ -417,20 +668,50 @@ def run(
         color_label="AL step",
     )
 
-    y_true_per_step = [h.get("y_true", float("nan")) for h in hook.history]
-    best_stability = np.maximum.accumulate(
-        np.nan_to_num(np.array(y_true_per_step), nan=-np.inf)
+    y_true_per_step = [
+        float(np.mean(h["y_true"])) if "y_true" in h else float("nan")
+        for h in hook.history
+    ]
+    # Most stable = most negative delta_e; track running minimum.
+    best_stability = np.minimum.accumulate(
+        np.nan_to_num(np.array(y_true_per_step), nan=np.inf)
     )
     plot_convergence(
         best_vals=best_stability,
         query_counts=np.arange(1, len(best_stability) + 1) * n_query,
-        y_label="Best stability score (per step mean)",
+        y_label=r"Best $\Delta E$ (eV/atom)",
         model_label="AdaBoost-QBC (CAMD)",
         out_dir=fig_dir,
-        maximise=True,
+        maximise=False,
     )
 
-    n_stable_final = sum(r["is_stable"] for r in [])  # placeholder (from CSV)
+    plot_exploration_campaign(
+        df_all=df_full,
+        feat=feat,
+        target=target,
+        seed_df=initial_seed,
+        queried_batches=queried_batches,
+        model_label="AdaBoost-QBC (CAMD)",
+        out_dir=fig_dir,
+    )
+
+    # Discovery-rate figure: cumulative stable materials found vs random baseline.
+    # Threshold = 25th percentile of the full pool — bottom quartile by delta_e.
+    # This is the primary evaluation metric in Montoya et al. (2020): how many
+    # stable/near-stable materials does the AL agent find per DFT evaluation,
+    # compared to selecting candidates at random?
+    _stability_threshold = float(np.percentile(df_full[target].values, 25))
+    _y_true_per_batch = [
+        np.array(h["y_true"]) for h in hook.history if "y_true" in h
+    ]
+    plot_discovery_rate(
+        y_true_per_batch=_y_true_per_batch,
+        df_all_target=df_full[target].values,
+        stability_threshold=_stability_threshold,
+        model_label="AdaBoost-QBC (CAMD)",
+        out_dir=fig_dir,
+    )
+
     if _use_mlflow:
         lm = lyap["lambda_max"]
         _mlflow.log_metrics({
@@ -439,6 +720,8 @@ def run(
             "lyapunov/n_stable":        int((lm < 1.0).sum()),
         })
         _mlflow.log_artifact(str(fig_dir / "lyapunov_stability.csv"), "lyapunov")
+        if fig_grid is not None:
+            _mlflow.log_figure(fig_grid, "audit/check_grid.html")
         _mlflow.log_artifacts(str(fig_dir), "figures")
         _run_ctx.__exit__(None, None, None)
 
@@ -455,8 +738,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--n-seed",      type=int, default=25,
                    help="Initial labelled observations (default: 25)")
-    p.add_argument("--n-iter",      type=int, default=50,
-                   help="AL iterations (default: 50)")
+    p.add_argument("--n-iter",      type=int, default=100,
+                   help="AL iterations (default: 100)")
     p.add_argument("--n-query",     type=int, default=4,
                    help="Queries per iteration (default: 4)")
     p.add_argument("--out-dir",     type=str, default="_results/camd_demo")
@@ -465,9 +748,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Intermediate audit frequency (default: 4)")
     p.add_argument("--n-pca",       type=int, default=5,
                    help="PCA components for Lyapunov state space (default: 5)")
+    p.add_argument("--max-cand",    type=int, default=3000,
+                   help="Max candidate pool size; 0 = full OQMD pool (default: 3000)")
     default_uri = "sqlite:///" + str(Path.cwd() / "traits_audit_demo.db")
-    p.add_argument("--mlflow-uri",  type=str, default=default_uri,
-                   help="MLflow tracking URI (default: local SQLite DB)")
+    p.add_argument("--mlflow-uri",  type=str, default=None,
+                   help=f"MLflow tracking URI (default: disabled; pass a URI such as "
+                        f"sqlite:///traits_audit_demo.db or {default_uri} to enable)")
     p.add_argument("--run-name",    type=str, default="camd_demo",
                    help="MLflow run name (default: camd_demo)")
     p.add_argument("--ui",          action="store_true",
@@ -485,6 +771,7 @@ def main() -> None:
         seed=args.seed,
         check_every=args.check_every,
         n_pca=args.n_pca,
+        max_cand=args.max_cand,
         mlflow_uri=args.mlflow_uri,
         run_name=args.run_name,
     )

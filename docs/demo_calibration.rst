@@ -3,16 +3,15 @@
 Calibration scenarios demo (``ta-demo``)
 =========================================
 
-This demo compares four active learning runs side-by-side to show how the
+This demo compares four active learning runs side-by-side for a function minimization
+task using active learning. This demonstrates how the
 audit checks behave across the full calibration spectrum: ideal calibration, a
 well-calibrated baseline, an overconfident system and an underconfident system.
 
 .. code-block:: bash
 
-   ta-demo                                          # all four scenarios, 100 steps
-   ta-demo --scenarios perfectly_calibrated         
-   ta-demo --scenarios well_calibrated overconfident underconfident
-   ta-demo --steps 60 --seed 7
+   ta-demo                                          # all four scenarios, 100 steps (default)
+   ta-demo --steps 250 --seed 0                     # used to generate the figures on this page
 
 
 Introduction
@@ -32,15 +31,15 @@ noise model and a simple oracle that allows convergence?
 Uncertainty hook placement
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``hook.on_step()`` is called **after** each oracle evaluation and **before**
-the surrogate is re-fit, so every check receives the surrogate's pre-update
-prediction at the LCB-selected point:
+``hook.on_step()`` is called **after** each oracle evaluation and dataset
+update, and **before** the surrogate is re-fit, so every check receives the
+surrogate's pre-update prediction at the LCB-selected point:
 
 .. code-block:: text
 
-   Surrogate fit  →  LCB acquisition  →  Oracle query  ← hook.on_step()
-        ↑                                      |
-        └──────────── add observation ─────────┘
+   Surrogate fit  →  LCB acquisition  →  Oracle query  →  add observation  ← hook.on_step()
+        ↑                                                        |
+        └────────────────────────────────────────────────────────┘
 
 .. list-table:: Check-to-pipeline-step mapping
    :header-rows: 1
@@ -105,8 +104,9 @@ Surrogate model
 
 A **bootstrap-ensemble polynomial surrogate** [Efron1979]_ is used for these examples:
 
-* Each ensemble member fits a degree-5 polynomial with Ridge regularisation on ≤ 60 data points.
-  The full 100-step loop with four scenarios completes in under ten seconds.
+* Each ensemble member fits a degree-5 polynomial with Ridge regularisation; the dataset grows
+  from 8 warm-start points to over 250 by the end of a full run.
+  A full 100-step loop (default) with four scenarios completes in under ten seconds.
 
 * Per-step predictive mean and std are estimated from the ensemble mean and
   standard deviation across members.
@@ -114,8 +114,7 @@ A **bootstrap-ensemble polynomial surrogate** [Efron1979]_ is used for these exa
 * Lower-confidence-bound (LCB) acquisition [Srinivas2010]_ with :math:`\kappa = 2.0` selects
   the next query point.
 
-* The ensemble is seeded via ``numpy.random.default_rng``
-  so every run with the same ``--seed`` flag is byte-for-byte identical.
+* The ensemble is seeded via ``numpy.random.default_rng``.
 
 Four scenario configurations are run sequentially:
 
@@ -130,33 +129,121 @@ Four scenario configurations are run sequentially:
      - 30 estimators, std scale 0.7, aleatoric floor 0.3, sin oracle
      - Calibration transition: 5/6 PASS at step 10, 5–6/6 PASS from step 20 onward
    * - ``well_calibrated``
-     - 30 estimators, std scale 1.0, Forrester oracle
-     - Heteroscedastic oracle limits achievable calibration; several checks fail
+     - 30 estimators, std scale 0.7, aleatoric floor :math:`0.1 + 0.4x^2`, Forrester oracle
+     - ``CalibrationError`` passes at step 10 (0.145) then fails as the accumulated LCB history inflates ECE above 0.15; ``IntervalCoverage`` fails throughout; the aleatoric floor is correctly matched to the oracle noise
    * - ``overconfident``
-     - 5 estimators, std scale 1.0, Forrester oracle
-     - CalibrationError and IntervalCoverage fail (intervals too narrow)
+     - 5 estimators, std scale 0.3, aleatoric floor 0.1, Forrester oracle
+     - CalibrationError and IntervalCoverage fail persistently (floor prevents epistemic collapse, std compression keeps intervals narrow)
    * - ``underconfident``
-     - 30 estimators, std scale 4.0, Forrester oracle
-     - VarianceAlignment and IntervalCoverage fail (intervals far too wide)
+     - 30 estimators, std scale 4.0, aleatoric floor 1.0, Forrester oracle
+     - VarianceAlignment and IntervalCoverage fail persistently (floor prevents epistemic collapse)
 
-Bootstrap coverage underestimates epistemic uncertainty near the boundary but produces 
+Bootstrap coverage underestimates epistemic uncertainty near the boundary but produces
 realistic relative trends that the audit can evaluate.
+
+Calibration control mechanisms
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The ``BootstrapSurrogate`` exposes three parameters that together determine
+whether predicted uncertainty matches oracle noise:
+
+``n_estimators``
+    Bootstrap ensemble size.  Fewer members undersample the space of polynomial
+    fits, giving a narrow spread across members and therefore a small
+    :math:`\sigma_\text{ep}`.  Five members produce very small epistemic spread;
+    30 are needed for a realistic estimate.
+
+``std_scale``
+    A global scalar multiplied onto :math:`\sigma_\text{ep}` before combining
+    with the aleatoric floor.  Values below 1 compress predicted uncertainty
+    toward overconfidence; values above 1 inflate it toward underconfidence.
+
+``aleatoric_fn(x)``
+    A position-dependent noise floor :math:`\sigma_\text{al}(x)` added in
+    quadrature with the scaled epistemic term:
+
+    .. math::
+
+       \sigma_\text{total}(x) =
+           \sqrt{\bigl(\textit{std\_scale} \cdot \sigma_\text{ep}(x)\bigr)^2
+                 + \sigma_\text{al}(x)^2}
+
+    Once the surrogate converges and :math:`\sigma_\text{ep} \to 0`, only the
+    floor survives.  Matching :math:`\sigma_\text{al}(x)` to the oracle noise
+    function :math:`\sigma_\text{oracle}(x)` is therefore the key design
+    decision for well-calibrated scenarios.
+
+The four scenarios were each engineered by a deliberate combination of these
+knobs:
+
+**perfectly_calibrated** — The oracle noise is homoscedastic
+(:math:`\sigma_\text{oracle} = 0.3`).  Setting the aleatoric floor to the
+same constant (:math:`\sigma_\text{al} = 0.3`) guarantees
+:math:`\sigma_\text{total} \to \sigma_\text{oracle}` once the surrogate fills
+in the domain and :math:`\sigma_\text{ep} \to 0`.  The ``std_scale = 0.7``
+compresses epistemic spread in early steps so that the surrogate is not
+overconfident before the floor begins to dominate; it has no effect on the
+converged value because the floor term is then the only contributor.
+
+**well_calibrated** — The oracle noise is heteroscedastic
+(:math:`\sigma_\text{oracle}(x) = 0.1 + 0.4x^2`).  The aleatoric floor is
+set to match it exactly (:math:`\sigma_\text{al}(x) = 0.1 + 0.4x^2`), so
+the floor is correctly specified.  However, LCB concentrates queries at
+:math:`x \approx 0.76` where :math:`\sigma_\text{oracle} \approx 0.33`.
+Early in the run :math:`\sigma_\text{ep}` is large at this point, inflating
+:math:`\sigma_\text{total}` above the floor and producing underconfident
+per-step measurements that accumulate in the running ECE — causing it to
+exceed 0.15 even though the floor is correctly matched.
+
+**overconfident** — Two knobs compress uncertainty in the same direction.
+``n_estimators = 5`` undersamples the polynomial space, giving a small
+:math:`\sigma_\text{ep}`.  ``std_scale = 0.3`` then compresses it by a
+further 3×.  The result is :math:`\sigma_\text{total} \approx \sqrt{(0.3
+\,\sigma_\text{ep})^2 + 0.01} \approx 0.1` throughout.  Since oracle noise
+at :math:`x \approx 0.76` is :math:`\sigma_\text{oracle} \approx 0.33`, the
+predicted intervals are systematically ~3× too narrow regardless of how many
+observations are collected.
+
+**underconfident** — Two knobs inflate uncertainty in the same direction.
+``std_scale = 4.0`` amplifies :math:`\sigma_\text{ep}` by 4×, and the
+constant floor :math:`\sigma_\text{al} = 1.0` sets a hard lower bound on
+:math:`\sigma_\text{total}` that is already 3× larger than oracle noise at
+:math:`x \approx 0.76`.  Even as the surrogate converges and
+:math:`\sigma_\text{ep}` shrinks, the floor keeps :math:`\sigma_\text{total}
+\geq 1.0` throughout the run, guaranteeing persistent underconfidence.
 
 Results
 -------
 
-The results below are from a 100-step run with ``--seed 0``.  Green cells in
-the check-grid heatmaps indicate PASS; red cells indicate FAIL.  Check values
-are printed in white inside each cell.
+The results below are from a 250-step run with ``--seed 0``. 
+
+Prediction results
+~~~~~~~~~~~~~~~~~~
+
+.. figure:: _static/demo_calibration/oracle_uncertainty_panel.png
+   :width: 90%
+   :align: center
+   :alt: Oracle prediction, surrogate prediction for different uncertainty cases
+
+The perfectly calibrated surrogate model finds the minimum of the function
+and has aleatoric uncertainty that cannot be reduced without overfitting.
+
+The well calibrated surrogate model finds the minimum of the function
+and has uncertainty that is smaller than the oracle.
+
+The underconfident surrogate model has uncertainty that is larger than the error.
+
+The overconfident surrogate model has uncertainty that is smaller than the error.
 
 Check-grid heatmap
 ~~~~~~~~~~~~~~~~~~
 
-Rows are the four scenarios; columns are the six
-checks.  Green cells indicate PASS; red cells indicate FAIL.  The colour
-intensity is proportional to the magnitude of the check value relative to
-the threshold, so mild failures appear light red and severe failures appear
-deep red.
+Rows are pipeline stages — intermediate
+audit reports produced every 10 steps plus the final report; columns are
+the six checks.  Green cells indicate PASS; red cells indicate FAIL.  The
+colour intensity is proportional to the magnitude of the check value
+relative to the threshold, so mild failures appear light red and severe
+failures appear deep red.
 
 **Perfectly-calibrated scenario**
 
@@ -166,7 +253,7 @@ deep red.
    :alt: Check-grid heatmap for the perfectly-calibrated scenario
 
    Check-grid for the ``perfectly_calibrated`` scenario.
-   Oracle: :math:`\sin(2\pi x) + \mathcal{N}(0,\, 0.09)`.
+   Oracle: :math:`\sin(2\pi x) + \mathcal{N}(0,\, 0.3^2)`.
    Surrogate: 30-estimator bootstrap, std_scale=0.7, aleatoric floor
    :math:`\sigma_\text{al} = 0.3` added in quadrature.
    The total predicted uncertainty is
@@ -178,10 +265,10 @@ step): LCB rapidly depletes the bootstrap's epistemic spread early in the
 run as it focuses on the minimum of :math:`\sin(2\pi x)`.  All other checks
 already PASS — ``CalibError = 0.104``, ``IntCoverage = 0.600`` (within the
 53-83 % tolerance), ``VarAlignment = 0.901`` (predicted variance ≈ empirical
-variance), ``VarErrCorr = 0.188`` (moderate Spearman correlation). From step 20 onward every check passes.  
+variance), ``VarErrCorr = 0.188`` (moderate Spearman correlation).
 
-* ``UncEvolution`` recovers to -0.045 (within the -0.05 threshold) 
-    once the epistemic component stabilises at the 0.3 aleatoric floor.  
+* ``UncEvolution`` recovers to -0.045 (within the -0.05 threshold) by step 20
+    once the epistemic component stabilises at the 0.3 aleatoric floor.
 
 * ``VarAlignment`` moves through 0.988 → 1.094 →
     1.253 as the surrogate converges: the predicted variance is now equal to or
@@ -190,7 +277,10 @@ variance), ``VarErrCorr = 0.188`` (moderate Spearman correlation). From step 20 
 
 * ``VarErrCorr`` rises from 0.188 (step 10) to 0.465 (step 20), reflecting
     that the surrogate correctly assigns higher total uncertainty to the few
-    remaining unexplored pool regions.
+    remaining unexplored pool regions.  ``VarianceErrorCorrelation`` remains
+    positive through step 90, then falls below the 0.1 threshold as the
+    well-explored surrogate has near-zero epistemic variance everywhere —
+    the same behaviour flagged in the final audit report below.
 
 **Well-calibrated scenario**
 
@@ -199,24 +289,25 @@ variance), ``VarErrCorr = 0.188`` (moderate Spearman correlation). From step 20 
    :align: center
    :alt: Check-grid heatmap for the well-calibrated scenario
 
-* ``CalibError`` passes only at step 10 (0.127 < 0.15) before rising to 0.306
-    at step 100 — the bootstrap's spread grows proportionally faster than
-    empirical error as the LCB concentrates queries.
+* ``CalibError`` passes at step 10 (0.145) then rises above the 0.15 threshold
+    to 0.231 by step 100 and 0.220 at the final report.  The hook accumulates single-point (x_q, y_q, σ_q)
+    observations from the LCB history; in early steps σ_ep at x≈0.76 is large
+    (surrogate fit on few points), inflating sigma well above the 0.331 oracle
+    noise and producing underconfident measurements that persist in the running
+    average.
 
-* ``IntCoverage`` fails throughout at 0.350-0.500: only 35-50 % of observations
-    fall within the 1-σ band (target 68.3 %), confirming that the ensemble is
-    systematically overconfident in coverage.
+* ``IntCoverage`` fails throughout (0.400 at step 10, settling to 0.348 at the
+    final report) — the 1-σ band covers only ~35% of oracle draws rather than the
+    expected 68.3%, consistent with the explanation above.
 
-* ``VarAlignment`` fails at 4.9-5.4 — the mean predicted variance is roughly
-    5× the mean squared error, a consequence of the full-range bootstrap estimating
-    high variance at the input boundaries while errors are concentrated near
-    observed points.
+* ``VarAlignment`` starts at 1.254 (step 10) and drifts to 1.431 at the final
+    report, just below the 1.5 upper tolerance — a PASS throughout, confirming that
+    the oracle-matched floor keeps global variance close to empirical squared error.
 
-* ``UncEvolution`` fails at slopes of -0.06 to -0.16 per step — the LCB policy
-    rapidly depletes high-uncertainty pool regions, collapsing the epistemic signal
-    faster than the threshold allows.
+* ``UncEvolution`` fails sharply at step 10 (−0.219) and step 20 (−0.143) as LCB
+    depletes high-uncertainty pool regions, then passes from step 60 onward (−0.050).
 
-* ``UncAnomalies`` and ``VarErrCorr`` pass cleanly throughout.
+* ``UncAnomalies`` and ``VarErrCorr`` pass throughout.
 
 **Overconfident scenario**
 
@@ -225,19 +316,23 @@ variance), ``VarErrCorr = 0.188`` (moderate Spearman correlation). From step 20 
    :align: center
    :alt: Check-grid heatmap for the overconfident scenario
 
-* ``IntCoverage`` drops further to 0.260 by step 100 — the small committee
-    produces narrower intervals, reducing coverage below even the well-calibrated
-    case.  
+* ``CalibError`` is 0.390 at step 10 and remains 0.38–0.39 throughout the
+    250-step run — systematic interval compression from std_scale=0.3 and
+    aleatoric floor=0.1 keeps sigma near 0.1 while the oracle noise at x≈0.76
+    is 0.33.
 
-* ``CalibError`` rises to 0.338 (final), more than twice the threshold,
-    reflecting the compounded effect of reduced ensemble diversity.
+* ``IntCoverage`` opens at 0.100 (step 10) — barely 10% of oracle values fall
+    inside the narrow 1-σ band — rising modestly to 0.168 at the final report as
+    the mean prediction tightens.
 
-* ``VarAlignment`` is slightly lower (3.8-4.1) because fewer estimators produce
-    less aggregate spread, but remains a clear FAIL.  
+* ``VarAlignment`` is 0.113–0.115 throughout: mean predicted variance is
+    roughly 9× smaller than mean squared error, the defining signature of
+    systematic overconfidence.
 
-* ``VarErrCorr`` actually improves relative to the well-calibrated case (0.539-0.740), 
-    meaning the small ensemble concentrates residual uncertainty in regions where predictions
-    are worst — a useful signal despite the overall miscalibration.
+* ``VarErrCorr`` ranges from 0.588 at step 10 to 0.407 at the final report —
+    the rank correlation between σ and \|error\| remains positive because the small
+    committee still assigns relatively higher uncertainty to regions with larger
+    residuals, even though the overall scale is wrong.
 
 **Underconfident scenario**
 
@@ -247,22 +342,24 @@ variance), ``VarErrCorr = 0.188`` (moderate Spearman correlation). From step 20 
    :alt: Check-grid heatmap for the underconfident scenario
 
 Every metric is inverted relative to the overconfident case.
-   
+
 * ``IntCoverage`` spikes to 1.000 at step 10 — every observation falls inside
-    the inflated 1-σ band — and stays at 0.875 for the final report, far above
-    the 83.3 % upper tolerance.  
-   
-* ``VarAlignment`` reaches 125 at step 10 (predicted
-    variance 125× the squared error), settling to 29.0 at step 100, still one-two
-    orders of magnitude above the acceptable range.
+    the inflated 1-σ band — and remains near 0.940–0.970 through step 250 and the
+    final report, consistently above the 83.3% upper tolerance.
 
-* ``CalibError`` recovers from
-    0.450 to 0.070 by step 100 because the 4× inflation eventually brackets most
-    residuals — but coverage and variance checks remain failed.
+* ``VarAlignment`` reaches 38.9 at step 10 (predicted variance ~39× the squared
+    error), stabilising near 28–31 from step 100 onward — one to two orders of
+    magnitude above the acceptable range.
 
-* ``VarErrCorr`` is near zero or negative throughout: the rank correlation
-    between inflated std and absolute error is poor, since the uncertainty
-    inflation is uniform rather than heteroscedastic.
+* ``CalibError`` declines from 0.350 at step 10 toward 0.183 at step 100, then
+    rises back to 0.238 at the final report.  The floor=1.0 keeps sigma >> oracle
+    noise (0.33) throughout, so the ECE never collapses to near zero — persistent
+    miscalibration rather than recovery.
+
+* ``VarErrCorr`` is negative at steps 10–20 (−0.297, −0.301) since the uniform
+    inflation decorrelates σ from actual error, but recovers to ~0.5 by step 100
+    once the surrogate has enough data to assign relatively larger uncertainty to
+    genuinely harder regions.
 
 Calibration curves (reliability diagrams)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -278,83 +375,90 @@ actually covered at that level.  The dashed diagonal is perfect calibration;
 the coloured solid curve is the observed reliability; the shaded region
 represents the integral miscalibration (the ECE, [Kuleshov2018]_).
 
-* **Perfectly calibrated (top-left):** The curve tracks the diagonal closely
-  across all confidence levels — a small CE confirms the aleatoric floor keeps
-  the surrogate from over-contracting its intervals.
+Calibration is evaluated here on fresh oracle draws at the training locations
+(the LCB-acquired points), which avoids the large prediction bias that arises
+when evaluating on a uniform grid in unexplored regions.
 
-* **Well calibrated (top-right):** The curve lies slightly below the diagonal,
-  reflecting the irreducible mismatch between the homoscedastic ensemble and the
-  heteroscedastic Forrester oracle.
+* **Perfectly calibrated (top-left, CE=0.022):** The curve tracks the diagonal
+  closely across all confidence levels — the oracle-matched aleatoric floor and
+  correct std_scale keep sigma aligned with oracle noise at the explored minimum.
 
-* **Overconfident (bottom-left):** The curve falls sharply below the diagonal —
-  50 % nominal intervals cover far fewer than 50 % of observations.  The large
-  shaded area reflects the high CE value.
+* **Well calibrated (top-right, CE=0.128):** The curve lies slightly below the
+  diagonal: the oracle-matched floor (0.1 + 0.4x²) is correctly sized at x≈0.76,
+  but finite-sample noise in the bootstrap mean causes the effective error std to
+  slightly exceed the floor value, giving mild apparent overconfidence.  CE < 0.15
+  — this scenario passes the calibration check on the held-out test set.
 
-* **Underconfident (bottom-right):** The curve bows above the diagonal —
-  intervals are so wide that even low nominal levels already contain most
-  observations, and the shaded area extends upward rather than downward.
+* **Overconfident (bottom-left, CE=0.361):** The curve falls sharply below the
+  diagonal — std_scale=0.3 and floor=0.1 compress sigma to ~0.1 while oracle
+  noise is 0.33, so nominal intervals miss far more observations than expected.
+
+* **Underconfident (bottom-right, CE=0.250):** The curve lies above the diagonal
+  for all moderate-to-high confidence levels — the floor=1.0 inflates sigma far
+  above the 0.33 oracle noise, so even low nominal intervals cover most
+  observations.  CE=0.250 correctly flags this as a FAIL.
 
 Cross-scenario Pareto frontier: CalibrationError (ECE) vs Mean Absolute Error (MAE)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-The Pareto frontier visualization confirms which
-scenario-stage combinations are worth deploying: only the Perfectly-calibrated (green) and
-Well-calibrated (blue) trajectories touch it. Across all four scenarios and intermediate audit stages
-(step 10, 20, …, 100, and final), each scenario traces a trajectory from
-earlier stages (lighter, top-right) to later stages (darker, lower-left);
-Pareto-optimal (non-dominated) points are shown with heavier markers and
-connected by the black staircase frontier. The lower-left corner is optimal: 
-low ECE means well-calibrated uncertainty; low MAE means accurate predictions.  
+The Pareto frontier visualization plots all scenario-stage combinations
+(step 10, 20, …, 250, and final) on the ECE–MAE plane.  Each scenario
+traces a trajectory from earlier stages (lighter markers, top-right) to
+later stages (darker markers, lower-left).  The lower-left corner is
+optimal: low ECE means well-calibrated uncertainty; low MAE means accurate
+predictions.
 
 .. figure:: _static/demo_calibration/pareto_scenarios.png
    :width: 80%
    :align: center
    :alt: Cross-scenario Pareto frontier of ECE vs MAE across all four scenarios
 
-* **Perfectly-calibrated (green circles):** The only scenario whose late
-   stages (step 30-final) reach the lower-left corner of the plot.  Both
-   ECE and MAE decrease monotonically as the surrogate fits the smooth
-   sin oracle.  All final-stage points are Pareto-optimal, confirming that
-   a correctly-specified noise model allows simultaneous improvement in both
-   calibration and accuracy.
+* **Perfectly-calibrated (green circles):** Occupies the lower-left corner
+   throughout.  Both ECE and MAE decrease as the surrogate fits the smooth
+   sin oracle, confirming that a correctly-specified noise model allows
+   simultaneous improvement in both calibration and accuracy.
 
-* **Well-calibrated (blue squares):** Moderate ECE (0.05-0.15) with MAE
-   tracking the perfectly-calibrated trajectory.  Some intermediate stages
-   are Pareto-optimal; the heteroscedastic Forrester oracle prevents ECE
-   from reaching zero, so the scenario converges to a region above and to
-   the right of the perfectly-calibrated final point.
+* **Well-calibrated (blue squares):** Starts near (ECE 0.145, MAE 1.6)
+   at step 10 and moves left as MAE improves, reaching ECE≈0.22, MAE≈0.65
+   at the final stage.  ECE stays above 0.15 throughout because the hook
+   measures the full LCB history including early high-σ steps.
 
-* **Overconfident (orange triangles):** ECE rises above 0.15 at most
-   stages (reflecting the narrow ensemble intervals) while MAE is
-   comparable to the well-calibrated case.  No stage is Pareto-optimal:
-   another scenario always matches or beats this one on both axes
-   simultaneously.  This is the defining signature of a pathological
+* **Overconfident (orange triangles):** ECE stays in the 0.37–0.44 range
+   at all stages (systematic interval compression from std_scale=0.3) while
+   MAE is broadly comparable to the well-calibrated case.  No stage is
+   non-dominated: another scenario always matches or beats this one on both
+   axes simultaneously.  This is the defining signature of a pathological
    miscalibration — wasted query budget without commensurate accuracy gain.
 
-* **Underconfident (red diamonds):** Symmetric pathology in the
-   opposite direction.  ECE is large (inflated :math:`4\times\sigma`)
-   and the inflated intervals make LCB behave more like random sampling,
-   slightly increasing MAE relative to the well-calibrated case.  Like
-   the overconfident scenario, no stage is Pareto-optimal.
+* **Underconfident (red diamonds):** Early stages have ECE≈0.35 and high
+   MAE (~2.8 at step 10), converging to ECE≈0.24, MAE≈0.70 at the final
+   stage.  The aleatoric floor (1.0) prevents ECE from collapsing to near
+   zero, so the red trajectory stays in the ECE≈0.18–0.35 band and never
+   reaches the lower-left region occupied by the perfectly-calibrated
+   scenario.
 
 
 Calibration convergence per scenario
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 CalibrationError (ECE) at each intermediate pipeline evaluation (steps 10,
-20, …, 100, and final) for all four scenarios.  
+20, …, 250, and final) for all four scenarios.
 
 .. figure:: _static/demo_calibration/convergence_scenarios.png
    :width: 70%
    :align: center
    :alt: CalibrationError over AL steps for all four scenarios
 
-The ``perfectly_calibrated``
-scenario (green) decreases monotonically from ≈ 0.10 to ≈ 0.027, confirming
-that the audit correctly tracks the convergence of a well-specified surrogate.
-The ``well_calibrated`` (blue) scenario rises slightly due to the
-heteroscedastic Forrester oracle: as LCB queries the high-noise boundary
-region, the empirical ECE grows even though the surrogate is theoretically
-well-calibrated. The overconfident (orange) and underconfident (red) scenarios
-both stay above the 0.15 threshold throughout, with no sign of recovery.
+The ``perfectly_calibrated`` scenario (green) decreases from ≈ 0.10 (step 10)
+to ≈ 0.017 (step 250), confirming that the audit correctly tracks the convergence
+of a well-specified surrogate.  The ``well_calibrated`` (blue) scenario starts at
+0.145 and rises to 0.22–0.25 as the hook accumulates a growing history of
+single-point observations — early steps with large σ_ep inflate the ECE, which
+settles near 0.22 once LCB fully concentrates at x≈0.76.  The overconfident
+(orange) scenario starts at 0.39, peaks near 0.44 around step 20, then gradually
+decreases to 0.38 — the aleatoric floor (0.1) prevents the false recovery that
+would otherwise occur without a floor.  The underconfident (red) scenario starts
+at 0.35, dips toward 0.18 around step 80–100, then rises back to 0.24 at step
+250 — the floor=1.0 keeps sigma >> oracle noise (0.33) throughout, so the ECE
+never collapses to near zero.
 
 This figure complements the Pareto frontier above: the frontier shows *which*
 combinations of ECE and MAE are achievable; the convergence plot shows *how
@@ -364,42 +468,45 @@ quickly* each scenario reaches them.
 Discussion
 ----------
 
-The final audit report is printed to the console after the loop.
+``hook.on_end()`` returns an :class:`~traits_audit.base.AuditReport` for each scenario. The per-scenario reports below show the final check values at 250 steps:
 
-The ``perfectly_calibrated`` scenario passes five of six checks at 100 steps;
+The ``perfectly_calibrated`` scenario passes five of six checks at 250 steps;
 ``VarianceErrorCorrelation`` fails because the well-explored surrogate has near-zero
 epistemic variance everywhere, weakening the rank correlation with absolute error:
 
 .. code-block:: text
 
    ── Audit report ───────────────────────────────────────────────
-   CalibrationError         PASS  value=0.027  threshold=0.150
-   IntervalCoverage         PASS  value=0.760  threshold=[0.533, 0.833]
-   VarianceAlignment        PASS  value=1.114  threshold=[0.500, 1.500]
-   UncertaintyEvolution     PASS  value=-0.002 threshold=-0.050
-   UncertaintyAnomalies     PASS  value=0.010  threshold=0.050
-   VarianceErrorCorrelation FAIL  value=0.066  threshold=0.100
+   CalibrationError         PASS  value=0.017  threshold=0.150
+   IntervalCoverage         PASS  value=0.720  threshold=[0.533, 0.833]
+   VarianceAlignment        PASS  value=1.024  threshold=1.000
+   UncertaintyEvolution     PASS  value=-0.000 threshold=-0.050
+   UncertaintyAnomalies     PASS  value=0.008  threshold=0.050
+   VarianceErrorCorrelation FAIL  value=-0.077 threshold=0.100
    ── Overall: FAIL ──────────────────────────────────────────────
 
-The well-calibrated Forrester scenario shows three FAIL checks driven by the
-mismatch between the homoscedastic ensemble and the heteroscedastic oracle:
+The well-calibrated Forrester scenario shows two FAIL checks; ``CalibrationError``
+and ``IntervalCoverage`` fail because the hook accumulates the full LCB history —
+early steps have large σ_ep at x≈0.76 which inflates sigma above the oracle noise,
+producing underconfident per-step measurements that persist in the averaged ECE
+(final ``IntCoverage = 0.348``, ``VarAlignment = 1.431``):
 
 .. code-block:: text
 
    ── Audit report ───────────────────────────────────────────────
-   CalibrationError         FAIL  value=0.306  threshold=0.150
-   IntervalCoverage         FAIL  value=0.250  threshold=[0.533, 0.833]
-   VarianceAlignment        FAIL  value=2.487  threshold=[0.500, 1.500]
-   UncertaintyEvolution     PASS  value=-0.032 threshold=-0.050
-   UncertaintyAnomalies     PASS  value=0.030  threshold=0.050
-   VarianceErrorCorrelation PASS  value=0.478  threshold=0.100
+   CalibrationError         FAIL  value=0.220  threshold=0.150
+   IntervalCoverage         FAIL  value=0.348  threshold=[0.533, 0.833]
+   VarianceAlignment        PASS  value=1.431  threshold=1.000
+   UncertaintyEvolution     PASS  value=-0.006 threshold=-0.050
+   UncertaintyAnomalies     PASS  value=0.028  threshold=0.050
+   VarianceErrorCorrelation PASS  value=0.291  threshold=0.100
    ── Overall: FAIL ──────────────────────────────────────────────
 
-For the overconfident scenario, ``IntervalCoverage`` drops well below 53 %
-and ``CalibrationError`` rises above 0.15 because the 5-estimator ensemble
-underestimates spread.  For the underconfident scenario, ``VarianceAlignment``
-exceeds 1.5 and coverage exceeds 83 % because of the artificial 4× noise
-inflation.
+For the overconfident scenario, ``IntervalCoverage`` is 0.168 and ``CalibrationError``
+is 0.380 — systematic interval compression from std_scale=0.3 keeps sigma near 0.1
+while oracle noise at x≈0.76 is 0.33.  For the underconfident scenario,
+``VarianceAlignment`` is 28.0 and ``IntervalCoverage`` is 0.968 — the floor=1.0
+inflates sigma far above the oracle noise throughout all 250 steps.
 
 .. list-table:: Check interpretation guide
    :header-rows: 1

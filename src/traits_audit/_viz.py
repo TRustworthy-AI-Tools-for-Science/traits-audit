@@ -9,6 +9,7 @@ produced by this module inherits the same typography and line weights.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -39,10 +40,15 @@ plt.rcParams.update(_RCPARAMS)
 #: Short labels for check names used on the x-axis of the check-grid heatmap.
 _CHECK_ABBREV: Dict[str, str] = {
     "CalibrationError":         "CalibError",
+    "ConformalCoverage":        "CnfCoverage",
+    "CRPS":                     "CRPS",
     "IntervalCoverage":         "IntCoverage",
-    "VarianceAlignment":        "VarAlignment",
+    "IntervalScore":            "IntScore",
+    "NegativeLogLikelihood":    "NegLogLik",
+    "PITUniformity":            "PITUnif",
     "UncertaintyEvolution":     "UncEvolution",
     "UncertaintyAnomalies":     "UncAnomalies",
+    "VarianceAlignment":        "VarAlignment",
     "VarianceErrorCorrelation": "VarErrCorr",
 }
 
@@ -130,7 +136,10 @@ def plot_poles(
     mags  = np.abs(eigs)
     max_m = float(mags.max())
 
-    lim = max(1.5, max_m * 1.15) if max_m <= 5.0 else 1.5
+    # Expand view to show all poles, but cap at ±5 so the unit circle stays
+    # prominent (occupies ≥ 20% of the plot width). Poles beyond the cap are
+    # annotated. This avoids the hard cliff in the original max_m <= 5 branch.
+    lim = max(1.5, min(max_m * 1.15, 5.0))
 
     theta = np.linspace(0, 2 * np.pi, 300)
     ax.plot(np.cos(theta), np.sin(theta), "k--", lw=0.8, alpha=0.5,
@@ -237,6 +246,114 @@ def plot_stability_vs_uncertainty(
     fig.tight_layout()
     _save(fig, out_dir, "fig3_stability_vs_unc")
     print("  Saved fig3_stability_vs_unc.png")
+
+
+def plot_grid_check(
+    predict_fn,
+    predictor,
+    op_states: np.ndarray,
+    model_label: str,
+    out_dir: Path,
+    n_grid: int = 20,
+    b_slice: float | None = None,
+    dim_labels: tuple[str, str, str] = ("dim 0", "dim 1", "dim 2"),
+) -> None:
+    """GP mean, std, and |λ_max| on a regular 2-D grid.
+
+    Sweeps a grid over dimensions 0–1 while holding dimension 2 fixed at
+    *b_slice* (default: mean of ``op_states[:, 2]``).  Three side-by-side
+    panels are produced; queried operating points are overlaid as scatter.
+
+    Parameters
+    ----------
+    predict_fn
+        ``(state_3: ndarray) → (mean: float, std: float)`` in raw surrogate
+        units.
+    predictor
+        GD-step predictor from :func:`make_gd_predictor`; used to compute the
+        Jacobian and |λ_max| via central differences at each grid cell.
+    op_states
+        (N, 3) queried operating points in normalised [0, 1]³ space.
+    dim_labels
+        Axis labels for the three input dimensions.
+    """
+    from matplotlib.colors import TwoSlopeNorm
+
+    if b_slice is None:
+        b_slice = float(np.mean(op_states[:, 2]))
+
+    xs = np.linspace(0.0, 1.0, n_grid)
+    ys = np.linspace(0.0, 1.0, n_grid)
+
+    mean_grid = np.full((n_grid, n_grid), np.nan)
+    std_grid  = np.full((n_grid, n_grid), np.nan)
+    lmax_grid = np.full((n_grid, n_grid), np.nan)
+
+    print(
+        f"  Grid check — {n_grid}×{n_grid} at "
+        f"{dim_labels[2]}={b_slice:.3f} …",
+        flush=True,
+    )
+    for i, y in enumerate(ys):
+        for j, x in enumerate(xs):
+            state = np.array([x, y, b_slice])
+            mu, sigma = predict_fn(state)
+            if not (np.isnan(mu) or np.isnan(sigma)):
+                mean_grid[i, j] = mu
+                std_grid[i, j]  = sigma
+            try:
+                stab = eigenvalues_and_stability(numerical_jacobian(predictor, state))
+                lmax_grid[i, j] = stab["lambda_max"]
+            except Exception:
+                pass
+
+    extent   = [0.0, 1.0, 0.0, 1.0]
+    qx, qy   = op_states[:, 0], op_states[:, 1]
+    dot_kw   = dict(c="white", s=14, edgecolors="k", linewidths=0.5, zorder=3)
+
+    fig, axes = plt.subplots(1, 3, figsize=(10.5, 3.5))
+
+    # ── Panel 1: GP mean ──────────────────────────────────────────────────────
+    ax = axes[0]
+    im = ax.imshow(mean_grid, origin="lower", extent=extent,
+                   aspect="auto", cmap="viridis")
+    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    ax.scatter(qx, qy, **dot_kw, label="Queried")
+    ax.set_xlabel(dim_labels[0])
+    ax.set_ylabel(dim_labels[1])
+    ax.set_title(f"GP mean  [{dim_labels[2]}={b_slice:.2f}]")
+    ax.legend(fontsize=7, frameon=False, loc="lower right")
+
+    # ── Panel 2: GP std ───────────────────────────────────────────────────────
+    ax = axes[1]
+    im = ax.imshow(std_grid, origin="lower", extent=extent,
+                   aspect="auto", cmap="plasma")
+    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    ax.scatter(qx, qy, **dot_kw)
+    ax.set_xlabel(dim_labels[0])
+    ax.set_title(f"GP std  [{dim_labels[2]}={b_slice:.2f}]")
+
+    # ── Panel 3: |λ_max| stability ────────────────────────────────────────────
+    ax = axes[2]
+    lm_lo = float(np.nanpercentile(lmax_grid, 2))
+    lm_hi = float(np.nanpercentile(lmax_grid, 98))
+    lm_lo = min(lm_lo, 0.98)
+    lm_hi = max(lm_hi, 1.02)
+    norm = TwoSlopeNorm(vcenter=1.0, vmin=lm_lo, vmax=lm_hi)
+    im = ax.imshow(lmax_grid, origin="lower", extent=extent,
+                   aspect="auto", cmap="coolwarm", norm=norm)
+    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="|λ_max|")
+    if lm_lo < 1.0 < lm_hi:
+        ax.contour(xs, ys, lmax_grid, levels=[1.0],
+                   colors=["k"], linewidths=[0.8], linestyles=["--"])
+    ax.scatter(qx, qy, **dot_kw)
+    ax.set_xlabel(dim_labels[0])
+    ax.set_title(f"|λ_max|  [{dim_labels[2]}={b_slice:.2f}]")
+
+    fig.suptitle(model_label, fontsize=10)
+    fig.tight_layout()
+    _save(fig, out_dir, "fig_grid_check")
+    print("  Saved fig_grid_check.png")
 
 
 def plot_pareto_frontier(
@@ -380,7 +497,15 @@ def plot_audit_evolution(
     out_dir: Path,
     snapshot_every: int = 5,
 ) -> None:
-    """6-panel figure: each audit check metric vs AL step (fig6)."""
+    """Per-check metric vs AL step, one subplot per check (fig6).
+
+    Each subplot shows the metric value at every snapshot step.  Dots are
+    coloured green (pass) or red (fail).  A dashed black horizontal line marks
+    the pass/fail threshold where one is defined; for ``IntervalCoverage`` the
+    acceptable band bounds are drawn as two lines.  Scoring checks without a
+    threshold (CRPS, NLL, IntervalScore configured with ``threshold=None``)
+    show no threshold line.
+    """
     n_steps = len(history)
     if n_steps < snapshot_every:
         return
@@ -391,6 +516,7 @@ def plot_audit_evolution(
 
     records: dict[str, tuple[list, list]] = {}
     pass_at: dict[str, list[bool]] = {}
+    thresholds: dict[str, Any] = {}
 
     for k in snap_steps:
         sub = history[:k]
@@ -404,6 +530,8 @@ def plot_audit_evolution(
             records.setdefault(r.name, ([], []))[0].append(k)
             records[r.name][1].append(r.value)
             pass_at.setdefault(r.name, []).append(r.passed)
+            if r.name not in thresholds and r.threshold is not None:
+                thresholds[r.name] = r.threshold
 
     if not records:
         return
@@ -423,6 +551,19 @@ def plot_audit_evolution(
         colors = ["#27ae60" if p else "#c0392b" for p in passed]
         ax.plot(xs, ys, color="C0", lw=1.2)
         ax.scatter(xs, ys, c=colors, s=18, zorder=3)
+
+        t = thresholds.get(name)
+        if t is not None:
+            if name == "VarianceAlignment" and not isinstance(t, tuple):
+                tol = 0.50
+                ax.axhline(float(t) - tol, color="k", lw=0.8, ls="--", alpha=0.5)
+                ax.axhline(float(t) + tol, color="k", lw=0.8, ls="--", alpha=0.5)
+            elif isinstance(t, tuple):
+                ax.axhline(t[0], color="k", lw=0.8, ls="--", alpha=0.5)
+                ax.axhline(t[1], color="k", lw=0.8, ls="--", alpha=0.5)
+            else:
+                ax.axhline(float(t), color="k", lw=0.8, ls="--", alpha=0.5)
+
         ax.set_title(name.replace("Check", ""),
                      fontsize=_RCPARAMS["legend.fontsize"])
         ax.set_xlabel("Step")
@@ -541,7 +682,7 @@ def _fig_check_grid(
     stage_reports: "list[tuple[str, Any]]",
     run_name: str,
 ) -> Any:
-    """Plotly heatmap: rows = pipeline stages, cols = audit checks.
+    """Plotly heatmap: rows = audit checks, cols = pipeline stages.
 
     Cell intensity encodes how far the metric sits from the pass/fail
     threshold: dark green = deeply passing, white = at threshold,
@@ -553,12 +694,28 @@ def _fig_check_grid(
     abbrevs = [_CHECK_ABBREV.get(n, n) for n in check_names]
     stage_labels = [label for label, _ in stage_reports]
 
-    z, text, hover = [], [], []
+    # Build [stage][check] intermediate arrays then transpose to [check][stage].
+    z_by_stage, text_by_stage, hover_by_stage = [], [], []
     for label, rep in stage_reports:
         z_row, text_row, hover_row = [], [], []
         for result in rep.results:
             z_row.append(_result_intensity(result))
-            text_row.append(f"{result.value:.3f}" if result.value is not None else "—")
+            if result.value is None:
+                cell = "—"
+            else:
+                v = result.value
+                for fmt in (".3f", ".2f", ".1f", ".0f"):
+                    s = format(v, fmt)
+                    if len(s) <= 5:
+                        cell = s
+                        break
+                else:
+                    raw = f"{v:.0e}"
+                    mantissa, exp_part = raw.split("e")
+                    exp_sign = exp_part[0]
+                    exp_digits = exp_part[1:].lstrip("0") or "0"
+                    cell = f"{mantissa}e{exp_digits}" if exp_sign == "+" else f"{mantissa}e-{exp_digits}"
+            text_row.append(cell)
             t = result.threshold
             if t is None:
                 thresh = "—"
@@ -574,17 +731,25 @@ def _fig_check_grid(
                 f"{'✓ PASS' if result.passed else '✗ FAIL'}<br>"
                 f"<i>{result.message}</i>"
             )
-        z.append(z_row)
-        text.append(text_row)
-        hover.append(hover_row)
+        z_by_stage.append(z_row)
+        text_by_stage.append(text_row)
+        hover_by_stage.append(hover_row)
+
+    # Transpose so rows = checks, cols = stages.
+    n_checks = len(check_names)
+    n_stages = len(stage_labels)
+    z     = [[z_by_stage[s][c]     for s in range(n_stages)] for c in range(n_checks)]
+    text  = [[text_by_stage[s][c]  for s in range(n_stages)] for c in range(n_checks)]
+    hover = [[hover_by_stage[s][c] for s in range(n_stages)] for c in range(n_checks)]
 
     fig = go.Figure(go.Heatmap(
         z=z,
-        x=abbrevs,
-        y=stage_labels,
+        x=stage_labels,
+        y=abbrevs,
         text=text,
         customdata=hover,
         texttemplate="<b>%{text}</b>",
+        textfont=dict(size=11),
         colorscale=[
             [0.00, "#7b0000"],
             [0.25, "#c0392b"],
@@ -606,10 +771,11 @@ def _fig_check_grid(
             text=f"Audit check summary — {run_name}",
             font=dict(size=15),
         ),
-        xaxis=dict(title="Audit check", side="top", tickfont=dict(size=12)),
-        yaxis=dict(title="Pipeline stage", tickfont=dict(size=12)),
-        height=max(280, len(stage_reports) * 72 + 120),
-        margin=dict(l=100, r=30, t=100, b=30),
+        xaxis=dict(title="Pipeline stage", side="top", tickfont=dict(size=13)),
+        yaxis=dict(title="Audit check", tickfont=dict(size=13), autorange="reversed"),
+        height=max(260, n_checks * 44 + 100),
+        width=max(600, n_stages * 40 + 200),
+        margin=dict(l=150, r=20, t=90, b=20),
         plot_bgcolor="#f8f9fa",
     )
     return fig
@@ -856,6 +1022,505 @@ def _fig_calibration_curves_all(
     return fig
 
 
+def _fig_metric_correlations(
+    intermediate_reports: "list[Any]",
+    run_name: str,
+) -> Any:
+    """Matplotlib figure: pairwise correlations of audit check metrics over time.
+
+    Computes Spearman correlations between all combinations of audit check
+    result values (CalibrationError, IntervalCoverage, VarianceAlignment, etc.)
+    across all intermediate pipeline stages.
+
+    Parameters
+    ----------
+    intermediate_reports : list[AuditReport]
+        Intermediate reports from hook.intermediate_reports or a full report list.
+    run_name : str
+        Scenario name for figure title.
+
+    Returns
+    -------
+    matplotlib figure object, or None if insufficient data
+    """
+    from scipy.stats import spearmanr
+
+    if not intermediate_reports:
+        return None
+
+    # Extract all check names and their values across stages
+    check_names = []
+    stage_values: dict[str, list[float]] = {}
+    
+    for report in intermediate_reports:
+        if not hasattr(report, 'results'):
+            continue
+        for result in report.results:
+            check_name = result.name
+            if check_name not in check_names:
+                check_names.append(check_name)
+            if check_name not in stage_values:
+                stage_values[check_name] = []
+            
+            # Use the result value if available, otherwise skip
+            if result.value is not None:
+                stage_values[check_name].append(float(result.value))
+            else:
+                stage_values[check_name].append(np.nan)
+    
+    # Filter to only checks with data across all or most stages
+    available_checks = [
+        name for name in check_names
+        if name in stage_values and len(stage_values[name]) > 0
+    ]
+    
+    if len(available_checks) < 2:
+        return None
+
+    # Ensure all check value lists have the same length
+    n_stages = len(intermediate_reports)
+    for check_name in available_checks:
+        vals = stage_values[check_name]
+        if len(vals) < n_stages:
+            # Pad with NaN if necessary
+            stage_values[check_name] = vals + [np.nan] * (n_stages - len(vals))
+
+    # Compute the correlation matrix between all checks
+    n_checks = len(available_checks)
+    corr_matrix = np.zeros((n_checks, n_checks))
+    
+    for i, check1 in enumerate(available_checks):
+        for j, check2 in enumerate(available_checks):
+            if i == j:
+                corr_matrix[i, j] = 1.0
+            else:
+                v1 = np.array(stage_values[check1], dtype=float)
+                v2 = np.array(stage_values[check2], dtype=float)
+                
+                # Only compute if both have sufficient valid data
+                valid = ~(np.isnan(v1) | np.isnan(v2))
+                if valid.sum() > 2:
+                    try:
+                        rho, _ = spearmanr(v1[valid], v2[valid])
+                        corr_matrix[i, j] = float(rho) if not np.isnan(rho) else 0.0
+                    except Exception:
+                        corr_matrix[i, j] = 0.0
+                else:
+                    corr_matrix[i, j] = 0.0
+
+    # Create figure
+    fig_size = min(max(5.0, n_checks * 0.6), 12.0)
+    fig, ax = plt.subplots(figsize=(fig_size, fig_size * 0.95))
+    
+    # Plot heatmap
+    im = ax.imshow(corr_matrix, cmap="RdBu_r", vmin=-1, vmax=1, aspect="auto")
+    
+    # Annotate with correlation values
+    for i in range(n_checks):
+        for j in range(n_checks):
+            val = corr_matrix[i, j]
+            text_color = "white" if abs(val) > 0.5 else "black"
+            ax.text(j, i, f"{val:.2f}", ha="center", va="center",
+                   color=text_color, fontsize=9, weight="bold")
+    
+    # Set ticks and labels
+    ax.set_xticks(range(n_checks))
+    ax.set_yticks(range(n_checks))
+    
+    # Abbreviate check names for display
+    check_abbrevs = [_CHECK_ABBREV.get(name, name[:12]) for name in available_checks]
+    ax.set_xticklabels(check_abbrevs, rotation=45, ha="right", fontsize=10)
+    ax.set_yticklabels(check_abbrevs, fontsize=10)
+    
+    # Add grid
+    ax.set_xticks(np.arange(n_checks) - 0.5, minor=True)
+    ax.set_yticks(np.arange(n_checks) - 0.5, minor=True)
+    ax.grid(which="minor", color="gray", linestyle="-", linewidth=0.8, alpha=0.4)
+    
+    ax.set_title(
+        f"Audit check correlations — {run_name}\n"
+        f"(Spearman ρ across {n_stages} pipeline stages)",
+        fontsize=12, weight="bold", pad=15,
+    )
+    ax.set_xlabel("Audit check", fontsize=11, weight="bold")
+    ax.set_ylabel("Audit check", fontsize=11, weight="bold")
+    
+    # Add colorbar
+    cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label("Spearman ρ", rotation=270, labelpad=18, fontsize=10, weight="bold")
+    
+    fig.tight_layout()
+    
+    return fig
+
+
+
+
+# ── Composition-space exploration figure ────────────────────────────────────
+
+#: Pauling electronegativities used to encode binary-compound composition space.
+_EN: Dict[str, float] = {
+    "H": 2.20, "Li": 0.98, "Be": 1.57, "B": 2.04, "C": 2.55, "N": 3.04,
+    "O": 3.44, "F": 3.98, "Na": 0.93, "Mg": 1.31, "Al": 1.61, "Si": 1.90,
+    "P": 2.19, "S": 2.58, "Cl": 3.16, "K": 0.82, "Ca": 1.00, "Sc": 1.36,
+    "Ti": 1.54, "V": 1.63, "Cr": 1.66, "Mn": 1.55, "Fe": 1.83, "Co": 1.88,
+    "Ni": 1.91, "Cu": 1.90, "Zn": 1.65, "Ga": 1.81, "Ge": 2.01, "As": 2.18,
+    "Se": 2.55, "Br": 2.96, "Rb": 0.82, "Sr": 0.95, "Y": 1.22, "Zr": 1.33,
+    "Nb": 1.60, "Mo": 2.16, "Tc": 1.90, "Ru": 2.20, "Rh": 2.28, "Pd": 2.20,
+    "Ag": 1.93, "Cd": 1.69, "In": 1.78, "Sn": 1.96, "Sb": 2.05, "Te": 2.10,
+    "I": 2.66, "Cs": 0.79, "Ba": 0.89, "La": 1.10, "Ce": 1.12, "Pr": 1.13,
+    "Nd": 1.14, "Sm": 1.17, "Eu": 1.20, "Gd": 1.20, "Tb": 1.10, "Dy": 1.22,
+    "Ho": 1.23, "Er": 1.24, "Tm": 1.25, "Yb": 1.10, "Lu": 1.27, "Hf": 1.30,
+    "Ta": 1.50, "W": 2.36, "Re": 1.90, "Os": 2.20, "Ir": 2.20, "Pt": 2.28,
+    "Au": 2.54, "Hg": 2.00, "Tl": 1.62, "Pb": 2.33, "Bi": 2.02, "Ac": 1.10,
+    "Th": 1.30, "U": 1.38,
+}
+
+_EL_RE = re.compile(r"([A-Z][a-z]?)[\d.]*")
+
+
+def _parse_en_pair(formula: str):
+    """Return (en_low, en_high) for a binary formula, or None."""
+    elems = list(dict.fromkeys(_EL_RE.findall(str(formula))))
+    if len(elems) != 2:
+        return None
+    ea, eb = _EN.get(elems[0], 0.0), _EN.get(elems[1], 0.0)
+    if ea == 0.0 or eb == 0.0:
+        return None
+    return (min(ea, eb), max(ea, eb))
+
+
+def plot_exploration_campaign(
+    df_all: Any,
+    feat: list,
+    target: str,
+    seed_df: Any,
+    queried_batches: list,
+    model_label: str,
+    out_dir: Path,
+) -> None:
+    """Materials exploration map and chemical-space coverage (fig9).
+
+    Left panel — composition space (Pauling EN axes, shown as a hexbin density
+    map) when the dataframe has a ``Composition`` column, otherwise a 2-D PCA
+    projection.  Each queried batch is overlaid as coloured circles (plasma,
+    dark = early, bright = late).
+
+    Right panel — cumulative coverage and per-step batch novelty, both
+    computed in the **same 2-D space** as the left panel.  Computing in 2-D
+    avoids the curse of dimensionality that inflates the 1-NN radius in
+    high-dimensional feature space and causes coverage to saturate at 100 %
+    immediately.
+
+    * **Coverage** (solid line): fraction of the full pool whose nearest
+      neighbour in the queried set falls within the coverage radius.
+    * **Batch novelty** (bars): fraction of each queried batch that lies
+      outside the coverage radius of all previously queried points.
+    """
+    import matplotlib.colors as mcolors
+    import matplotlib.ticker as mticker
+    from matplotlib.gridspec import GridSpec
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import Patch
+    has_comp = "Composition" in df_all.columns
+
+    # ── Build 2-D coordinates (EN or PCA) ────────────────────────────────────
+    batch_coords_2d: list[np.ndarray] = []
+
+    if has_comp:
+        pairs_all = df_all["Composition"].map(_parse_en_pair)
+        valid_all = pairs_all.notna()
+        xs_all = np.array([v[0] for v in pairs_all[valid_all]], dtype=float)
+        ys_all = np.array([v[1] for v in pairs_all[valid_all]], dtype=float)
+
+        pairs_seed = seed_df["Composition"].map(_parse_en_pair)
+        valid_seed = pairs_seed.notna()
+        xs_seed = np.array([v[0] for v in pairs_seed[valid_seed]], dtype=float)
+        ys_seed = np.array([v[1] for v in pairs_seed[valid_seed]], dtype=float)
+
+        xs_q, ys_q, step_q = [], [], []
+        for k, batch in enumerate(queried_batches):
+            pts = []
+            for _, row in batch.iterrows():
+                pair = _parse_en_pair(str(row.get("Composition", "")))
+                if pair:
+                    pts.append(pair)
+                    xs_q.append(pair[0])
+                    ys_q.append(pair[1])
+                    step_q.append(k)
+            batch_coords_2d.append(
+                np.array(pts, dtype=float) if pts else np.empty((0, 2))
+            )
+
+        xlabel = "Pauling EN  (electropositive)"
+        ylabel = "Pauling EN  (electronegative)"
+        panel_title = "Composition space"
+
+    else:
+        from sklearn.decomposition import PCA
+
+        common_feat = [c for c in feat if c in df_all.columns]
+        X_all = df_all[common_feat].values.astype(float)
+        nc = min(2, X_all.shape[1], len(X_all) - 1)
+        pca = PCA(n_components=nc)
+        Z_all = pca.fit_transform(X_all)
+        xs_all = Z_all[:, 0]
+        ys_all = Z_all[:, 1] if nc > 1 else np.zeros(len(Z_all))
+
+        common_s = [c for c in feat if c in seed_df.columns]
+        Z_seed = pca.transform(seed_df[common_s].values.astype(float))
+        xs_seed = Z_seed[:, 0]
+        ys_seed = Z_seed[:, 1] if nc > 1 else np.zeros(len(Z_seed))
+
+        xs_q, ys_q, step_q = [], [], []
+        for k, batch in enumerate(queried_batches):
+            common_b = [c for c in feat if c in batch.columns]
+            if common_b:
+                Z_b = pca.transform(batch[common_b].values.astype(float))
+                b_x = Z_b[:, 0]
+                b_y = Z_b[:, 1] if Z_b.shape[1] > 1 else np.zeros(len(Z_b))
+                pts = np.column_stack([b_x, b_y])
+            else:
+                pts = np.empty((0, 2))
+            batch_coords_2d.append(pts)
+            for i in range(len(pts)):
+                xs_q.append(pts[i, 0])
+                ys_q.append(pts[i, 1])
+                step_q.append(k)
+
+        xlabel = "PC 1"
+        ylabel = "PC 2"
+        panel_title = "Feature space  (PCA)"
+
+    xs_q = np.array(xs_q, dtype=float)
+    ys_q = np.array(ys_q, dtype=float)
+    step_q = np.array(step_q, dtype=int)
+    n_steps = len(queried_batches)
+    step_norm = mcolors.Normalize(vmin=0, vmax=max(1, n_steps - 1))
+
+    # ── Coverage / novelty via coarse EN/PCA grid ────────────────────────────
+    # Grid-based metrics avoid the NN-radius degeneracy: a fine radius makes
+    # coverage trivially low and novelty trivially 100% because each point
+    # covers a tiny neighbourhood.  A coarse grid (12×12 bins) assigns each
+    # point to a cell; coverage = cumulative fraction of non-empty pool cells
+    # visited; novelty = fraction of each batch landing in cells not yet seen.
+    # With ~50-80 non-empty cells in a 12×12 grid, both metrics vary over a
+    # meaningful range throughout the 50-step campaign.
+    cov_vals: list[float] = []
+    nov_vals: list[float] = []
+    coords_all_2d = (
+        np.column_stack([xs_all, ys_all]) if len(xs_all) else np.empty((0, 2))
+    )
+    coords_seed_2d = (
+        np.column_stack([xs_seed, ys_seed]) if len(xs_seed) else np.empty((0, 2))
+    )
+
+    if len(coords_all_2d) >= 2 and len(coords_seed_2d) >= 1:
+        _N_BINS = 12
+        _x_edges = np.linspace(coords_all_2d[:, 0].min(),
+                               coords_all_2d[:, 0].max() + 1e-9, _N_BINS + 1)
+        _y_edges = np.linspace(coords_all_2d[:, 1].min(),
+                               coords_all_2d[:, 1].max() + 1e-9, _N_BINS + 1)
+
+        def _cells(xy: np.ndarray) -> set:
+            if len(xy) == 0:
+                return set()
+            xi = np.clip(np.searchsorted(_x_edges, xy[:, 0], side="right") - 1,
+                         0, _N_BINS - 1)
+            yi = np.clip(np.searchsorted(_y_edges, xy[:, 1], side="right") - 1,
+                         0, _N_BINS - 1)
+            return set(zip(xi.tolist(), yi.tolist()))
+
+        _pool_cells = _cells(coords_all_2d)
+        n_pool_cells = max(len(_pool_cells), 1)
+        _visited = _cells(coords_seed_2d)
+
+        for batch_xy in batch_coords_2d:
+            batch_cells = _cells(batch_xy)
+            new_cells = batch_cells - _visited
+            nov_vals.append(
+                len(new_cells) / max(len(batch_cells), 1) if batch_cells else 0.0
+            )
+            _visited |= batch_cells
+            cov_vals.append(len(_visited & _pool_cells) / n_pool_cells)
+
+    with plt.rc_context(_RCPARAMS):
+        fig = plt.figure(figsize=(7.5, 3.8))
+        gs = GridSpec(1, 2, figure=fig, width_ratios=[1.4, 1.0], wspace=0.52)
+
+        # ── Left panel: exploration map ─────────────────────────────────────
+        ax1 = fig.add_subplot(gs[0])
+
+        if has_comp and len(xs_all):
+            # Hexbin shows material density — cleaner than individual dots
+            # because many OQMD compounds share identical Pauling EN coordinates.
+            # No colorbar: lighter hex = fewer compounds, darker = denser cluster.
+            ax1.hexbin(xs_all, ys_all, gridsize=28, cmap="Greys",
+                       mincnt=1, linewidths=0.15, alpha=0.70, zorder=1)
+        elif len(xs_all):
+            ax1.scatter(xs_all, ys_all, c="grey", s=4, alpha=0.2,
+                        linewidths=0, rasterized=True, zorder=1)
+
+        if len(xs_seed):
+            ax1.scatter(xs_seed, ys_seed, s=30, marker="D",
+                        facecolors="#2c3e8c", edgecolors="white", linewidths=0.6,
+                        zorder=3, label="Seed")
+
+        if len(xs_q):
+            sc = ax1.scatter(xs_q, ys_q, c=step_q, cmap="plasma", norm=step_norm,
+                             s=20, marker="o", edgecolors="k", linewidths=0.3,
+                             alpha=0.85, zorder=4, label="Queried")
+            cb = plt.colorbar(sc, ax=ax1, fraction=0.034, pad=0.01, shrink=0.75)
+            cb.set_label("AL step", fontsize=7)
+            cb.ax.tick_params(labelsize=6)
+
+        if has_comp:
+            ax1.set_xlim(0.75, 4.15)
+            ax1.set_ylim(0.75, 4.15)
+
+        ax1.set_xlabel(xlabel, labelpad=3)
+        ax1.set_ylabel(ylabel, labelpad=2)
+        ax1.set_title(None)
+        ax1.legend(fontsize=7, framealpha=0.85, loc="upper left",
+                   handletextpad=0.3, borderpad=0.4)
+        ax1.grid(False)
+
+        # ── Right panel: coverage + novelty ─────────────────────────────────
+        ax2 = fig.add_subplot(gs[1])
+
+        if cov_vals:
+            al_steps = np.arange(1, len(cov_vals) + 1)
+            cov_arr = np.array(cov_vals)
+            nov_arr = np.array(nov_vals)
+
+            ax2.bar(al_steps, nov_arr, width=0.75, color="C1",
+                    alpha=0.45, zorder=2)
+            ax2.fill_between(al_steps, 0, cov_arr, alpha=0.18,
+                             color="C0", linewidth=0)
+            ax2.plot(al_steps, cov_arr, color="C0", lw=1.8, zorder=3)
+
+            ax2.set_ylim(0, 1.05)
+            ax2.yaxis.set_major_formatter(
+                mticker.FuncFormatter(lambda y, _: f"{y:.0%}")
+            )
+            legend_handles = [
+                Line2D([0], [0], color="C0", lw=1.8, label="Coverage"),
+                Patch(facecolor="C1", alpha=0.55, label="Batch novelty"),
+            ]
+            ax2.legend(handles=legend_handles, fontsize=7,
+                       framealpha=0.85, loc="upper right")
+
+        ax2.set_xlabel("AL step", labelpad=3)
+        ax2.set_ylabel("Fraction of pool  /  batch", labelpad=2)
+        ax2.set_title(None)
+        ax2.grid(False)
+
+        fig.tight_layout()
+        _save(fig, out_dir, "fig9_exploration_campaign")
+        print("  Saved fig9_exploration_campaign.png")
+
+
+def plot_discovery_rate(
+    y_true_per_batch: list,
+    df_all_target: "np.ndarray",
+    stability_threshold: float,
+    model_label: str,
+    out_dir: Path,
+) -> None:
+    """Cumulative stable materials discovered vs random baseline (fig11).
+
+    The primary evaluation metric of Montoya et al. (2020): how many
+    stable/near-stable materials does the AL agent find per DFT calculation,
+    compared to selecting candidates at random?
+
+    A material is counted as "discovered stable" if its true target value
+    (delta_e) falls at or below ``stability_threshold``.  The threshold is
+    set to the 25th percentile of the full pool so the figure is meaningful
+    for both real OQMD data and the synthetic fallback.
+
+    Parameters
+    ----------
+    y_true_per_batch :
+        List of 1-D arrays, one per AL step, each containing the true target
+        values for that step's queried batch.
+    df_all_target :
+        True target values for every material in the full pool (seed + cand).
+    stability_threshold :
+        Materials with target ≤ threshold are considered stable.
+    model_label, out_dir :
+        Forwarded to title and ``_save``.
+    """
+    import matplotlib.ticker as mticker
+
+    n_pool = len(df_all_target)
+    n_stable_total = int((np.asarray(df_all_target) <= stability_threshold).sum())
+    stable_frac = n_stable_total / max(n_pool, 1)
+
+    cum_found: list[int] = []
+    cum_queries: list[int] = []
+    running = 0
+    running_q = 0
+    for batch_y in y_true_per_batch:
+        b = np.asarray(batch_y, dtype=float)
+        running += int((b <= stability_threshold).sum())
+        running_q += len(b)
+        cum_found.append(running)
+        cum_queries.append(running_q)
+
+    if not cum_queries:
+        return
+
+    cum_found_arr  = np.array(cum_found,   dtype=float)
+    cum_q_arr      = np.array(cum_queries, dtype=float)
+
+    # Random baseline: E[found at k queries] = k × stable_frac (hypergeometric)
+    rand_exp = cum_q_arr * stable_frac
+    rand_std = np.sqrt(cum_q_arr * stable_frac * (1.0 - stable_frac))
+
+    with plt.rc_context(_RCPARAMS):
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7.0, 3.0))
+
+        # ── Left: absolute count ────────────────────────────────────────────
+        ax1.plot(cum_q_arr, cum_found_arr, color="C0", lw=1.5, label=model_label)
+        ax1.plot(cum_q_arr, rand_exp, color="k", lw=1.0, ls="--", alpha=0.65,
+                 label="Random baseline")
+        ax1.fill_between(cum_q_arr,
+                         np.maximum(rand_exp - rand_std, 0), rand_exp + rand_std,
+                         color="k", alpha=0.10, linewidth=0)
+        ax1.set_xlabel("Cumulative AL queries")
+        ax1.set_ylabel("Stable materials found")
+
+        ax1.legend(frameon=False)
+        ax1.text(0.98, 0.05,
+                 f"Stable in pool: {n_stable_total}/{n_pool} ({stable_frac:.1%})",
+                 transform=ax1.transAxes, ha="right", va="bottom", fontsize=7,
+                 color="grey")
+        ax1.grid(False)
+
+        # ── Right: enrichment factor = AL found / random expected ──────────
+        # Scale-invariant metric: > 1 means outperforming random, regardless
+        # of pool size or absolute number of queries.
+        enrichment = cum_found_arr / np.where(rand_exp > 0, rand_exp, np.nan)
+
+        ax2.plot(cum_q_arr, enrichment, color="C0", lw=1.5, label=model_label)
+        ax2.axhline(1.0, color="k", lw=1.0, ls="--", alpha=0.65, label="Random (= 1×)")
+        ax2.set_xlabel("Cumulative AL queries")
+        ax2.set_ylabel("Enrichment factor  (AL / random)")
+
+        ax2.legend(frameon=False)
+        ax2.grid(False)
+
+        # Annotate final enrichment
+        final_enrich = float(enrichment[np.isfinite(enrichment)][-1]) if np.any(np.isfinite(enrichment)) else 1.0
+        ax2.text(0.98, 0.95,
+                 f"Final: {final_enrich:.1f}× random",
+                 transform=ax2.transAxes, ha="right", va="top", fontsize=8, color="C0")
+
+        fig.tight_layout()
+        _save(fig, out_dir, "fig11_discovery_rate")
+        print("  Saved fig11_discovery_rate.png")
+
+
 # ── Convenience runner ──────────────────────────────────────────────────────
 
 def run_lyapunov_analysis(
@@ -945,4 +1610,5 @@ def run_lyapunov_analysis(
         "eigenvalues": all_eigs_flat,
         "P":           P,
         "csv_path":    csv_path,
+        "n_stable":    n_stable,
     }

@@ -5,10 +5,11 @@
 </p>
 
 ![version](https://img.shields.io/badge/version-0.1.0-blue)
-![python](https://img.shields.io/badge/python-3.10%2B-blue)
+![python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![license](https://img.shields.io/badge/license-MIT-green)
 ![tests](https://github.com/TRustworthy-AI-Tools-for-Science/traits-audit/actions/workflows/ci.yml/badge.svg)
 ![docs](https://github.com/TRustworthy-AI-Tools-for-Science/traits-audit/actions/workflows/docs-pages.yml/badge.svg)
+[![codecov](https://codecov.io/gh/TRustworthy-AI-Tools-for-Science/traits-audit/graph/badge.svg)](https://codecov.io/gh/TRustworthy-AI-Tools-for-Science/traits-audit)
 
 
 A flexible uncertainty audit pipeline that hooks into any pre-existing active learning loop.
@@ -17,14 +18,21 @@ A flexible uncertainty audit pipeline that hooks into any pre-existing active le
 ## Installation
 
 ```bash
-# as a uv workspace member (recommended — editable, no reinstall needed)
+# uv workspace (recommended — editable, no reinstall needed on source changes)
 uv sync --all-packages
 
-# standalone into any environment
-pip install ./traits-audit
+# individual optional extras
+uv sync --extra sdl
+uv sync --extra pybamm
+uv sync --extra mlflow
+uv sync --extra camd        # see Demo 3 note below for two extra pip steps
 
-# Install all components at once
-pip install "./traits-audit[pybamm,camd,sdl]"
+# standalone pip install
+pip install "."
+pip install ".[pybamm]"
+pip install ".[sdl]"
+pip install ".[mlflow]"
+# camd — see Demo 3 note below
 ```
 
 ## Documentation
@@ -53,8 +61,7 @@ ta-demo --steps 60 --seed 7
 ta-demo --help
 ```
 
-The demo source is at `bin/example_al_pipeline.py` (delegates to
-`traits_audit._example`).
+The demo entry point is `ta-demo` (source: `src/traits_audit/_example.py`).
 
 ## Built-in checks
 
@@ -143,13 +150,26 @@ using an AdaBoost committee surrogate.  Performs Lyapunov stability analysis
 on the learned surrogate in PCA-reduced feature space after the loop.
 
 ```bash
-pip install "./traits-audit[camd]"
-
 ta-camd-demo                                   # 50 iterations, 4 queries/iter
 ta-camd-demo --n-iter 30 --n-query 6 --seed 7
 ta-camd-demo --out-dir _results/camd
 ta-camd-demo --help
 ```
+
+> **Note — extra install steps required:** `camd` and `qmpy-tri` pin
+> old versions of scipy/bokeh that conflict with other extras, so they must
+> be installed without their declared dependencies:
+>
+> ```bash
+> pip install "./traits-audit[camd]"   # pymatgen, matminer, django, PuLP, …
+> pip install camd --no-deps           # camd package (skips scipy-pinning GPy)
+> pip install qmpy-tri --no-deps       # qmpy thermodynamics (skips old bokeh pin)
+> ```
+>
+> On first run the demo downloads the OQMD Voronoi-Magpie fingerprints
+> dataset (~150 MB) from [data.matr.io](https://data.matr.io) and caches it
+> under `~/.cache/traits_audit/`.  If the download fails, synthetic data with
+> the same schema is used automatically.
 
 ### Demo 4 — Self-driving lab LED colour matching
 

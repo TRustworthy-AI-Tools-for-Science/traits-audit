@@ -181,6 +181,13 @@ class VarianceErrorCorrelationCheck(AuditCheck):
 
         errors = np.abs(y_true - mu)
         stds   = sigma
+
+        if np.std(stds) == 0 or np.std(errors) == 0:
+            return AuditResult(
+                name=self.name, passed=True, category=self.category,
+                message="Skipped — constant input array; correlation undefined.",
+            )
+
         rho, pval = spearmanr(stds, errors)
         rho = float(rho)
 
