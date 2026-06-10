@@ -295,9 +295,8 @@ class IntervalScoreCheck(AuditCheck):
         is_per_sample = width + (2.0 / self.alpha) * (penalty_lo + penalty_hi)
         mean_is = float(np.mean(is_per_sample))
 
-        is_reference = (2.0 * z_crit * float(np.mean(sigma_safe))
-                        + 2.0 * float(norm.pdf(z_crit)) / self.alpha)
-
+        mean_sigma = float(np.mean(sigma_safe))
+        is_reference = mean_sigma * (2.0 * z_crit + 2.0 * float(norm.pdf(z_crit)) / self.alpha)
         if self.threshold is None:
             passed = True
             thr_str = "none (reporting only)"
