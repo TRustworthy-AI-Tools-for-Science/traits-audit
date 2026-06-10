@@ -3,7 +3,7 @@
 Standalone script — NOT part of the traits-audit package.
 
 Generates two-panel (healthy / unhealthy) reference figures for each of the
-six built-in AuditCheck classes and saves them as PNG files.
+built-in AuditCheck classes and saves them as PNG files.
 
 Usage (from repo root):
     python scripts/visualize_builtin_metrics.py
