@@ -958,8 +958,6 @@ def plot_exploration_campaign(
     from matplotlib.gridspec import GridSpec
     from matplotlib.lines import Line2D
     from matplotlib.patches import Patch
-    from sklearn.neighbors import NearestNeighbors
-
     has_comp = "Composition" in df_all.columns
 
     # ── Build 2-D coordinates (EN or PCA) ────────────────────────────────────
@@ -1036,11 +1034,14 @@ def plot_exploration_campaign(
     n_steps = len(queried_batches)
     step_norm = mcolors.Normalize(vmin=0, vmax=max(1, n_steps - 1))
 
-    # ── Coverage / novelty in 2-D visualization space ────────────────────────
-    # Computed in the same 2-D space as the left panel so the metric is
-    # visually interpretable.  np.unique removes duplicate EN pairs (many
-    # OQMD compounds share the same element pair) before computing the radius
-    # so that zero self-distances don't collapse the median to 0.
+    # ── Coverage / novelty via coarse EN/PCA grid ────────────────────────────
+    # Grid-based metrics avoid the NN-radius degeneracy: a fine radius makes
+    # coverage trivially low and novelty trivially 100% because each point
+    # covers a tiny neighbourhood.  A coarse grid (12×12 bins) assigns each
+    # point to a cell; coverage = cumulative fraction of non-empty pool cells
+    # visited; novelty = fraction of each batch landing in cells not yet seen.
+    # With ~50-80 non-empty cells in a 12×12 grid, both metrics vary over a
+    # meaningful range throughout the 50-step campaign.
     cov_vals: list[float] = []
     nov_vals: list[float] = []
     coords_all_2d = (
@@ -1051,27 +1052,33 @@ def plot_exploration_campaign(
     )
 
     if len(coords_all_2d) >= 2 and len(coords_seed_2d) >= 1:
-        unique_2d = np.unique(coords_all_2d, axis=0)
-        if len(unique_2d) >= 2:
-            _nn_u = NearestNeighbors(n_neighbors=2, algorithm="ball_tree").fit(unique_2d)
-            _d_u, _ = _nn_u.kneighbors(unique_2d)
-            _radius = float(np.median(_d_u[:, 1]))
-        else:
-            _radius = 0.05
+        _N_BINS = 12
+        _x_edges = np.linspace(coords_all_2d[:, 0].min(),
+                               coords_all_2d[:, 0].max() + 1e-9, _N_BINS + 1)
+        _y_edges = np.linspace(coords_all_2d[:, 1].min(),
+                               coords_all_2d[:, 1].max() + 1e-9, _N_BINS + 1)
 
-        _X_cum = coords_seed_2d.copy()
+        def _cells(xy: np.ndarray) -> set:
+            if len(xy) == 0:
+                return set()
+            xi = np.clip(np.searchsorted(_x_edges, xy[:, 0], side="right") - 1,
+                         0, _N_BINS - 1)
+            yi = np.clip(np.searchsorted(_y_edges, xy[:, 1], side="right") - 1,
+                         0, _N_BINS - 1)
+            return set(zip(xi.tolist(), yi.tolist()))
+
+        _pool_cells = _cells(coords_all_2d)
+        n_pool_cells = max(len(_pool_cells), 1)
+        _visited = _cells(coords_seed_2d)
+
         for batch_xy in batch_coords_2d:
-            if len(batch_xy) == 0:
-                cov_vals.append(cov_vals[-1] if cov_vals else 0.0)
-                nov_vals.append(0.0)
-                continue
-            _nn_prev = NearestNeighbors(n_neighbors=1, algorithm="ball_tree").fit(_X_cum)
-            _d_prev, _ = _nn_prev.kneighbors(batch_xy)
-            nov_vals.append(float((_d_prev[:, 0] > _radius).mean()))
-            _X_cum = np.vstack([_X_cum, batch_xy])
-            _nn_cum = NearestNeighbors(n_neighbors=1, algorithm="ball_tree").fit(_X_cum)
-            _d_cum, _ = _nn_cum.kneighbors(coords_all_2d)
-            cov_vals.append(float((_d_cum[:, 0] <= _radius).mean()))
+            batch_cells = _cells(batch_xy)
+            new_cells = batch_cells - _visited
+            nov_vals.append(
+                len(new_cells) / max(len(batch_cells), 1) if batch_cells else 0.0
+            )
+            _visited |= batch_cells
+            cov_vals.append(len(_visited & _pool_cells) / n_pool_cells)
 
     with plt.rc_context(_RCPARAMS):
         fig = plt.figure(figsize=(7.5, 3.8))
@@ -1109,7 +1116,7 @@ def plot_exploration_campaign(
 
         ax1.set_xlabel(xlabel, labelpad=3)
         ax1.set_ylabel(ylabel, labelpad=2)
-        ax1.set_title(panel_title, pad=5)
+        ax1.set_title(None)
         ax1.legend(fontsize=7, framealpha=0.85, loc="upper left",
                    handletextpad=0.3, borderpad=0.4)
         ax1.grid(False)
@@ -1141,11 +1148,9 @@ def plot_exploration_campaign(
 
         ax2.set_xlabel("AL step", labelpad=3)
         ax2.set_ylabel("Fraction of pool  /  batch", labelpad=2)
-        ax2.set_title("Exploration metrics", pad=5)
+        ax2.set_title(None)
         ax2.grid(False)
 
-        fig.suptitle(f"Materials exploration campaign — {model_label}",
-                     fontsize=11, y=1.01)
         fig.tight_layout()
         _save(fig, out_dir, "fig9_exploration_campaign")
         print("  Saved fig9_exploration_campaign.png")
@@ -1220,7 +1225,7 @@ def plot_discovery_rate(
                          color="k", alpha=0.10, linewidth=0)
         ax1.set_xlabel("Cumulative AL queries")
         ax1.set_ylabel("Stable materials found")
-        ax1.set_title("Discovery count")
+
         ax1.legend(frameon=False)
         ax1.text(0.98, 0.05,
                  f"Stable in pool: {n_stable_total}/{n_pool} ({stable_frac:.1%})",
@@ -1237,7 +1242,7 @@ def plot_discovery_rate(
         ax2.axhline(1.0, color="k", lw=1.0, ls="--", alpha=0.65, label="Random (= 1×)")
         ax2.set_xlabel("Cumulative AL queries")
         ax2.set_ylabel("Enrichment factor  (AL / random)")
-        ax2.set_title("Discovery enrichment")
+
         ax2.legend(frameon=False)
         ax2.grid(False)
 
@@ -1247,8 +1252,6 @@ def plot_discovery_rate(
                  f"Final: {final_enrich:.1f}× random",
                  transform=ax2.transAxes, ha="right", va="top", fontsize=8, color="C0")
 
-        fig.suptitle(f"Discovery campaign — {model_label} vs random",
-                     fontsize=11, y=1.02)
         fig.tight_layout()
         _save(fig, out_dir, "fig11_discovery_rate")
         print("  Saved fig11_discovery_rate.png")
