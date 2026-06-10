@@ -7,13 +7,14 @@ name = "traits-audit"
 version = "0.1.0"
 description = "Passive uncertainty audit framework for active learning loops"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 license = {text = "MIT"}
 keywords = ["active learning", "uncertainty quantification", "Bayesian optimization", "MLflow", "calibration"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
