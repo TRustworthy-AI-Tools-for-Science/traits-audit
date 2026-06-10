@@ -532,8 +532,8 @@ def plot_lyapunov_stability(out_dir: Path) -> None:
         θ_s = rng.uniform(0, 2 * np.pi, n_stable * n_eigs_per_point)
         eigs_s = (r_s * np.exp(1j * θ_s)).reshape(n_stable, n_eigs_per_point)
 
-        # Unstable cluster: |λ| drawn from U(1.05, 1.75)
-        r_u = rng.uniform(1.05, 1.75, n_unstable * n_eigs_per_point)
+        # Unstable cluster: |λ| drawn from U(1.05, 1.50)
+        r_u = rng.uniform(1.05, 1.50, n_unstable * n_eigs_per_point)
         θ_u = rng.uniform(0, 2 * np.pi, n_unstable * n_eigs_per_point)
         eigs_u = (r_u * np.exp(1j * θ_u)).reshape(n_unstable, n_eigs_per_point)
 

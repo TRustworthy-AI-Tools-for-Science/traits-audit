@@ -29,6 +29,7 @@ from traits_audit._viz import (
     _fig_state_heatmap,
     _fig_pareto_scenarios,
     _fig_calibration_curves_all,
+    _fig_metric_correlations,
     plot_convergence,
 )
 
@@ -425,6 +426,17 @@ def _run_scenario(
 
         fig_hmap = _fig_state_heatmap(hook.history, config.name)
         mlflow.log_figure(fig_hmap, "audit/state_heatmap.html")
+
+        # Generate audit check correlations figure
+        if hook.intermediate_reports:
+            fig_corr = _fig_metric_correlations(hook.intermediate_reports, config.name)
+            if fig_corr is not None:
+                try:
+                    corr_png = fig_dir / f"metric_correlations_{stem}.png"
+                    fig_corr.savefig(str(corr_png), dpi=300, bbox_inches="tight")
+                    plt.close(fig_corr)
+                except Exception:
+                    pass
 
         for r in report.results:
             label = "PASS" if r.passed else "FAIL"

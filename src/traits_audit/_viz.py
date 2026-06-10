@@ -136,7 +136,10 @@ def plot_poles(
     mags  = np.abs(eigs)
     max_m = float(mags.max())
 
-    lim = max(1.5, max_m * 1.15) if max_m <= 5.0 else 1.5
+    # Expand view to show all poles, but cap at ±5 so the unit circle stays
+    # prominent (occupies ≥ 20% of the plot width). Poles beyond the cap are
+    # annotated. This avoids the hard cliff in the original max_m <= 5 branch.
+    lim = max(1.5, min(max_m * 1.15, 5.0))
 
     theta = np.linspace(0, 2 * np.pi, 300)
     ax.plot(np.cos(theta), np.sin(theta), "k--", lw=0.8, alpha=0.5,
@@ -243,6 +246,114 @@ def plot_stability_vs_uncertainty(
     fig.tight_layout()
     _save(fig, out_dir, "fig3_stability_vs_unc")
     print("  Saved fig3_stability_vs_unc.png")
+
+
+def plot_grid_check(
+    predict_fn,
+    predictor,
+    op_states: np.ndarray,
+    model_label: str,
+    out_dir: Path,
+    n_grid: int = 20,
+    b_slice: float | None = None,
+    dim_labels: tuple[str, str, str] = ("dim 0", "dim 1", "dim 2"),
+) -> None:
+    """GP mean, std, and |λ_max| on a regular 2-D grid.
+
+    Sweeps a grid over dimensions 0–1 while holding dimension 2 fixed at
+    *b_slice* (default: mean of ``op_states[:, 2]``).  Three side-by-side
+    panels are produced; queried operating points are overlaid as scatter.
+
+    Parameters
+    ----------
+    predict_fn
+        ``(state_3: ndarray) → (mean: float, std: float)`` in raw surrogate
+        units.
+    predictor
+        GD-step predictor from :func:`make_gd_predictor`; used to compute the
+        Jacobian and |λ_max| via central differences at each grid cell.
+    op_states
+        (N, 3) queried operating points in normalised [0, 1]³ space.
+    dim_labels
+        Axis labels for the three input dimensions.
+    """
+    from matplotlib.colors import TwoSlopeNorm
+
+    if b_slice is None:
+        b_slice = float(np.mean(op_states[:, 2]))
+
+    xs = np.linspace(0.0, 1.0, n_grid)
+    ys = np.linspace(0.0, 1.0, n_grid)
+
+    mean_grid = np.full((n_grid, n_grid), np.nan)
+    std_grid  = np.full((n_grid, n_grid), np.nan)
+    lmax_grid = np.full((n_grid, n_grid), np.nan)
+
+    print(
+        f"  Grid check — {n_grid}×{n_grid} at "
+        f"{dim_labels[2]}={b_slice:.3f} …",
+        flush=True,
+    )
+    for i, y in enumerate(ys):
+        for j, x in enumerate(xs):
+            state = np.array([x, y, b_slice])
+            mu, sigma = predict_fn(state)
+            if not (np.isnan(mu) or np.isnan(sigma)):
+                mean_grid[i, j] = mu
+                std_grid[i, j]  = sigma
+            try:
+                stab = eigenvalues_and_stability(numerical_jacobian(predictor, state))
+                lmax_grid[i, j] = stab["lambda_max"]
+            except Exception:
+                pass
+
+    extent   = [0.0, 1.0, 0.0, 1.0]
+    qx, qy   = op_states[:, 0], op_states[:, 1]
+    dot_kw   = dict(c="white", s=14, edgecolors="k", linewidths=0.5, zorder=3)
+
+    fig, axes = plt.subplots(1, 3, figsize=(10.5, 3.5))
+
+    # ── Panel 1: GP mean ──────────────────────────────────────────────────────
+    ax = axes[0]
+    im = ax.imshow(mean_grid, origin="lower", extent=extent,
+                   aspect="auto", cmap="viridis")
+    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    ax.scatter(qx, qy, **dot_kw, label="Queried")
+    ax.set_xlabel(dim_labels[0])
+    ax.set_ylabel(dim_labels[1])
+    ax.set_title(f"GP mean  [{dim_labels[2]}={b_slice:.2f}]")
+    ax.legend(fontsize=7, frameon=False, loc="lower right")
+
+    # ── Panel 2: GP std ───────────────────────────────────────────────────────
+    ax = axes[1]
+    im = ax.imshow(std_grid, origin="lower", extent=extent,
+                   aspect="auto", cmap="plasma")
+    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    ax.scatter(qx, qy, **dot_kw)
+    ax.set_xlabel(dim_labels[0])
+    ax.set_title(f"GP std  [{dim_labels[2]}={b_slice:.2f}]")
+
+    # ── Panel 3: |λ_max| stability ────────────────────────────────────────────
+    ax = axes[2]
+    lm_lo = float(np.nanpercentile(lmax_grid, 2))
+    lm_hi = float(np.nanpercentile(lmax_grid, 98))
+    lm_lo = min(lm_lo, 0.98)
+    lm_hi = max(lm_hi, 1.02)
+    norm = TwoSlopeNorm(vcenter=1.0, vmin=lm_lo, vmax=lm_hi)
+    im = ax.imshow(lmax_grid, origin="lower", extent=extent,
+                   aspect="auto", cmap="coolwarm", norm=norm)
+    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="|λ_max|")
+    if lm_lo < 1.0 < lm_hi:
+        ax.contour(xs, ys, lmax_grid, levels=[1.0],
+                   colors=["k"], linewidths=[0.8], linestyles=["--"])
+    ax.scatter(qx, qy, **dot_kw)
+    ax.set_xlabel(dim_labels[0])
+    ax.set_title(f"|λ_max|  [{dim_labels[2]}={b_slice:.2f}]")
+
+    fig.suptitle(model_label, fontsize=10)
+    fig.tight_layout()
+    _save(fig, out_dir, "fig_grid_check")
+    print("  Saved fig_grid_check.png")
 
 
 def plot_pareto_frontier(
@@ -585,7 +696,22 @@ def _fig_check_grid(
         z_row, text_row, hover_row = [], [], []
         for result in rep.results:
             z_row.append(_result_intensity(result))
-            text_row.append(f"{result.value:.3f}" if result.value is not None else "—")
+            if result.value is None:
+                cell = "—"
+            else:
+                v = result.value
+                for fmt in (".3f", ".2f", ".1f", ".0f"):
+                    s = format(v, fmt)
+                    if len(s) <= 5:
+                        cell = s
+                        break
+                else:
+                    raw = f"{v:.0e}"
+                    mantissa, exp_part = raw.split("e")
+                    exp_sign = exp_part[0]
+                    exp_digits = exp_part[1:].lstrip("0") or "0"
+                    cell = f"{mantissa}e{exp_digits}" if exp_sign == "+" else f"{mantissa}e-{exp_digits}"
+            text_row.append(cell)
             t = result.threshold
             if t is None:
                 thresh = "—"
@@ -890,6 +1016,140 @@ def _fig_calibration_curves_all(
 
     fig.tight_layout()
     return fig
+
+
+def _fig_metric_correlations(
+    intermediate_reports: "list[Any]",
+    run_name: str,
+) -> Any:
+    """Matplotlib figure: pairwise correlations of audit check metrics over time.
+
+    Computes Spearman correlations between all combinations of audit check
+    result values (CalibrationError, IntervalCoverage, VarianceAlignment, etc.)
+    across all intermediate pipeline stages.
+
+    Parameters
+    ----------
+    intermediate_reports : list[AuditReport]
+        Intermediate reports from hook.intermediate_reports or a full report list.
+    run_name : str
+        Scenario name for figure title.
+
+    Returns
+    -------
+    matplotlib figure object, or None if insufficient data
+    """
+    from scipy.stats import spearmanr
+
+    if not intermediate_reports:
+        return None
+
+    # Extract all check names and their values across stages
+    check_names = []
+    stage_values: dict[str, list[float]] = {}
+    
+    for report in intermediate_reports:
+        if not hasattr(report, 'results'):
+            continue
+        for result in report.results:
+            check_name = result.name
+            if check_name not in check_names:
+                check_names.append(check_name)
+            if check_name not in stage_values:
+                stage_values[check_name] = []
+            
+            # Use the result value if available, otherwise skip
+            if result.value is not None:
+                stage_values[check_name].append(float(result.value))
+            else:
+                stage_values[check_name].append(np.nan)
+    
+    # Filter to only checks with data across all or most stages
+    available_checks = [
+        name for name in check_names
+        if name in stage_values and len(stage_values[name]) > 0
+    ]
+    
+    if len(available_checks) < 2:
+        return None
+
+    # Ensure all check value lists have the same length
+    n_stages = len(intermediate_reports)
+    for check_name in available_checks:
+        vals = stage_values[check_name]
+        if len(vals) < n_stages:
+            # Pad with NaN if necessary
+            stage_values[check_name] = vals + [np.nan] * (n_stages - len(vals))
+
+    # Compute the correlation matrix between all checks
+    n_checks = len(available_checks)
+    corr_matrix = np.zeros((n_checks, n_checks))
+    
+    for i, check1 in enumerate(available_checks):
+        for j, check2 in enumerate(available_checks):
+            if i == j:
+                corr_matrix[i, j] = 1.0
+            else:
+                v1 = np.array(stage_values[check1], dtype=float)
+                v2 = np.array(stage_values[check2], dtype=float)
+                
+                # Only compute if both have sufficient valid data
+                valid = ~(np.isnan(v1) | np.isnan(v2))
+                if valid.sum() > 2:
+                    try:
+                        rho, _ = spearmanr(v1[valid], v2[valid])
+                        corr_matrix[i, j] = float(rho) if not np.isnan(rho) else 0.0
+                    except Exception:
+                        corr_matrix[i, j] = 0.0
+                else:
+                    corr_matrix[i, j] = 0.0
+
+    # Create figure
+    fig_size = min(max(5.0, n_checks * 0.6), 12.0)
+    fig, ax = plt.subplots(figsize=(fig_size, fig_size * 0.95))
+    
+    # Plot heatmap
+    im = ax.imshow(corr_matrix, cmap="RdBu_r", vmin=-1, vmax=1, aspect="auto")
+    
+    # Annotate with correlation values
+    for i in range(n_checks):
+        for j in range(n_checks):
+            val = corr_matrix[i, j]
+            text_color = "white" if abs(val) > 0.5 else "black"
+            ax.text(j, i, f"{val:.2f}", ha="center", va="center",
+                   color=text_color, fontsize=9, weight="bold")
+    
+    # Set ticks and labels
+    ax.set_xticks(range(n_checks))
+    ax.set_yticks(range(n_checks))
+    
+    # Abbreviate check names for display
+    check_abbrevs = [_CHECK_ABBREV.get(name, name[:12]) for name in available_checks]
+    ax.set_xticklabels(check_abbrevs, rotation=45, ha="right", fontsize=10)
+    ax.set_yticklabels(check_abbrevs, fontsize=10)
+    
+    # Add grid
+    ax.set_xticks(np.arange(n_checks) - 0.5, minor=True)
+    ax.set_yticks(np.arange(n_checks) - 0.5, minor=True)
+    ax.grid(which="minor", color="gray", linestyle="-", linewidth=0.8, alpha=0.4)
+    
+    ax.set_title(
+        f"Audit check correlations — {run_name}\n"
+        f"(Spearman ρ across {n_stages} pipeline stages)",
+        fontsize=12, weight="bold", pad=15,
+    )
+    ax.set_xlabel("Audit check", fontsize=11, weight="bold")
+    ax.set_ylabel("Audit check", fontsize=11, weight="bold")
+    
+    # Add colorbar
+    cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label("Spearman ρ", rotation=270, labelpad=18, fontsize=10, weight="bold")
+    
+    fig.tight_layout()
+    
+    return fig
+
+
 
 
 # ── Composition-space exploration figure ────────────────────────────────────
@@ -1346,4 +1606,5 @@ def run_lyapunov_analysis(
         "eigenvalues": all_eigs_flat,
         "P":           P,
         "csv_path":    csv_path,
+        "n_stable":    n_stable,
     }
