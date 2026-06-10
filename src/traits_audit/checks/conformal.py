@@ -102,8 +102,10 @@ class ConformalCoverageCheck(AuditCheck):
 
         # Finite-sample corrected conformal quantile (Vovk et al. 2005)
         level = min(float(np.ceil((n + 1) * (1.0 - alpha)) / n), 1.0)
-        q_hat = float(np.quantile(scores, level))
-
+        try:
+            q_hat = float(np.quantile(scores, level, method="higher"))
+        except TypeError:  # NumPy < 1.22
+            q_hat = float(np.quantile(scores, level, interpolation="higher"))
         empirical_coverage = float(np.mean(scores <= q_hat))
 
         # Ratio of conformal quantile to expected Gaussian critical value
