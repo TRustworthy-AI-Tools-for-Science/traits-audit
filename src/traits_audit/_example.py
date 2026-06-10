@@ -269,6 +269,12 @@ _SCENARIO_STYLE = {
 }
 
 
+def _ensure_cal_demo_dir() -> Path:
+    fig_dir = Path.cwd() / "_results/cal_demo"
+    fig_dir.mkdir(parents=True, exist_ok=True)
+    return fig_dir
+
+
 def _run_scenario(
     config: ScenarioConfig,
     steps: int,
@@ -411,8 +417,7 @@ def _run_scenario(
         fig_grid = _fig_check_grid(stage_reports, config.name)
         mlflow.log_figure(fig_grid, "audit/check_grid.html")
 
-        fig_dir = Path.cwd() / "_results/cal_demo"
-        fig_dir.mkdir(exist_ok=True)
+        fig_dir = _ensure_cal_demo_dir()
         stem = config.name[:4]
         name_map = {"perf": "perfect", "well": "well", "over": "over", "unde": "under"}
         stem = name_map.get(stem, stem)
@@ -579,8 +584,7 @@ def main() -> None:
 
     if len(pareto_data) >= 2:
 
-        fig_dir = Path.cwd() / "_results/cal_demo"
-        fig_dir.mkdir(exist_ok=True)
+        fig_dir = _ensure_cal_demo_dir()
 
         fig_pareto = _fig_pareto_scenarios(pareto_data, scenario_styles=_SCENARIO_STYLE)
         pareto_png = fig_dir / "pareto_scenarios.png"
