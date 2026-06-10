@@ -554,7 +554,11 @@ def plot_audit_evolution(
 
         t = thresholds.get(name)
         if t is not None:
-            if isinstance(t, tuple):
+            if name == "VarianceAlignment" and not isinstance(t, tuple):
+                tol = 0.50
+                ax.axhline(float(t) - tol, color="k", lw=0.8, ls="--", alpha=0.5)
+                ax.axhline(float(t) + tol, color="k", lw=0.8, ls="--", alpha=0.5)
+            elif isinstance(t, tuple):
                 ax.axhline(t[0], color="k", lw=0.8, ls="--", alpha=0.5)
                 ax.axhline(t[1], color="k", lw=0.8, ls="--", alpha=0.5)
             else:
