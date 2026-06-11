@@ -587,6 +587,7 @@ def plot_convergence(
     model_label: str,
     out_dir: Path,
     maximise: bool = False,
+    fig_title="fig8_convergence",
 ) -> None:
     """Running best task objective vs cumulative AL queries (fig8).
 
@@ -622,8 +623,8 @@ def plot_convergence(
     ax.legend(frameon=False)
     ax.grid(False)
     fig.tight_layout()
-    _save(fig, out_dir, "fig8_convergence")
-    print("  Saved fig8_convergence.png")
+    _save(fig, out_dir, fig_title)
+    print(f"  Saved {fig_title}")
 
 
 # ── Heatmap intensity helper ────────────────────────────────────────────────

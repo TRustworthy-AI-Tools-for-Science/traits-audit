@@ -362,6 +362,7 @@ def _run_scenario(
         aleat_tag = "  +aleatoric" if config.aleatoric_fn is not None else ""
         print(f"  [{config.name}]  n_est={config.n_estimators}  std_scale={config.std_scale}{aleat_tag}")
 
+        history = []
         for step in range(steps):
             surrogate.fit(x_obs, y_obs)
 
@@ -371,6 +372,8 @@ def _run_scenario(
             y_q = float(oracle_to_use(np.array([x_q]), oracle_rng)[0])
             mu_q = float(mu_pool[idx])
             std_q = float(sigma_pool[idx])
+
+            history.append(np.abs(y_q - mu_q))
 
             x_obs = np.append(x_obs, x_q)
             y_obs = np.append(y_obs, y_q)
@@ -477,6 +480,16 @@ def _run_scenario(
         x_test=x_test, y_clean=y_clean, noise_std=noise_std,
         mu_test=mu_test, sigma_test=sigma_test,
     )
+
+    if len(history) >= 2:
+        plot_convergence(
+            best_vals=history, 
+            query_counts=list(range(1, len(history) + 1)),
+            y_label="Mean absolute error",
+            model_label=config.name,
+            out_dir=fig_dir,
+            fig_title=f"convergence_{stem}",)
+
     return report, pareto_pts, test_calib_result, oracle_plot
 
 
