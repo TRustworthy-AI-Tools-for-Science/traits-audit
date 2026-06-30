@@ -21,6 +21,7 @@ Quick import
 """
 __version__ = "0.1.0"
 
+from . import dmdc
 from .base import AuditCategory, AuditCheck, AuditReport, AuditResult
 from .checks.lyapunov import LyapunovStabilityCheck
 from .hook import AuditHook
@@ -36,4 +37,5 @@ __all__ = [
     "AuditCategory",
     "MLflowLogger",
     "LyapunovStabilityCheck",
+    "dmdc",
 ]

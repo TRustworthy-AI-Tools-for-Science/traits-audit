@@ -89,13 +89,17 @@ def eigenvalues_and_stability(J: np.ndarray) -> dict:
     }
 
 
-def compute_lyapunov(A: np.ndarray) -> np.ndarray | None:
+def compute_lyapunov(A: np.ndarray, rho_max: float = 0.99) -> np.ndarray | None:
     """Solve discrete Lyapunov equation Aᵀ P A − P = −I.
 
-    Returns P or ``None`` when the system is unstable.
+    If ``A``'s spectral radius is ≥ 1, ``A`` is rescaled to spectral radius
+    *rho_max* before solving — same approach as
+    :func:`traits_audit.dmdc.compute_gramians`. Returns ``None`` only if
+    ``solve_discrete_lyapunov`` itself raises.
     """
-    if np.abs(np.linalg.eigvals(A)).max() >= 1.0:
-        return None
+    rho = float(np.abs(np.linalg.eigvals(A)).max())
+    if rho >= 1.0:
+        A = A * (rho_max / rho)
     try:
         return solve_discrete_lyapunov(A.T, np.eye(len(A)))
     except Exception:
@@ -1585,9 +1589,15 @@ def run_lyapunov_analysis(
     J_mean = numerical_jacobian(predictor, mean_state, action=None, dx=dx)
     P = compute_lyapunov(J_mean)
     if P is not None:
-        print("  Lyapunov matrix P computed (mean operating point is stable)")
+        rho_mean = float(np.abs(np.linalg.eigvals(J_mean)).max())
+        if rho_mean < 1.0:
+            print("  Lyapunov matrix P computed (mean operating point is stable)")
+        else:
+            print(f"  Mean operating point is unstable (|λ_max|={rho_mean:.3f}) — "
+                  "P computed from a rescaled J_mean (spectral radius 0.99) "
+                  "for a comparably-scaled contour")
     else:
-        print("  Mean operating point is unstable — P omitted from contour plot")
+        print("  Lyapunov solve failed (degenerate J_mean) — P omitted from contour plot")
 
     plot_poles(all_eigs_flat, model_label, out_dir)
     plot_stability_contours(P, op_states, lambda_max_arr, model_label, out_dir)
