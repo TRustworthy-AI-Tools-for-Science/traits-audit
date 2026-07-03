@@ -59,7 +59,7 @@ def _make_pipeline(check_every: int, logger=None):
             IntervalScoreCheck(),
             IntervalCoverageCheck(expected_coverage=0.683, tolerance=0.15),
             VarianceAlignmentCheck(tolerance=0.5),
-            UncertaintyEvolutionCheck(slope_threshold=-0.05),
+            UncertaintyEvolutionCheck(),
             UncertaintyAnomalyCheck(z_threshold=3.0),
             VarianceErrorCorrelationCheck(min_correlation=0.1),
             LyapunovStabilityCheck(stability_threshold=1.0, min_stable_fraction=0.5, alpha=_LYAPUNOV_ALPHA),
@@ -73,7 +73,7 @@ def _make_pipeline(check_every: int, logger=None):
 
 def run(
     n_init: int = 6,
-    n_iter: int = 25,
+    n_iter: int = 250,
     out_dir: Path = Path("_results/sdl_demo"),
     seed: int = 0,
     check_every: int = 10,
@@ -506,8 +506,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--n-init",      type=int,   default=6,
                    help="Sobol warm-start trials (default: 6)")
-    p.add_argument("--n-iter",      type=int,   default=25,
-                   help="BO iterations (default: 25)")
+    p.add_argument("--n-iter",      type=int,   default=250,
+                   help="BO iterations (default: 250)")
     p.add_argument("--out-dir",     type=str,   default="_results/sdl_demo")
     p.add_argument("--seed",        type=int,   default=0)
     p.add_argument("--check-every", type=int,   default=10,
