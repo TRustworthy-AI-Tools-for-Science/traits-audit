@@ -1120,14 +1120,6 @@ def _fig_metric_correlations(
     # Plot heatmap
     im = ax.imshow(corr_matrix, cmap="RdBu_r", vmin=-1, vmax=1, aspect="auto")
     
-    # Annotate with correlation values
-    for i in range(n_checks):
-        for j in range(n_checks):
-            val = corr_matrix[i, j]
-            text_color = "white" if abs(val) > 0.5 else "black"
-            ax.text(j, i, f"{val:.2f}", ha="center", va="center",
-                   color=text_color, fontsize=9, weight="bold")
-    
     # Set ticks and labels
     ax.set_xticks(range(n_checks))
     ax.set_yticks(range(n_checks))
