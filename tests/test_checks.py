@@ -144,19 +144,36 @@ def test_variance_alignment_skips_when_no_data():
     assert "Skipped" in result.message
 
 
-# ── UncertaintyEvolutionCheck ────────────────────────────────────────────────
+# ── UncertaintyEvolutionCheck (multi-channel: value = #decreasing channels) ───
 
 def test_evolution_passes_on_gentle_decline():
-    u = np.linspace(1.0, 0.5, 100)  # gentle: ~-0.3% per step relative to mean
-    result = UncertaintyEvolutionCheck(slope_threshold=-0.05).run([], uncertainties=u)
+    u = np.linspace(1.0, 0.5, 100)  # slope ≈ −0.005 > −0.01·mean → not flagged
+    result = UncertaintyEvolutionCheck().run([], uncertainties=u)
     assert result.passed
+    assert result.value == 0.0
 
 
 def test_evolution_fails_on_collapse():
-    u = np.linspace(1.0, 0.01, 10)  # steep: relative slope ≈ -0.22/step
-    result = UncertaintyEvolutionCheck(slope_threshold=-0.05).run([], uncertainties=u)
+    u = np.linspace(1.0, 0.01, 10)  # steep: slope ≈ −0.11 ≪ −0.01·mean → flagged
+    result = UncertaintyEvolutionCheck().run([], uncertainties=u)
     assert not result.passed
-    assert result.value < -0.05
+    assert result.value == 1.0  # one channel flagged
+
+
+def test_evolution_multichannel_flags_only_declining():
+    steps = 30
+    u = np.column_stack([np.full(steps, 0.8), np.linspace(1.0, 0.05, steps)])
+    result = UncertaintyEvolutionCheck().run([], uncertainties=u)
+    assert not result.passed
+    assert result.value == 1.0
+    assert result.details["n_channels"] == 2
+    assert len(result.details["uncertainty_series"]) == steps
+
+
+def test_evolution_respects_slope_threshold():
+    u = np.linspace(1.0, 0.5, 100)  # ~−0.7 %/step relative
+    assert UncertaintyEvolutionCheck(slope_threshold=-0.005).run([], uncertainties=u).passed is False
+    assert UncertaintyEvolutionCheck(slope_threshold=-0.05).run([], uncertainties=u).passed is True
 
 
 def test_evolution_passes_on_increasing_uncertainty():
@@ -164,10 +181,10 @@ def test_evolution_passes_on_increasing_uncertainty():
     assert UncertaintyEvolutionCheck().run([], uncertainties=u).passed
 
 
-def test_evolution_skips_single_step():
+def test_evolution_single_step_not_flagged():
     result = UncertaintyEvolutionCheck().run([], uncertainties=[0.5])
     assert result.passed
-    assert "Too few" in result.message
+    assert result.value == 0.0
 
 
 def test_evolution_skips_when_no_data():
@@ -177,32 +194,39 @@ def test_evolution_skips_when_no_data():
 
 
 def test_evolution_reads_from_history():
-    u = np.linspace(1.0, 0.6, 60)
+    u = np.linspace(1.0, 0.6, 60)  # slope ≈ −0.0068 > −0.01·mean → not flagged
     history = [{"uncertainty": float(v)} for v in u]
     assert UncertaintyEvolutionCheck().run(history).passed
 
 
-# ── UncertaintyAnomalyCheck ──────────────────────────────────────────────────
+# ── UncertaintyAnomalyCheck (z-score vs HISTORICAL baseline) ──────────────────
 
-def test_anomaly_passes_on_smooth_series():
-    u = 0.5 + 0.01 * np.sin(np.linspace(0, 4 * np.pi, 50))
-    assert UncertaintyAnomalyCheck().run([], uncertainties=u).passed
+def test_anomaly_passes_when_current_matches_baseline():
+    rng = np.random.default_rng(0)
+    hist = 0.5 + 0.05 * rng.standard_normal(50)
+    cur  = 0.5 + 0.05 * rng.standard_normal(20)
+    result = UncertaintyAnomalyCheck().run(
+        [], uncertainties=cur, historical_uncertainties=hist
+    )
+    assert result.passed
+    assert result.value < 0.05
 
 
-def test_anomaly_fails_with_multiple_large_spikes():
-    # 18 normal points + 2 spikes → anomaly fraction = 2/20 = 10% > 5%
-    u = np.concatenate([np.ones(18), [100.0, 100.0]])
+def test_anomaly_fails_with_spikes_vs_baseline():
+    rng = np.random.default_rng(1)
+    hist = 1.0 + 0.05 * rng.standard_normal(50)
+    cur = np.concatenate([1.0 + 0.05 * rng.standard_normal(18), [100.0, 100.0]])
     result = UncertaintyAnomalyCheck(z_threshold=3.0, max_anomaly_fraction=0.05).run(
-        [], uncertainties=u
+        [], uncertainties=cur, historical_uncertainties=hist
     )
     assert not result.passed
     assert result.value > 0.05
 
 
-def test_anomaly_skips_too_few_steps():
-    result = UncertaintyAnomalyCheck().run([], uncertainties=[1.0, 2.0])
+def test_anomaly_skips_without_baseline():
+    result = UncertaintyAnomalyCheck().run([], uncertainties=[1.0, 2.0, 3.0])
     assert result.passed
-    assert "Too few" in result.message
+    assert "historical baseline" in result.message
 
 
 def test_anomaly_skips_when_no_data():
@@ -211,10 +235,24 @@ def test_anomaly_skips_when_no_data():
     assert "Skipped" in result.message
 
 
-def test_anomaly_reads_from_history():
-    u = 0.5 + 0.01 * np.sin(np.linspace(0, 4 * np.pi, 30))
+def test_anomaly_details_keys():
+    rng = np.random.default_rng(2)
+    hist = 0.5 + 0.05 * rng.standard_normal(40)
+    cur = 0.5 + 0.05 * rng.standard_normal(20)
+    result = UncertaintyAnomalyCheck().run(
+        [], uncertainties=cur, historical_uncertainties=hist
+    )
+    for key in ("anomalous_fraction", "max_z_score", "hist_mean",
+                "hist_std", "current_mean", "current_std"):
+        assert key in result.details
+
+
+def test_anomaly_reads_current_from_history():
+    rng = np.random.default_rng(3)
+    hist = 0.5 + 0.05 * rng.standard_normal(30)
+    u = 0.5 + 0.05 * rng.standard_normal(20)
     history = [{"uncertainty": float(v)} for v in u]
-    assert UncertaintyAnomalyCheck().run(history).passed
+    assert UncertaintyAnomalyCheck().run(history, historical_uncertainties=hist).passed
 
 
 # ── VarianceErrorCorrelationCheck ────────────────────────────────────────────

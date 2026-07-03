@@ -25,23 +25,31 @@ def _uncertainties(history: list, kwargs: dict) -> Optional[np.ndarray]:
 
 class UncertaintyEvolutionCheck(AuditCheck):
     """
-    Flags if predictive uncertainty trends too steeply downward over iterations.
+    Flags parameter channels whose forward uncertainty trends too steeply downward.
 
-    The slope is normalised by the mean uncertainty so it is scale-independent.
-    A very steep negative slope can indicate model collapse or an overconfident
-    posterior.
+    **Multi-channel**: ``uncertainties`` may be a scalar series ``(steps,)`` or a
+    per-channel matrix ``(steps, n_channels)`` (also read from per-step
+    ``history['uncertainty']``). Each channel is assessed independently and flagged
+    when its least-squares slope is more negative than ``slope_threshold`` × the
+    channel mean (scale-independent). A decreasing forward-uncertainty trend is
+    physically implausible for a model whose epistemic uncertainty should grow.
+
+    ``value`` = number of flagged channels (0 ⇒ pass). ``details`` carries
+    ``n_channels``, ``decreasing_channels`` (list of ``(index, slope)``) and
+    ``uncertainty_series`` (the per-step mean, for trend figures).
 
     Parameters
     ----------
     slope_threshold : float
-        Minimum acceptable relative slope per step (default: −0.05 = −5 %/step).
+        Per-channel relative-slope threshold (default −0.01 = −1 %/step). A channel
+        is flagged when ``slope < slope_threshold · mean(channel)``.
 
     Required data
     -------------
     ``uncertainties`` kwarg  **or**  ``uncertainty`` key in each history dict.
     """
 
-    def __init__(self, slope_threshold: float = -0.05):
+    def __init__(self, slope_threshold: float = -0.01):
         self.slope_threshold = slope_threshold
 
     @property
@@ -53,45 +61,76 @@ class UncertaintyEvolutionCheck(AuditCheck):
         return AuditCategory.EPISTEMIC
 
     def run(self, history: List[Dict[str, Any]], **kwargs) -> AuditResult:
-        u = _uncertainties(history, kwargs)
-        if u is None:
-            return AuditResult(
-                name=self.name, passed=True, category=self.category,
-                message="Skipped — uncertainty series not available.",
-            )
-        if len(u) < 2:
-            return AuditResult(
-                name=self.name, passed=True, category=self.category,
-                message="Too few steps to evaluate trend.",
-            )
-        slope = float(np.polyfit(np.arange(len(u)), u, 1)[0])
-        rel   = slope / (float(np.mean(u)) + 1e-12)
+        raw = kwargs.get("uncertainties")
+        if raw is not None:
+            u = np.asarray(raw, dtype=float)
+        else:
+            vals = [h["uncertainty"] for h in history if "uncertainty" in h]
+            if not vals:
+                return AuditResult(
+                    name=self.name, passed=True, category=self.category,
+                    message="Skipped — uncertainty series not available.",
+                )
+            u = np.asarray(vals, dtype=float)
+
+        if u.ndim == 1:
+            u = u[:, np.newaxis]
+
+        n_channels = u.shape[1]
+        x = np.arange(u.shape[0])
+        decreasing = []
+        for i in range(n_channels):
+            col   = u[:, i]
+            valid = np.isfinite(col)
+            if valid.sum() < 2:
+                continue
+            slope = float(np.polyfit(x[valid], col[valid], 1)[0])
+            if slope < self.slope_threshold * float(np.mean(col[valid])):
+                decreasing.append((i, slope))
+
+        passed = len(decreasing) == 0
+        mean_series = np.nanmean(u, axis=1)
 
         return AuditResult(
             name=self.name,
-            passed=rel >= self.slope_threshold,
+            passed=passed,
             category=self.category,
-            value=rel,
-            threshold=self.slope_threshold,
-            message=f"Relative uncertainty slope = {rel:+.4f} / step",
+            value=float(len(decreasing)),
+            threshold=0.0,
+            message=(
+                "All channels non-decreasing"
+                if passed
+                else f"{len(decreasing)} channel(s) show decreasing uncertainty"
+            ),
+            details={
+                "n_channels": n_channels,
+                "decreasing_channels": decreasing,
+                "uncertainty_series": mean_series.tolist(),
+            },
         )
 
 
 class UncertaintyAnomalyCheck(AuditCheck):
     """
-    Flags steps where uncertainty deviates by more than ``z_threshold`` standard
-    deviations from the historical mean.
+    Flags drift: whether more than ``max_anomaly_fraction`` of the current
+    uncertainty values lie beyond ``z_threshold`` σ of a **historical baseline**.
+
+    Z-scores the current series against the historical mean/std (not its own), so it
+    detects departure from earlier behaviour rather than within-series outliers.
+    The current series (``uncertainties`` kwarg or per-step ``history['uncertainty']``)
+    is flattened; the baseline is the ``historical_uncertainties`` kwarg. Skipped
+    when no baseline is provided.
 
     Parameters
     ----------
     z_threshold : float
         Z-score threshold (default: 3.0).
     max_anomaly_fraction : float
-        Maximum acceptable fraction of anomalous steps (default: 0.05).
+        Maximum acceptable fraction of anomalous current values (default: 0.05).
 
     Required data
     -------------
-    ``uncertainties`` kwarg  **or**  ``uncertainty`` key in each history dict.
+    ``uncertainties`` (current) **and** ``historical_uncertainties`` (baseline).
     """
 
     def __init__(self, z_threshold: float = 3.0, max_anomaly_fraction: float = 0.05):
@@ -107,33 +146,55 @@ class UncertaintyAnomalyCheck(AuditCheck):
         return AuditCategory.EPISTEMIC
 
     def run(self, history: List[Dict[str, Any]], **kwargs) -> AuditResult:
-        u = _uncertainties(history, kwargs)
-        if u is None:
+        raw_current = kwargs.get("uncertainties")
+        current_u = (
+            np.asarray(raw_current, dtype=float).flatten()
+            if raw_current is not None
+            else np.asarray([h["uncertainty"] for h in history if "uncertainty" in h], dtype=float)
+        )
+        raw_hist = kwargs.get("historical_uncertainties")
+        historical_u = np.asarray(raw_hist, dtype=float).flatten() if raw_hist is not None else np.array([])
+
+        current_u    = current_u[np.isfinite(current_u)]
+        historical_u = historical_u[np.isfinite(historical_u)]
+
+        if len(current_u) == 0:
             return AuditResult(
                 name=self.name, passed=True, category=self.category,
-                message="Skipped — uncertainty series not available.",
+                message="Skipped — no current uncertainty data.",
             )
-        if len(u) < 3:
+        if len(historical_u) == 0:
             return AuditResult(
                 name=self.name, passed=True, category=self.category,
-                message="Too few steps for anomaly detection.",
+                message="Skipped — no historical baseline.",
             )
-        std = np.std(u)
-        if std < 1e-12:
-            # Constant series — any deviation from the single value is anomalous
-            frac = float(np.mean(u != np.mean(u)))
+
+        hist_mean = float(np.mean(historical_u))
+        hist_std  = float(np.std(historical_u))
+        if hist_std > 0:
+            z = (current_u - hist_mean) / hist_std
+            frac  = float(np.mean(np.abs(z) > self.z_threshold))
+            max_z = float(np.max(np.abs(z)))
         else:
-            z    = (u - np.mean(u)) / std
-            mask = np.abs(z) > self.z_threshold
-            frac = float(mask.mean())
+            different = current_u != hist_mean
+            frac  = float(np.mean(different))
+            max_z = float(np.max(np.abs(current_u - hist_mean))) if len(current_u) else 0.0
 
         return AuditResult(
             name=self.name,
-            passed=frac <= self.max_anomaly_fraction,
+            passed=frac < self.max_anomaly_fraction,
             category=self.category,
             value=frac,
             threshold=self.max_anomaly_fraction,
-            message=f"{frac:.1%} of steps flagged (|z| > {self.z_threshold})",
+            message=f"Anomalous fraction: {frac:.1%}  max z-score: {max_z:.2f}",
+            details={
+                "anomalous_fraction": frac,
+                "max_z_score": max_z,
+                "hist_mean": hist_mean,
+                "hist_std": hist_std,
+                "current_mean": float(np.mean(current_u)),
+                "current_std": float(np.std(current_u)),
+            },
         )
 
 

@@ -83,15 +83,17 @@ A ratio of 1.0 means stated uncertainty exactly explains actual errors globally.
 
 ---
 
-## UncertaintyEvolution  (relative slope · threshold −0.05 / step)
+## UncertaintyEvolution  (flagged-channel count · threshold 0)
 
-**What it measures**: Linear fit to the per-step σ time-series, normalised by
-mean σ so the result is scale-independent (units: fraction / step).
+**What it measures**: Per-channel linear trend in the mean-pool-σ time-series.
+A channel is flagged when its least-squares slope is more negative than −1 % of
+the channel mean per step (scale-independent).  ``value`` = number of flagged
+channels; ``0 ⇒ PASS``.
 
 | Value | Interpretation |
 |---|---|
-| > −0.05 PASS | Uncertainty stable or gently declining — healthy learning. |
-| < −0.05 **FAIL** | Steep drop — model may be collapsing onto a small region, ignoring the rest of the space. |
+| 0 PASS | All channels non-declining — epistemic uncertainty not collapsing. |
+| ≥ 1 **FAIL** | One or more channels show a steep downward trend — surrogate may be collapsing onto a small region, ignoring unexplored space. |
 
 **Tip**: In the Metrics tab, plot `audit/step/pool_sigma_mean` to see how the
 mean pool uncertainty evolves.  A cliff-drop in the first 5 steps is a red flag.
@@ -100,16 +102,20 @@ mean pool uncertainty evolves.  A cliff-drop in the first 5 steps is a red flag.
 
 ## UncertaintyAnomalies  (fraction of steps with |z| > 3 · threshold 5%)
 
-**What it measures**: Fraction of steps where per-step σ is more than 3 standard
-deviations above the running mean — spikes in the uncertainty time-series.
+**What it measures**: Fraction of steps where the mean-pool σ deviates more than
+3 standard deviations from the **first-scenario baseline**.  The first scenario run
+supplies the reference mean/std; every subsequent scenario is z-scored against it.
+A well-calibrated scenario should cluster near the baseline; an overconfident one
+will have anomalously low σ and an underconfident one anomalously high σ.
 
 | Value | Interpretation |
 |---|---|
-| 0% PASS | Stable — no sudden jumps. |
-| > 5% **FAIL** | Frequent spikes — acquisition may be querying out-of-distribution points, or the surrogate occasionally fits poorly. |
+| 0% PASS | Pool uncertainty comparable to the reference scenario. |
+| > 5% **FAIL** | Uncertainty level anomalously different from reference — mismatched model variance. |
 
-**Tip**: In the Metrics tab, plot `audit/step/uncertainty` and look for isolated
-large values that correspond to anomalous step indices.
+**Tip**: In the Metrics tab, plot `audit/step/uncertainty` and compare its level
+across scenarios.  The first scenario shown will always PASS (no baseline yet);
+subsequent runs are scored relative to it.
 
 ---
 
@@ -282,6 +288,7 @@ def _run_scenario(
     seed: int,
     mlflow_uri: str,
     experiment_name: str,
+    historical_uncertainties: list | None = None,
 ) -> object:
     import mlflow
     from traits_audit import AuditHook, AuditPipeline
@@ -313,7 +320,7 @@ def _run_scenario(
             IntervalScoreCheck(),
             IntervalCoverageCheck(expected_coverage=0.683, tolerance=0.15),
             VarianceAlignmentCheck(tolerance=0.5),
-            UncertaintyEvolutionCheck(slope_threshold=-0.05),
+            UncertaintyEvolutionCheck(),
             UncertaintyAnomalyCheck(z_threshold=3.0),
             VarianceErrorCorrelationCheck(min_correlation=0.1),
         ],
@@ -388,7 +395,7 @@ def _run_scenario(
                 y_true=y_q,
                 y_pred_mean=mu_q,
                 y_pred_std=std_q,
-                uncertainty=std_q,
+                uncertainty=float(sigma_pool.mean()),
                 abs_error=abs(y_q - mu_q),
                 acquisition_score=float(mu_q - 2.0 * std_q),
                 dataset_size=float(len(x_obs)),
@@ -396,7 +403,10 @@ def _run_scenario(
                 pool_sigma_max=float(sigma_pool.max()),
             )
 
-        report = hook.on_end()
+        on_end_kwargs = {}
+        if historical_uncertainties:
+            on_end_kwargs["historical_uncertainties"] = historical_uncertainties
+        report = hook.on_end(**on_end_kwargs)
 
         # Calibration assessment at training locations with fresh oracle draws.
         # A uniform test grid concentrates points in unexplored regions where
@@ -490,12 +500,13 @@ def _run_scenario(
         plot_convergence(
             best_vals=history, 
             query_counts=list(range(1, len(history) + 1)),
-            y_label="Mean absolute error",
+            y_label="Mean absolute error (MAE)",
             model_label=config.name,
             out_dir=fig_dir,
             fig_title=f"convergence_{stem}",)
 
-    return report, pareto_pts, test_calib_result, oracle_plot
+    uncertainty_series = [h["uncertainty"] for h in hook.history if "uncertainty" in h]
+    return report, pareto_pts, test_calib_result, oracle_plot, uncertainty_series
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -504,8 +515,8 @@ def build_parser() -> argparse.ArgumentParser:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("--steps",       type=int,  default=100,
-                   help="AL iterations per scenario (default: 100)")
+    p.add_argument("--steps",       type=int,  default=250,
+                   help="AL iterations per scenario (default: 250)")
     p.add_argument("--seed",        type=int,  default=0,
                    help="RNG seed (default: 0)")
     p.add_argument("--check-every", type=int,  default=10,
@@ -549,16 +560,21 @@ def main() -> None:
     pareto_data: dict[str, list] = {}
     test_calibs: dict[str, object] = {}
     oracle_data: dict[str, dict] = {}
+    baseline_u: list | None = None
     for config in selected:
         (
             reports[config.name],
             pareto_data[config.name],
             test_calibs[config.name],
             oracle_data[config.name],
+            unc_series,
         ) = _run_scenario(
             config, args.steps, args.check_every, args.seed,
             args.mlflow_uri, experiment_name,
+            historical_uncertainties=baseline_u,
         )
+        if baseline_u is None:
+            baseline_u = unc_series  # first run becomes the anomaly-detection reference
 
     check_names = [r.name for r in next(iter(reports.values())).results]
     name_w = max(len(n) for n in check_names) + 2
@@ -619,9 +635,10 @@ def main() -> None:
             ax_conv.plot(steps, eces, color=style["color"], marker=style["marker"],
                          markersize=4, label=style["label"])
         ax_conv.set_xlabel("AL step")
-        ax_conv.set_ylabel("CalibrationError (ECE)")
-        ax_conv.legend(frameon=False)
+        ax_conv.set_ylabel("Calibration Error (ECE)")
+        ax_conv.legend(frameon=False, bbox_to_anchor=(1.05, 0.5), loc='center left')
         ax_conv.grid(False)
+        ax_conv.set_box_aspect(1) 
         fig_conv.tight_layout()
         conv_png = fig_dir / "convergence_scenarios.png"
         fig_conv.savefig(str(conv_png), dpi=300, bbox_inches="tight")

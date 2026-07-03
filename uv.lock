@@ -1629,7 +1629,7 @@ name = "gunicorn"
 version = "26.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "packaging" },
+    { name = "packaging", marker = "sys_platform != 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/6d/b7/a4a3f632f823e432ce6bc65f62961b7980c898c77f075a2f7118cb3846fe/gunicorn-26.0.0.tar.gz", hash = "sha256:ca9346f85e3a4aeeb64d491045c16b9a35647abd37ea15efe53080eb8b090baf", size = 727286, upload-time = "2026-05-05T06:38:25.529Z" }
 wheels = [
@@ -5259,7 +5259,7 @@ wheels = [
 
 [[package]]
 name = "traits-audit"
-version = "0.1.0"
+version = "0.1.3"
 source = { editable = "." }
 dependencies = [
     { name = "kaleido" },
@@ -5306,7 +5306,9 @@ sdl = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "traits-audit" },
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "traits-audit", extra = ["camd", "mlflow", "pybamm", "sdl"] },
 ]
 
 [package.metadata]
@@ -5338,7 +5340,11 @@ requires-dist = [
 provides-extras = ["mlflow", "sdl", "camd", "pybamm", "docs", "dev"]
 
 [package.metadata.requires-dev]
-dev = [{ name = "traits-audit", editable = "." }]
+dev = [
+    { name = "pytest", specifier = ">=8" },
+    { name = "pytest-cov", specifier = ">=5" },
+    { name = "traits-audit", extras = ["mlflow", "camd", "pybamm", "sdl"], editable = "." },
+]
 
 [[package]]
 name = "triton"

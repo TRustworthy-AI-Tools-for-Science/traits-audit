@@ -931,11 +931,13 @@ def _fig_pareto_scenarios(
         )
         for n in pareto_data
     ]
-    ax.legend(handles=handles, frameon=False,
-              fontsize=_RCPARAMS["legend.fontsize"])
-    ax.set_xlabel("CalibrationError (ECE)")
-    ax.set_ylabel("Mean absolute error")
+
+    ax.set_xlabel("Calibration Error (ECE)")
+    ax.set_ylabel("Mean absolute error (MAE)")
+    ax.set_box_aspect(1) 
     ax.grid(False)
+    ax.legend(handles=handles, frameon=False,
+            fontsize=_RCPARAMS["legend.fontsize"], bbox_to_anchor=(1.05, 0.5), loc='center left')
     fig.tight_layout()
     return fig
 
@@ -1119,14 +1121,6 @@ def _fig_metric_correlations(
     
     # Plot heatmap
     im = ax.imshow(corr_matrix, cmap="RdBu_r", vmin=-1, vmax=1, aspect="auto")
-    
-    # Annotate with correlation values
-    for i in range(n_checks):
-        for j in range(n_checks):
-            val = corr_matrix[i, j]
-            text_color = "white" if abs(val) > 0.5 else "black"
-            ax.text(j, i, f"{val:.2f}", ha="center", va="center",
-                   color=text_color, fontsize=9, weight="bold")
     
     # Set ticks and labels
     ax.set_xticks(range(n_checks))

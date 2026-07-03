@@ -109,7 +109,7 @@ def _make_pipeline(check_every: int, logger=None):
             IntervalScoreCheck(),
             IntervalCoverageCheck(expected_coverage=0.683, tolerance=0.15),
             VarianceAlignmentCheck(tolerance=0.5),
-            UncertaintyEvolutionCheck(slope_threshold=-0.05),
+            UncertaintyEvolutionCheck(),
             UncertaintyAnomalyCheck(z_threshold=3.0),
             VarianceErrorCorrelationCheck(min_correlation=0.1),
         ],
@@ -443,8 +443,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--n-seed",      type=int,   default=8,
                    help="Random seed evaluations (default: 8)")
-    p.add_argument("--n-iter",      type=int,   default=20,
-                   help="UCB AL iterations (default: 20)")
+    p.add_argument("--n-iter",      type=int,   default=250,
+                   help="UCB AL iterations (default: 250)")
     p.add_argument("--out-dir",     type=str,   default="_results/pybamm_demo")
     p.add_argument("--seed",        type=int,   default=0)
     p.add_argument("--check-every", type=int,   default=5,
