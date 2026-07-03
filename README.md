@@ -4,7 +4,7 @@
   <img src="docs/_static/logo.svg" alt="traits-audit logo" width="200">
 </p>
 
-![version](https://img.shields.io/badge/version-0.1.0-blue)
+![version](https://img.shields.io/badge/version-0.1.2-blue)
 ![python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![license](https://img.shields.io/badge/license-MIT-green)
 ![tests](https://github.com/TRustworthy-AI-Tools-for-Science/traits-audit/actions/workflows/ci.yml/badge.svg)
@@ -18,31 +18,22 @@ A flexible uncertainty audit pipeline that hooks into any pre-existing active le
 ## Installation
 
 ```bash
-# uv workspace (recommended — editable, no reinstall needed on source changes)
-uv sync --all-packages
-
-# individual optional extras
-uv sync --extra sdl
-uv sync --extra pybamm
-uv sync --extra mlflow
-uv sync --extra camd        # see Demo 3 note below for two extra pip steps
+# uv workspace (recommended — installs all demos + mlflow, editable, no reinstall on edits)
+uv sync
 
 # standalone pip install
 pip install "."
-pip install ".[pybamm]"
-pip install ".[sdl]"
-pip install ".[mlflow]"
-# camd — see Demo 3 note below
+pip install ".[mlflow,camd,pybamm,sdl]"   # with all demo extras
 ```
 
 ## Documentation
 
 This repository uses **Sphinx** with docs source files in `docs/`.
 
-- Local preview:
+- Local preview (build + serve in browser):
   ```bash
-  pip install -e ".[docs]"
-  make -C docs html SPHINXOPTS="-W"
+  make -C docs html && uv run python -m http.server 8000 --directory docs/_build/html
+  # then open http://localhost:8000
   ```
 - Production build:
   ```bash
@@ -56,7 +47,7 @@ The package ships with a self-contained demo: a bootstrap-ensemble surrogate
 learning a 1-D function via LCB acquisition, fully wired to the audit pipeline.
 
 ```bash
-ta-demo                          # 40 AL steps
+ta-demo                          # 100 AL steps, 4 calibration scenarios
 ta-demo --steps 60 --seed 7
 ta-demo --help
 ```
@@ -65,14 +56,20 @@ The demo entry point is `ta-demo` (source: `src/traits_audit/_example.py`).
 
 ## Built-in checks
 
-| Check | Category | What it tests | Required data |
+| Check | Category | What it measures | Required data |
 |---|---|---|---|
-| `CalibrationErrorCheck` | Aleatoric (model) | [Kuleshov et al. (2018)][kuleshov2018] calibration error | `y_true`, `y_pred_mean`, `y_pred_std` |
-| `IntervalCoverageCheck` | Aleatoric (model) | Empirical 1-sigma coverage vs 68.3 % ([Kuleshov et al. (2018)][kuleshov2018]) | `y_true`, `y_pred_mean`, `y_pred_std` |
+| `CalibrationErrorCheck` | Aleatoric (model) | [Kuleshov et al. (2018)][kuleshov2018] mean calibration error | `y_true`, `y_pred_mean`, `y_pred_std` |
+| `ConformalCoverageCheck` | Aleatoric (model) | Distribution-free marginal coverage (Angelopoulos & Bates 2021) | `y_true`, `y_pred_mean`, `y_pred_std` |
+| `CRPSCheck` | Aleatoric (model) | Continuous Ranked Probability Score — proper scoring rule (Gneiting & Raftery 2007) | `y_true`, `y_pred_mean`, `y_pred_std` |
+| `NegativeLogLikelihoodCheck` | Aleatoric (model) | Gaussian NLL — proper scoring rule (Good 1952) | `y_true`, `y_pred_mean`, `y_pred_std` |
+| `PITUniformityCheck` | Aleatoric (model) | KS test for PIT uniformity — distributional calibration (Dawid 1984) | `y_true`, `y_pred_mean`, `y_pred_std` |
+| `IntervalScoreCheck` | Aleatoric (model) | Winkler interval score — penalises non-coverage and excessive width (Winkler 1972) | `y_true`, `y_pred_mean`, `y_pred_std` |
+| `IntervalCoverageCheck` | Aleatoric (model) | Empirical 1-sigma coverage vs 68.3 % | `y_true`, `y_pred_mean`, `y_pred_std` |
 | `VarianceAlignmentCheck` | Aleatoric (model) | Ratio of predicted to empirical variance ([Levi et al. (2022)][levi2022]) | `y_true`, `y_pred_mean`, `y_pred_std` |
-| `UncertaintyEvolutionCheck` | Epistemic | Trend of uncertainty over iterations | `uncertainties` or per-step `uncertainty` |
-| `UncertaintyAnomalyCheck` | Epistemic | Z-score anomaly detection on uncertainty | `uncertainties` or per-step `uncertainty` |
+| `UncertaintyEvolutionCheck` | Epistemic | Trend of uncertainty over iterations | per-step `uncertainty` |
+| `UncertaintyAnomalyCheck` | Epistemic | Z-score anomaly detection on uncertainty | per-step `uncertainty` |
 | `VarianceErrorCorrelationCheck` | Epistemic | Spearman ρ between std and \|error\| ([Lakshminarayanan et al. (2017)][lakshminarayanan2017]) | `y_true`, `y_pred_mean`, `y_pred_std` |
+| `LyapunovStabilityCheck` | Epistemic | Lyapunov exponent of surrogate dynamics in PCA-reduced feature space | `op_states` |
 
 
 ### Basic usage — active run
@@ -92,7 +89,6 @@ for step in my_loop:
     mu, sigma = model.predict_with_uncertainty(X)
     hook.on_step(
         uncertainty=float(sigma.mean()),
-        entropy=float(0.5 * np.log(2 * np.pi * np.e * sigma ** 2).mean()),
     )
 
 report = hook.on_end(y_true=y_test, y_pred_mean=mu_test, y_pred_std=sigma_test)
@@ -115,15 +111,13 @@ audit on a different active learning domain.  All run without real hardware.
 
 ### Demo 1 — Calibration scenarios (1-D benchmark)
 
-> Same as quick start
-
 Compares four calibration regimes (perfectly calibrated, well calibrated,
 overconfident, underconfident) on the Forrester benchmark function using a
 bootstrap-ensemble surrogate and LCB acquisition.
 
 ```bash
-ta-demo                                        # 40 steps, all 4 scenarios
-ta-demo --steps 100 --seed 7
+ta-demo                                        # 100 steps, all 4 scenarios
+ta-demo --steps 60 --seed 7
 ta-demo --scenarios overconfident underconfident
 ta-demo --help
 ```
@@ -135,8 +129,6 @@ a lithium-ion cell using PyBAMM's Single Particle Model as the oracle and a
 scikit-learn GPR with UCB acquisition.
 
 ```bash
-pip install "./traits-audit[pybamm]"
-
 ta-pybamm-demo                                 # 8 seed evals + 20 UCB steps
 ta-pybamm-demo --n-iter 30 --kappa 3.0 --seed 7
 ta-pybamm-demo --out-dir _results/pybamm
@@ -145,31 +137,17 @@ ta-pybamm-demo --help
 
 ### Demo 3 — Materials stability screening
 
-Applies query-by-committee active learning to a materials stability dataset
-using an AdaBoost committee surrogate.  Performs Lyapunov stability analysis
-on the learned surrogate in PCA-reduced feature space after the loop.
+Applies query-by-committee active learning to an OQMD materials stability
+dataset using a BaggingRegressor committee surrogate.  Performs Lyapunov
+stability analysis on the surrogate in PCA-reduced feature space.  Falls
+back to synthetic data automatically if the OQMD dataset is unavailable.
 
 ```bash
-ta-camd-demo                                   # 50 iterations, 4 queries/iter
+ta-camd-demo                                   # 100 iterations, 4 queries/iter
 ta-camd-demo --n-iter 30 --n-query 6 --seed 7
 ta-camd-demo --out-dir _results/camd
 ta-camd-demo --help
 ```
-
-> **Note — extra install steps required:** `camd` and `qmpy-tri` pin
-> old versions of scipy/bokeh that conflict with other extras, so they must
-> be installed without their declared dependencies:
->
-> ```bash
-> pip install "./traits-audit[camd]"   # pymatgen, matminer, django, PuLP, …
-> pip install camd --no-deps           # camd package (skips scipy-pinning GPy)
-> pip install qmpy-tri --no-deps       # qmpy thermodynamics (skips old bokeh pin)
-> ```
->
-> On first run the demo downloads the OQMD Voronoi-Magpie fingerprints
-> dataset (~150 MB) from [data.matr.io](https://data.matr.io) and caches it
-> under `~/.cache/traits_audit/`.  If the download fails, synthetic data with
-> the same schema is used automatically.
 
 ### Demo 4 — Self-driving lab LED colour matching
 
@@ -178,8 +156,6 @@ Fréchet distance to a target colour, using the Ax/BoTorch GP as the surrogate.
 Runs in simulation mode — no hardware required.
 
 ```bash
-pip install "./traits-audit[sdl]"
-
 ta-sdl-demo                                    # 6 Sobol warm-start + 25 BO steps
 ta-sdl-demo --n-iter 40 --seed 7
 ta-sdl-demo --out-dir _results/sdl
@@ -191,6 +167,9 @@ ta-sdl-demo --help
 - **Kuleshov et al. (2018)** — *Accurate Uncertainties for Deep Learning Using Calibrated Regression.* ICML 2018. [arxiv:1807.00263](https://arxiv.org/abs/1807.00263)
 - **Lakshminarayanan et al. (2017)** — *Simple and Scalable Predictive Uncertainty Estimation using Deep Ensembles.* NeurIPS 2017. [arxiv:1612.01474](https://arxiv.org/abs/1612.01474)
 - **Levi et al. (2022)** — *Evaluating and Calibrating Uncertainty Prediction in Regression Tasks.* [arxiv:1905.11659](https://arxiv.org/abs/1905.11659)
+- **Angelopoulos & Bates (2021)** — *A Gentle Introduction to Conformal Prediction and Distribution-Free Uncertainty Quantification.* [arxiv:2107.07511](https://arxiv.org/abs/2107.07511)
+- **Gneiting & Raftery (2007)** — *Strictly Proper Scoring Rules, Prediction, and Estimation.* JASA. [doi:10.1198/016214506000001437](https://doi.org/10.1198/016214506000001437)
+- **Winkler (1972)** — *A Decision-Theoretic Approach to Interval Estimation.* JASA.
 
 [kuleshov2018]: https://arxiv.org/abs/1807.00263
 [lakshminarayanan2017]: https://arxiv.org/abs/1612.01474
