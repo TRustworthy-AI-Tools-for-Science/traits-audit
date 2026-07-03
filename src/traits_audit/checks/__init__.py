@@ -1,4 +1,9 @@
-from .calibration import CalibrationErrorCheck
+from .calibration import (
+    CalibrationErrorCheck,
+    KuleshovCalibrationCheck,
+    ENCECheck,
+    CalibrationError1StdCheck,
+)
 from .conformal import ConformalCoverageCheck
 from .coverage import IntervalCoverageCheck, VarianceAlignmentCheck
 from .lyapunov import LyapunovStabilityCheck
@@ -12,6 +17,9 @@ from .uncertainty import (
 
 __all__ = [
     "CalibrationErrorCheck",
+    "KuleshovCalibrationCheck",
+    "ENCECheck",
+    "CalibrationError1StdCheck",
     "ConformalCoverageCheck",
     "CRPSCheck",
     "NegativeLogLikelihoodCheck",
