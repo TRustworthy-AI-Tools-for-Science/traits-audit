@@ -931,11 +931,13 @@ def _fig_pareto_scenarios(
         )
         for n in pareto_data
     ]
-    ax.legend(handles=handles, frameon=False,
-              fontsize=_RCPARAMS["legend.fontsize"])
-    ax.set_xlabel("CalibrationError (ECE)")
-    ax.set_ylabel("Mean absolute error")
+
+    ax.set_xlabel("Calibration Error (ECE)")
+    ax.set_ylabel("Mean absolute error (MAE)")
+    ax.set_box_aspect(1) 
     ax.grid(False)
+    ax.legend(handles=handles, frameon=False,
+            fontsize=_RCPARAMS["legend.fontsize"], bbox_to_anchor=(1.05, 0.5), loc='center left')
     fig.tight_layout()
     return fig
 
