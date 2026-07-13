@@ -418,14 +418,15 @@ def run(
     ]
     stage_reports.append(("final", report))
     fig_grid = _fig_check_grid(stage_reports, "Ax-GP (SDL)")
-    try:
-        fig_grid.write_image(
-            str(fig_dir / "check_grid_sdl.png"),
-            width=fig_grid.layout.width, height=fig_grid.layout.height, scale=2,
-        )
-        print("  Saved check_grid_sdl.png")
-    except Exception:
-        pass
+    if fig_grid is not None:
+        try:
+            fig_grid.write_image(
+                str(fig_dir / "check_grid_sdl.png"),
+                width=fig_grid.layout.width, height=fig_grid.layout.height, scale=2,
+            )
+            print("  Saved check_grid_sdl.png")
+        except Exception:
+            pass
 
     if _use_mlflow:
         for r in report.results:

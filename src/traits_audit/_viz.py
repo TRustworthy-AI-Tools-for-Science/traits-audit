@@ -743,7 +743,10 @@ def _fig_check_grid(
     threshold: dark green = deeply passing, white = at threshold,
     dark red = deeply failing.
     """
-    import plotly.graph_objects as go
+    try:
+        import plotly.graph_objects as go
+    except ModuleNotFoundError:
+        return None
 
     check_names = [r.name for r in stage_reports[0][1].results]
     abbrevs = [_CHECK_ABBREV.get(n, n) for n in check_names]
@@ -845,7 +848,10 @@ def _fig_state_heatmap(
     Each column is independently min-max normalised so components with
     different scales remain visible.
     """
-    import plotly.graph_objects as go
+    try:
+        import plotly.graph_objects as go
+    except ModuleNotFoundError:
+        return None
 
     n_steps = len(history)
     matrix = np.array(
