@@ -428,22 +428,24 @@ def _run_scenario(
         stage_reports.append(("final", report))
 
         fig_grid = _fig_check_grid(stage_reports, config.name)
-        mlflow.log_figure(fig_grid, "audit/check_grid.html")
 
         fig_dir = _ensure_cal_demo_dir()
         stem = config.name[:4]
         name_map = {"perf": "perfect", "well": "well", "over": "over", "unde": "under"}
         stem = name_map.get(stem, stem)
-        try:
-            fig_grid.write_image(
-                str(fig_dir / f"check_grid_{stem}.png"),
-                width=fig_grid.layout.width, height=fig_grid.layout.height, scale=2,
-            )
-        except Exception:
-            pass
+        if fig_grid is not None:
+            mlflow.log_figure(fig_grid, "audit/check_grid.html")
+            try:
+                fig_grid.write_image(
+                    str(fig_dir / f"check_grid_{stem}.png"),
+                    width=fig_grid.layout.width, height=fig_grid.layout.height, scale=2,
+                )
+            except Exception:
+                pass
 
         fig_hmap = _fig_state_heatmap(hook.history, config.name)
-        mlflow.log_figure(fig_hmap, "audit/state_heatmap.html")
+        if fig_hmap is not None:
+            mlflow.log_figure(fig_hmap, "audit/state_heatmap.html")
 
         # Generate audit check correlations figure
         if hook.intermediate_reports:

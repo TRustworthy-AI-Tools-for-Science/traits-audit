@@ -640,19 +640,20 @@ def run(
         ]
         stage_reports.append(("final", report))
         fig_grid = _fig_check_grid(stage_reports, "AdaBoost-QBC (CAMD)")
-        _grid_png = fig_dir / "fig10_check_grid.png"
-        try:
-            fig_grid.write_image(
-                str(_grid_png),
-                width=fig_grid.layout.width,
-                height=fig_grid.layout.height,
-                scale=2,
-            )
-            print("  Saved fig10_check_grid.png")
-        except Exception:
-            _grid_html = fig_dir / "fig10_check_grid.html"
-            fig_grid.write_html(str(_grid_html))
-            print(f"  Saved fig10_check_grid.html (install kaleido for PNG export)")
+        if fig_grid is not None:
+            _grid_png = fig_dir / "fig10_check_grid.png"
+            try:
+                fig_grid.write_image(
+                    str(_grid_png),
+                    width=fig_grid.layout.width,
+                    height=fig_grid.layout.height,
+                    scale=2,
+                )
+                print("  Saved fig10_check_grid.png")
+            except Exception:
+                _grid_html = fig_dir / "fig10_check_grid.html"
+                fig_grid.write_html(str(_grid_html))
+                print(f"  Saved fig10_check_grid.html (install kaleido for PNG export)")
 
     abs_errors_al = [h.get("abs_error", float("nan")) for h in hook.history]
     plot_pareto_frontier(
