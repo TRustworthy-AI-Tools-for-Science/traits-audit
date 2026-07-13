@@ -10,6 +10,7 @@ from .lyapunov import LyapunovStabilityCheck
 from .pit import PITUniformityCheck
 from .scoring import CRPSCheck, IntervalScoreCheck, NegativeLogLikelihoodCheck
 from .uncertainty import (
+    MahalanobisOODCheck,
     UncertaintyAnomalyCheck,
     UncertaintyEvolutionCheck,
     VarianceErrorCorrelationCheck,
@@ -31,4 +32,5 @@ __all__ = [
     "UncertaintyAnomalyCheck",
     "VarianceErrorCorrelationCheck",
     "LyapunovStabilityCheck",
+    "MahalanobisOODCheck",
 ]

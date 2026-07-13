@@ -24,6 +24,7 @@ __version__ = "0.1.2"
 from . import dmdc
 from .base import AuditCategory, AuditCheck, AuditReport, AuditResult
 from .checks.lyapunov import LyapunovStabilityCheck
+from .detrend import DetrendResult, RegimeDetrender
 from .hook import AuditHook
 from .mlflow_logger import MLflowLogger
 from .pipeline import AuditPipeline
@@ -37,5 +38,7 @@ __all__ = [
     "AuditCategory",
     "MLflowLogger",
     "LyapunovStabilityCheck",
+    "DetrendResult",
+    "RegimeDetrender",
     "dmdc",
 ]

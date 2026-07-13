@@ -18,6 +18,7 @@ All built-in checks are importable from :mod:`traits_audit.checks`.
        UncertaintyAnomalyCheck,
        VarianceErrorCorrelationCheck,
        LyapunovStabilityCheck,
+       MahalanobisOODCheck,
    )
 
 
@@ -80,6 +81,10 @@ Summary table
      - ``epistemic``
      - Fraction of operating points with :math:`|\lambda_{\max}|` < stability threshold
      - ``lambda_max`` kwarg / history key, or ``surrogate_fn`` + ``op_states``
+   * - :class:`~traits_audit.checks.MahalanobisOODCheck`
+     - ``epistemic``
+     - Fraction of recent steps out-of-distribution, cross-checked against calibrated uncertainty for suppression
+     - ``op_states`` kwarg; optional ``uncertainties`` kwarg or per-step ``uncertainty``
 
 
 Calibration checks
@@ -368,6 +373,21 @@ Lyapunov stability check
    points having :math:`|\lambda_{\max}|` > 1.
 
 .. autoclass:: traits_audit.checks.LyapunovStabilityCheck
+   :members:
+   :no-index:
+
+
+Mahalanobis OOD check
+----------------------
+
+Flags queries that are both far from the training distribution (in
+parameter space) and reported with suppressed — rather than elevated —
+calibrated uncertainty, a dangerous combination for irreversible
+experiments. OOD activity by itself is expected during active learning;
+this check only fails when the model is confidently wrong exactly where
+it is extrapolating.
+
+.. autoclass:: traits_audit.checks.MahalanobisOODCheck
    :members:
    :no-index:
 

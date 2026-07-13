@@ -19,6 +19,7 @@ from traits_audit.checks import (
     IntervalScoreCheck,
     IntervalCoverageCheck,
     LyapunovStabilityCheck,
+    MahalanobisOODCheck,
     VarianceAlignmentCheck,
     UncertaintyEvolutionCheck,
     UncertaintyAnomalyCheck,
@@ -452,6 +453,114 @@ def test_lyapunov_callable_unstable():
     op_states = rng.standard_normal((5, 2)) * 0.1  # small perturbations
     result = LyapunovStabilityCheck(alpha=0.01, min_stable_fraction=0.5).run(
         [], surrogate_fn=f, op_states=op_states
+    )
+    assert not result.passed
+
+
+# ── MahalanobisOODCheck ──────────────────────────────────────────────────────
+
+def _mahalanobis_data(seed, n_id=40, d=2, window=10, shift=20.0):
+    """(n_id + window, d) array: an in-distribution cluster followed by a shifted
+    OOD tail occupying the whole trailing window."""
+    rng = np.random.default_rng(seed)
+    id_cluster = rng.standard_normal((n_id, d))
+    tail = rng.standard_normal((window, d)) * 0.5 + shift
+    return np.vstack([id_cluster, tail]), n_id, window
+
+
+def test_mahalanobis_skips_when_op_states_absent():
+    result = MahalanobisOODCheck().run([])
+    assert result.passed
+    assert result.value is None
+    assert "Skipped" in result.message
+
+
+def test_mahalanobis_skips_below_min_history():
+    op_states = np.random.default_rng(0).standard_normal((10, 2))
+    result = MahalanobisOODCheck(min_history=20).run([], op_states=op_states)
+    assert result.passed
+    assert result.value is None
+    assert "Skipped" in result.message
+
+
+def test_mahalanobis_passes_on_pure_in_distribution_data():
+    op_states = np.random.default_rng(0).standard_normal((30, 2))
+    result = MahalanobisOODCheck(min_history=20, window=10, n_bootstrap=50, random_state=0).run(
+        [], op_states=op_states, uncertainties=np.full(30, 0.1)
+    )
+    assert result.passed
+    assert result.value == pytest.approx(0.0)
+
+
+def test_mahalanobis_passes_when_ood_exploration_has_healthy_uncertainty():
+    op_states, n_id, window = _mahalanobis_data(seed=42)
+    uncertainties = np.concatenate([np.full(n_id, 0.1), np.full(window, 1.0)])
+    result = MahalanobisOODCheck(min_history=20, window=window, n_bootstrap=50, random_state=0).run(
+        [], op_states=op_states, uncertainties=uncertainties
+    )
+    assert result.passed
+    assert result.value == pytest.approx(1.0)
+    assert result.details["suppression_assessed"] is True
+
+
+def test_mahalanobis_fails_when_ood_uncertainty_is_suppressed():
+    op_states, n_id, window = _mahalanobis_data(seed=42)
+    uncertainties = np.concatenate([np.full(n_id, 1.0), np.full(window, 0.05)])
+    result = MahalanobisOODCheck(min_history=20, window=window, n_bootstrap=50, random_state=0).run(
+        [], op_states=op_states, uncertainties=uncertainties
+    )
+    assert not result.passed
+    assert result.value == pytest.approx(1.0)
+    assert "suppression" in result.message
+
+
+def test_mahalanobis_degraded_pass_without_uncertainty_data():
+    op_states, _, _ = _mahalanobis_data(seed=42)
+    result = MahalanobisOODCheck(min_history=20, window=10, n_bootstrap=50, random_state=0).run(
+        [], op_states=op_states
+    )
+    assert result.passed
+    assert result.value == pytest.approx(1.0)
+    assert result.details["suppression_assessed"] is False
+
+
+def test_mahalanobis_uses_in_window_baseline_when_enough_id_points_in_window():
+    rng = np.random.default_rng(7)
+    n_id, d, window = 40, 2, 10
+    id_cluster = rng.standard_normal((n_id, d))
+    ood_part = rng.standard_normal((6, d)) * 0.5 + 20.0
+    id_part = rng.standard_normal((4, d))
+    op_states = np.vstack([id_cluster, ood_part, id_part])
+    uncertainties = np.concatenate([np.full(n_id, 0.1), np.full(6, 1.0), np.full(4, 0.1)])
+
+    result = MahalanobisOODCheck(min_history=20, window=window, n_bootstrap=50, random_state=1).run(
+        [], op_states=op_states, uncertainties=uncertainties
+    )
+    assert result.passed
+    assert result.details["id_baseline_mode"] == "window"
+
+
+def test_mahalanobis_details_keys():
+    op_states, n_id, window = _mahalanobis_data(seed=42)
+    uncertainties = np.concatenate([np.full(n_id, 0.1), np.full(window, 1.0)])
+    result = MahalanobisOODCheck(min_history=20, window=window, n_bootstrap=50, random_state=0).run(
+        [], op_states=op_states, uncertainties=uncertainties
+    )
+    for key in (
+        "mahalanobis_series", "threshold", "is_ood", "ood_fraction", "window_effective",
+        "n_reference", "n_bootstrap", "shrinkage_", "n_ood_total", "suppression_assessed",
+        "id_baseline_mode", "id_baseline_mean", "ood_window_mean",
+    ):
+        assert key in result.details
+    assert len(result.details["mahalanobis_series"]) == op_states.shape[0]
+
+
+def test_mahalanobis_reads_uncertainty_from_history():
+    op_states, n_id, window = _mahalanobis_data(seed=42)
+    u = np.concatenate([np.full(n_id, 1.0), np.full(window, 0.05)])
+    history = [{"uncertainty": float(v)} for v in u]
+    result = MahalanobisOODCheck(min_history=20, window=window, n_bootstrap=50, random_state=0).run(
+        history, op_states=op_states
     )
     assert not result.passed
 

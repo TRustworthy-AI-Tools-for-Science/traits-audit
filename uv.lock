@@ -5265,6 +5265,7 @@ dependencies = [
     { name = "kaleido" },
     { name = "matplotlib" },
     { name = "numpy" },
+    { name = "scikit-learn" },
     { name = "scipy" },
 ]
 
@@ -5330,6 +5331,7 @@ requires-dist = [
     { name = "pymatgen", marker = "extra == 'camd'" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5" },
+    { name = "scikit-learn" },
     { name = "scikit-learn", marker = "extra == 'camd'" },
     { name = "scikit-learn", marker = "extra == 'pybamm'" },
     { name = "scipy", specifier = ">=1.10.0" },
