@@ -42,11 +42,20 @@ References
           The Behavior of Nonnormal Matrices and Operators. Princeton
           University Press. ISBN 978-0-691-11946-5. Pseudospectra theory;
           motivates :func:`pseudospectrum`.
+
+Detrending
+----------
+``fit_dmdc``/``fit_dmdc_pairs`` center the augmented-state trajectory before
+fitting, by default — see :mod:`traits_audit.detrend` (which cites [HHK20]
+and [SKA24] motivating pre-DMD centering) for the detrending model itself.
+Pass ``detrend=False`` to fit on raw, uncentered data.
 """
 from __future__ import annotations
 
 import numpy as np
 from scipy.linalg import solve_discrete_lyapunov
+
+from .detrend import RegimeDetrender
 
 __all__ = [
     "fit_dmdc",
@@ -63,7 +72,43 @@ __all__ = [
 ]
 
 
-def fit_dmdc(aug_states: np.ndarray, actions: np.ndarray, n_components: int = 8):
+def _detrend_trajectory(states: np.ndarray, regimes: np.ndarray | None = None) -> np.ndarray:
+    """Chronologically detrend a contiguous state trajectory via a fresh
+    :class:`~traits_audit.detrend.RegimeDetrender`.
+
+    ``regimes`` defaults to a trivial constant vector when omitted, which
+    collapses the detrender's regime clustering to a single group — i.e. a
+    causal (expanding-window, then EMA) global baseline.
+    """
+    states = np.asarray(states, dtype=np.float64)
+    if regimes is None:
+        regimes = np.zeros((len(states), 1))
+    else:
+        regimes = np.asarray(regimes, dtype=np.float64)
+    detrender = RegimeDetrender()
+    out = np.empty_like(states)
+    for i in range(len(states)):
+        out[i] = detrender.update(states[i], regimes[i]).detrended
+    return out
+
+
+def _detrend_pairs_pooled(aug_t: np.ndarray, aug_t1: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Order-invariant centering for explicit (possibly resampled, out-of-order)
+    transition pairs: subtract the pooled mean of ``aug_t`` from both arrays.
+
+    Unlike :func:`_detrend_trajectory`, this does not assume temporal order —
+    appropriate for :func:`fit_dmdc_pairs`, whose own contract makes no such
+    assumption (bootstrap-resampled pairs may repeat rows and appear in any
+    order).
+    """
+    aug_t = np.asarray(aug_t, dtype=np.float64)
+    aug_t1 = np.asarray(aug_t1, dtype=np.float64)
+    mean_t = aug_t.mean(axis=0)
+    return aug_t - mean_t, aug_t1 - mean_t
+
+
+def fit_dmdc(aug_states: np.ndarray, actions: np.ndarray, n_components: int = 8,
+             regimes: np.ndarray | None = None, detrend: bool = True):
     """Fit a reduced-order DMDc model ``z_{t+1} = A_r z_t + B_r a_t``.
 
     Parameters
@@ -74,6 +119,13 @@ def fit_dmdc(aug_states: np.ndarray, actions: np.ndarray, n_components: int = 8)
         Action applied at each step; only the first ``T-1`` rows are used.
     n_components : int
         Target SVD truncation rank ``r``; clipped to ``min(n_components, n, T-1)``.
+    regimes : np.ndarray, shape (T, k), optional
+        Per-step regime vector forwarded to :func:`_detrend_trajectory`
+        (ignored if ``detrend=False``). Defaults to a trivial constant
+        vector — a causal global-EMA baseline — when omitted.
+    detrend : bool
+        Center ``aug_states`` via :func:`_detrend_trajectory` before fitting
+        (default ``True``). Pass ``False`` to fit on raw data.
 
     Returns
     -------
@@ -87,6 +139,8 @@ def fit_dmdc(aug_states: np.ndarray, actions: np.ndarray, n_components: int = 8)
     """
     aug_states = np.asarray(aug_states, dtype=np.float64)
     actions = np.asarray(actions, dtype=np.float64)
+    if detrend:
+        aug_states = _detrend_trajectory(aug_states, regimes)
     T_fit = len(aug_states) - 1
     n = aug_states.shape[1]
     m = actions.shape[1]
@@ -110,7 +164,7 @@ def fit_dmdc(aug_states: np.ndarray, actions: np.ndarray, n_components: int = 8)
 
 
 def fit_dmdc_pairs(aug_t: np.ndarray, aug_t1: np.ndarray, actions: np.ndarray,
-                    n_components: int = 8):
+                    n_components: int = 8, detrend: bool = True):
     """Fit DMDc on explicit (possibly non-contiguous) transition pairs.
 
     Unlike :func:`fit_dmdc`, this does not assume ``aug_t1[i] == aug_t[i+1]``,
@@ -124,6 +178,14 @@ def fit_dmdc_pairs(aug_t: np.ndarray, aug_t1: np.ndarray, actions: np.ndarray,
         Action applied at each transition.
     n_components : int
         Target SVD truncation rank ``r``.
+    detrend : bool
+        Center ``aug_t``/``aug_t1`` via :func:`_detrend_pairs_pooled` before
+        fitting (default ``True``). This is an order-invariant pooled-mean
+        subtraction, not :func:`fit_dmdc`'s causal streaming detrend — pairs
+        make no temporal-order guarantee (e.g. bootstrap resamples), so a
+        causal detrender would be inappropriate here. Pass ``False`` to fit
+        on raw data, e.g. when the source trajectory was already detrended
+        upstream (see :func:`bootstrap_eig_ci`).
 
     Returns
     -------
@@ -137,6 +199,8 @@ def fit_dmdc_pairs(aug_t: np.ndarray, aug_t1: np.ndarray, actions: np.ndarray,
     aug_t = np.asarray(aug_t, dtype=np.float64)
     aug_t1 = np.asarray(aug_t1, dtype=np.float64)
     actions = np.asarray(actions, dtype=np.float64)
+    if detrend:
+        aug_t, aug_t1 = _detrend_pairs_pooled(aug_t, aug_t1)
     n = aug_t.shape[1]
     m = actions.shape[1]
     N = len(aug_t)
@@ -311,12 +375,19 @@ def compute_gramians(A_r: np.ndarray, B_r: np.ndarray):
 
 
 def bootstrap_eig_ci(aug_states: np.ndarray, actions: np.ndarray, n_boot: int = 200,
-                      n_components: int = 8, seed: int = 42):
+                      n_components: int = 8, seed: int = 42, regimes: np.ndarray | None = None,
+                      detrend: bool = True):
     """Bootstrap 95% CI on eigenvalue magnitudes via paired-transition resampling.
 
     Resamples ``(s̃_t, s̃_{t+1}, a_t)`` transitions with replacement and refits
     DMDc on each resample, building an empirical distribution of
     ``|λ_i(A_r)|`` for each of the ``r`` modes.
+
+    When ``detrend``, the full trajectory is centered ONCE via
+    :func:`_detrend_trajectory` before resampling begins (rather than
+    re-running a causal streaming detrend on each shuffled/repeated-row
+    resample, which would make the detrend fit an artifact of resample order
+    rather than the trajectory).
 
     Returns
     -------
@@ -329,6 +400,8 @@ def bootstrap_eig_ci(aug_states: np.ndarray, actions: np.ndarray, n_boot: int = 
     """
     aug_states = np.asarray(aug_states, dtype=np.float64)
     actions = np.asarray(actions, dtype=np.float64)
+    if detrend:
+        aug_states = _detrend_trajectory(aug_states, regimes)
     rng = np.random.default_rng(seed)
     T_pairs = len(aug_states) - 1
     mags = []
@@ -338,7 +411,7 @@ def bootstrap_eig_ci(aug_states: np.ndarray, actions: np.ndarray, n_boot: int = 
         aug_t1 = aug_states[idx + 1]
         acts = actions[idx]
         try:
-            A_b, _, _ = fit_dmdc_pairs(aug_t, aug_t1, acts, n_components=n_components)
+            A_b, _, _ = fit_dmdc_pairs(aug_t, aug_t1, acts, n_components=n_components, detrend=False)
             mags.append(np.abs(np.linalg.eigvals(A_b)))
         except Exception:
             continue

@@ -77,15 +77,18 @@ class TestFitDmdc:
         assert U_r.shape == (2, 2)
 
     def test_recovers_complex_eigenvalues(self, stable_traj):
+        # detrend=False: this test verifies core SVD/lstsq recovery of known
+        # ground-truth dynamics, a concern orthogonal to detrending (tested
+        # separately in TestDetrending below).
         A_true, _, states, actions = stable_traj
-        A_r, _, U_r = fit_dmdc(states, actions, n_components=2)
+        A_r, _, U_r = fit_dmdc(states, actions, n_components=2, detrend=False)
         # Project A_r back into original coords; should approximate A_true
         A_full = U_r @ A_r @ U_r.T
         np.testing.assert_allclose(A_full, A_true, atol=0.05)
 
     def test_eigenvalues_are_complex_for_rotation_matrix(self, stable_traj):
         _, _, states, actions = stable_traj
-        A_r, _, _ = fit_dmdc(states, actions, n_components=2)
+        A_r, _, _ = fit_dmdc(states, actions, n_components=2, detrend=False)
         eigs = np.linalg.eigvals(A_r)
         assert np.any(np.abs(eigs.imag) > 1e-6)
 
@@ -97,7 +100,7 @@ class TestFitDmdc:
 
     def test_unstable_system_has_eigenvalue_above_one(self, unstable_traj):
         _, _, states, actions = unstable_traj
-        A_r, _, _ = fit_dmdc(states, actions, n_components=2)
+        A_r, _, _ = fit_dmdc(states, actions, n_components=2, detrend=False)
         assert np.abs(np.linalg.eigvals(A_r)).max() > 1.0
 
 
@@ -105,10 +108,15 @@ class TestFitDmdc:
 
 class TestFitDmdcPairs:
     def test_matches_fit_dmdc_on_contiguous_pairs(self, stable_traj):
+        # detrend=False on both sides: fit_dmdc and fit_dmdc_pairs use
+        # different *default* detrending algorithms (causal streaming vs.
+        # order-invariant pooled-mean, see TestDetrending), so this test
+        # isolates the core SVD/lstsq equivalence the two entry points share.
         _, _, states, actions = stable_traj
         T = len(states) - 1
-        A_r1, B_r1, U_r1 = fit_dmdc(states, actions, n_components=2)
-        A_r2, B_r2, U_r2 = fit_dmdc_pairs(states[:T], states[1:T + 1], actions[:T], n_components=2)
+        A_r1, B_r1, U_r1 = fit_dmdc(states, actions, n_components=2, detrend=False)
+        A_r2, B_r2, U_r2 = fit_dmdc_pairs(states[:T], states[1:T + 1], actions[:T],
+                                           n_components=2, detrend=False)
         # Subspaces may differ in sign but A_full should match closely.
         A_full1 = U_r1 @ A_r1 @ U_r1.T
         A_full2 = U_r2 @ A_r2 @ U_r2.T
@@ -125,12 +133,41 @@ class TestFitDmdcPairs:
         assert U_r.shape == (4, 3)
 
 
+# ── detrending ────────────────────────────────────────────────────────────────
+
+class TestDetrending:
+    def test_fit_dmdc_detrend_changes_fit_on_mean_shifted_trajectory(self, stable_traj):
+        _, _, states, actions = stable_traj
+        shifted = states + np.array([5.0, -5.0])
+        A_raw, _, U_raw = fit_dmdc(shifted, actions, n_components=2, detrend=False)
+        A_dt, _, U_dt = fit_dmdc(shifted, actions, n_components=2, detrend=True)
+        A_full_raw = U_raw @ A_raw @ U_raw.T
+        A_full_dt = U_dt @ A_dt @ U_dt.T
+        assert not np.allclose(A_full_raw, A_full_dt, atol=1e-3)
+
+    def test_fit_dmdc_pairs_pooled_detrend_recovers_shifted_system(self, stable_traj):
+        A_true, _, states, actions = stable_traj
+        shifted = states + np.array([10.0, -10.0])
+        T = len(shifted) - 1
+        A_r, _, U_r = fit_dmdc_pairs(shifted[:T], shifted[1:T + 1], actions[:T],
+                                      n_components=2, detrend=True)
+        A_full = U_r @ A_r @ U_r.T
+        np.testing.assert_allclose(A_full, A_true, atol=0.1)
+
+    def test_bootstrap_eig_ci_finite_with_detrending(self, stable_traj):
+        _, _, states, actions = stable_traj
+        lo, hi = bootstrap_eig_ci(states, actions, n_boot=20, n_components=2, seed=0)
+        assert np.all(np.isfinite(lo))
+        assert np.all(np.isfinite(hi))
+        assert np.all(lo <= hi)
+
+
 # ── dmdc_r2 ───────────────────────────────────────────────────────────────────
 
 class TestDmdcR2:
     def test_high_r2_for_well_fit_linear_system(self, stable_traj):
         _, _, states, actions = stable_traj
-        A_r, B_r, U_r = fit_dmdc(states, actions, n_components=2)
+        A_r, B_r, U_r = fit_dmdc(states, actions, n_components=2, detrend=False)
         r2 = dmdc_r2(states, actions, A_r, B_r, U_r)
         assert r2 > 0.95
 

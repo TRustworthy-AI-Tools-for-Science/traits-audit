@@ -100,7 +100,7 @@ extracted at the proposed point:
      - Whether the GP is most uncertain at LED settings where it predicts colour distance poorly
    * - ``LyapunovStability``
      - End of run
-     - Whether gradient-descent dynamics of the GP surrogate are stable in PCA-reduced (R, G, B) space
+     - Whether gradient-descent dynamics of the GP surrogate are stable in PCA-reduced (R, G, B) space, aggregated **cumulatively since step 0** (``window=None``, the default) — a global verdict, not the model's current/recent state. Contrast with the PyBAMM demo's ``window=30`` local/recent-window verdict.
 
 
 Methods
@@ -182,6 +182,14 @@ The step size :math:`\alpha = 0.01` is chosen to keep eigenvalues near the
 unit circle, balancing curvature visibility against numerical stability.
 The Lyapunov analysis operates in the normalised :math:`[0, 1]^3`
 (R, G, B) space.
+
+"Local" above is *spatial* — each :math:`\lambda_{\max}` is a per-operating-point
+linearization. ``LyapunovStabilityCheck`` is wired into the audit pipeline at
+its default ``window=None``, a separate, *temporal* local/global choice: it
+aggregates the stable fraction cumulatively over the whole run rather than a
+recent window, demonstrating the global side of that axis in contrast to the
+PyBAMM demo's ``window=30`` (local/recent) — see :doc:`checks` and
+``LYAPUNOV_ANALYSIS.md`` for the full local/global distinction.
 
 
 .. Computational trade-offs

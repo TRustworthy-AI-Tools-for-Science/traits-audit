@@ -98,6 +98,7 @@ def _make_pipeline(check_every: int, logger=None):
         UncertaintyEvolutionCheck,
         UncertaintyAnomalyCheck,
         VarianceErrorCorrelationCheck,
+        LyapunovStabilityCheck,
     )
     pipeline = AuditPipeline(
         checks=[
@@ -112,6 +113,11 @@ def _make_pipeline(check_every: int, logger=None):
             UncertaintyEvolutionCheck(),
             UncertaintyAnomalyCheck(z_threshold=3.0),
             VarianceErrorCorrelationCheck(min_correlation=0.1),
+            # window=30: a LOCAL (recent-region) verdict, contrasted with the
+            # CAMD/SDL demos' global/cumulative default (window=None) — see
+            # docs/checks.rst and LYAPUNOV_ANALYSIS.md for the local/global
+            # distinction. Precomputed lambda_max route (see run(), below).
+            LyapunovStabilityCheck(stability_threshold=1.0, min_stable_fraction=0.5, window=30),
         ],
         verbose=False,
     )
@@ -325,23 +331,9 @@ def run(
           f"cap={y_obs[best_i]:.4f} Ah  "
           f"(dataset = {len(y_obs)} pts)")
 
-    report = hook.on_end()
-    print("\n" + report.summary())
-
-    report_path = out_dir / "audit_report.json"
-    with open(report_path, "w") as fh:
-        json.dump(report.to_dict(), fh, indent=2, default=str)
-    print(f"Saved audit report → {report_path}")
-
-    if _use_mlflow:
-        for r in report.results:
-            label = "PASS" if r.passed else "FAIL"
-            val   = f" ({r.value:.4f})" if r.value is not None else ""
-            _mlflow.set_tag(f"audit_verdict/{r.name}", f"{label}{val}")
-        _mlflow.set_tag("audit_verdict/overall", "PASS" if report.passed else "FAIL")
-        _mlflow.log_artifact(str(report_path), "audit")
-
     # ── Phase 3: Lyapunov stability analysis ──────────────────────────────────
+    # Computed before hook.on_end() so LyapunovStabilityCheck (in the pipeline
+    # above) can be given the real lambda_max series via the precomputed route.
     print("\n[3/3] Lyapunov stability analysis …")
     from traits_audit._viz import (
         make_gd_predictor,
@@ -373,6 +365,22 @@ def run(
         out_dir=fig_dir,
         dx=1e-3,
     )
+
+    report = hook.on_end(lambda_max=lyap["lambda_max"])
+    print("\n" + report.summary())
+
+    report_path = out_dir / "audit_report.json"
+    with open(report_path, "w") as fh:
+        json.dump(report.to_dict(), fh, indent=2, default=str)
+    print(f"Saved audit report → {report_path}")
+
+    if _use_mlflow:
+        for r in report.results:
+            label = "PASS" if r.passed else "FAIL"
+            val   = f" ({r.value:.4f})" if r.value is not None else ""
+            _mlflow.set_tag(f"audit_verdict/{r.name}", f"{label}{val}")
+        _mlflow.set_tag("audit_verdict/overall", "PASS" if report.passed else "FAIL")
+        _mlflow.log_artifact(str(report_path), "audit")
 
     plot_uncertainty_evolution(
         np.array(uncertainties),

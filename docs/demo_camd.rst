@@ -6,8 +6,9 @@ Materials stability screening demo (``ta-camd-demo``)
 This demo applies the uncertainty audit to a high-dimensional materials
 discovery task.  An AdaBoost committee model queries a candidate materials
 database for thermodynamic stability; Lyapunov stability analysis is then
-layered on top to characterise how sensitive the learned surrogate is to
-small perturbations in feature space.
+layered on top, fitting a linear dynamical-systems model to the *observed*
+AL query trajectory (via DMDc) to characterise whether it is contracting or
+diverging.
 
 .. code-block:: bash
 
@@ -32,8 +33,8 @@ genuine uncertainty.
 **Questions:** (1) Does the audit detect meaningful calibration and
 exploration signals in a QBC loop over a real materials dataset?
 (2) Does committee disagreement correlate with actual prediction error?
-(3) Is the surrogate dynamics Lyapunov-stable — does the gradient-descent
-trajectory on the learned landscape converge rather than oscillate?
+(3) Is the AL query trajectory Lyapunov-stable — does the DMDc-fitted linear
+model of the trajectory contract rather than diverge?
 
 Uncertainty hook placement
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -188,42 +189,50 @@ interpretable in its context.
 Lyapunov stability framework
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Lyapunov stability analysis characterises the AL trajectory as a dynamical
-system.  Each queried operating point :math:`x_t` is treated as a state, and
-the surrogate gradient-descent map
+Rather than differentiating a scalar surrogate at a fixed operating point
+(the approach used in the PyBAMM and SDL demos, via the gradient-descent map
+:math:`F(x) = x - \alpha\nabla\hat{f}(x)` and its Jacobian
+:math:`J = I - \alpha H_f`), CAMD characterises stability from the
+*observed* AL trajectory itself, via Dynamic Mode Decomposition with Control
+(DMDc, :func:`traits_audit.dmdc.fit_dmdc`; Proctor, Brunton & Kutz, 2016).  Each queried batch
+contributes one row to an augmented state
 
 .. math::
 
-   F(x) = x - \alpha\,\nabla\hat{f}(x), \quad \alpha = 1.0
+   \tilde{s}_t = [\,\text{PC}_1(x_t), \dots, \text{PC}_5(x_t), \bar\sigma_t\,]
 
-defines the next-state transition.  The Jacobian :math:`J = I - \alpha H_f`
-(where :math:`H_f` is the surrogate Hessian) determines local stability: if
-all eigenvalues satisfy :math:`|\lambda| < 1` the map is contractive at that
-point.
+— five **StandardScaler-normalised PCA coordinates** of the queried
+composition plus that batch's mean committee standard deviation
+(:math:`D = 6`) — and DMDc fits a reduced-order linear operator :math:`A_r`
+(rank :math:`r = 5`) such that :math:`\tilde{z}_{t+1} \approx A_r\,\tilde{z}_t`
+in the PCA-reduced subspace.  Unlike :math:`J = I - \alpha H_f` (always real
+and symmetric), :math:`A_r` is a *general* matrix and can have
+complex-conjugate eigenvalues representing spiral modes in the joint
+state/uncertainty space — though for the run shown below the recovered
+eigenvalues came out close to the real axis (see the pole diagram).
+:math:`|\lambda_{\max}(A_r)| < 1` means the fitted dynamics are contractive;
+:math:`> 1` means they are expansive.
 
-All state representations, finite-difference perturbations, and KRR fits are
-performed in **StandardScaler-normalized PCA space** (5 components,
-unit-variance per component).  PCA components computed from raw OQMD features
-have standard deviations of 200–1500, so ``eps=1e-3`` perturbations in raw
-PCA space would be of order :math:`10^{-6}` in the kernel's sensitive range.
-Scaling to unit variance ensures that an ``eps=1e-3`` step is a meaningful
-fraction of the RBF kernel length-scale (``gamma = 1/n_pca = 0.2``).  With
-KRR regularisation ``alpha=1.0`` and GD step :math:`\alpha = 1.0`, the
-Hessian maximum is approximately 0.24, giving eigenvalue spread in
-[0.97, 1.59].
+Per-step values come from :func:`traits_audit.dmdc.stability_convergence`,
+which refits :math:`A_r` on a **growing prefix** of the trajectory
+(:math:`\tilde{s}_0 \dots \tilde{s}_t`) at each step :math:`t`, tracking how
+the identified dynamics evolve as evidence accumulates.  The first few steps
+(before enough points exist for an overdetermined fit) are undefined and
+reported as NaN — ``LyapunovStabilityCheck`` (see below) drops these rather
+than counting them as unstable.  Every DMDc fit here — both the per-prefix
+fits and the final whole-trajectory fit used for the pole diagram and
+Lyapunov-function contour below — centers the augmented-state trajectory
+before fitting by default (:mod:`traits_audit.detrend`), rather than fitting
+on raw, uncentered coordinates.
 
-**Tree ensemble degeneration.**
-Piecewise-constant surrogates (AdaBoost, BaggingRegressor) produce a
-degenerate pole diagram regardless of ``eps``: a queried point inside a
-single leaf returns the same prediction for all perturbations smaller than
-the leaf width, so the finite-difference Hessian is identically zero and
-:math:`J \approx I` with all eigenvalues :math:`1 + 0i`.  This is **not**
-a sign of marginal stability — it means the surrogate is locally
-non-informative.  To avoid this, ``ta-camd-demo`` fits a smooth RBF
-kernel-ridge surrogate (``KernelRidge(kernel="rbf")``) on the final
-accumulated labelled set and uses *that* model for all Jacobian
-computations.  The AL acquisition loop itself continues to use
-AdaBoost/BaggingRegressor.
+``LyapunovStabilityCheck`` is wired into the audit pipeline at its default
+``window=None`` — a *global*, cumulative-since-step-0 verdict, in contrast to
+the PyBAMM demo's ``window=30`` local/recent-window verdict (see
+:doc:`checks` and ``LYAPUNOV_ANALYSIS.md`` for the full local/global
+distinction).  This cumulative *aggregation* is a separate concern from the
+*spatial* locality of each :math:`\lambda_{\max}(A_r(t))` value itself, which
+always reflects a linear operator fit around the trajectory's current
+region, not a whole-landscape guarantee.
 
 
 Results
@@ -269,7 +278,11 @@ ensembles where bootstrap resampling induces excess variance.
 ``VarianceErrorCorrelation`` oscillates near the pass boundary, reflecting
 the maximum-uncertainty policy querying high-uncertainty points that
 subsequently become well-labelled, decoupling committee disagreement from
-prediction error.
+prediction error.  ``LyapunovStability`` shows a blank (``—``) at every
+intermediate snapshot and a value only at the final column: its
+precomputed ``lambda_max`` series is built from the *complete* growing-prefix
+DMDc sweep after the AL loop ends, so — unlike the other rows — it has no
+intermediate-snapshot equivalent to report.
 
 Audit checks over AL steps
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -292,56 +305,54 @@ Lyapunov pole diagram
 .. figure:: _static/demo_camd/fig1_poles.png
    :width: 65%
    :align: center
-   :alt: Complex eigenvalue plot (pole diagram) for the CAMD surrogate
+   :alt: Complex eigenvalue plot (pole diagram) for the DMDc-fitted dynamics matrix
 
-Each point is one eigenvalue of the gradient-descent Jacobian
-:math:`J = I - \alpha H_f` evaluated at a queried operating point, using the
-smooth RBF kernel-ridge surrogate (:math:`\alpha = 1.0`).  The dashed circle
+Each point is one eigenvalue of the rank-5 DMDc operator :math:`A_r` fit on
+the complete (whole-trajectory) augmented-state history.  The dashed circle
 is the unit circle; eigenvalues inside are contractive and those outside are
-expansive.  The eigenvalues are real (the RBF Hessian is symmetric) and
-spread across the real axis, confirming that the scaled-PCA state space gives
-a non-degenerate Jacobian with meaningful variation across operating points.
+expansive.  All five eigenvalues fall close to the real axis and well inside
+the unit circle for this run.  :math:`A_r` is a general (non-symmetric)
+matrix and can in principle produce complex-conjugate pairs — unlike the
+always-real, symmetric gradient-descent Jacobian used in the PyBAMM/SDL
+demos — but the fitted operator here happens to be close to normal.
 
-.. note::
-
-   Using the AdaBoost or BaggingRegressor surrogate directly would collapse
-   all eigenvalues to :math:`1+0i` — a single point on the diagram.  See the
-   :ref:`Lyapunov stability framework <lyapunov-framework>` section for the
-   explanation.
-
-Queried operating points coloured by :math:`|\lambda_{\max}|`
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Queried operating points coloured by growing-prefix :math:`|\lambda_{\max}|`, with the final Lyapunov function contour
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. figure:: _static/demo_camd/fig2_stability_contours.png
    :width: 70%
    :align: center
-   :alt: PCA scatter coloured by maximum Lyapunov exponent
+   :alt: PCA scatter coloured by growing-prefix maximum Lyapunov exponent, overlaid on the final A_r's Lyapunov function contour
 
-Each scatter point is one queried operating point projected onto the first
-two principal components.  The colour encodes :math:`|\lambda_{\max}|` via a
-diverging ``coolwarm`` scale anchored at the stability boundary
-(white = :math:`|\lambda| = 1`; blue = contractive; red = expansive).
-The most unstable points (deep red) are concentrated near the edge of the
-labelled data distribution, where the surrogate curvature is highest.  Stable
-points (blue) cluster in the interior where training data is dense and the
-KRR landscape is smooth.
+Background contours show :math:`V(x) = x^T P x`, the discrete Lyapunov
+function solved for the final, whole-trajectory :math:`A_r` (the same
+discrete-Lyapunov-equation solver used by the PyBAMM/SDL demos, reused here
+on the DMDc-fitted operator rather than a gradient-descent Jacobian).  Each
+scatter point is one queried
+operating point projected onto the first two principal components, coloured
+by its own **growing-prefix** :math:`|\lambda_{\max}(A_r(t))|` at the step it
+was queried.  Most points are well inside the stability boundary (blue,
+:math:`|\lambda| < 1`); the handful of red/light points are early, small-:math:`t`
+steps whose growing-prefix fit was still volatile (see the evolution plot
+below), not a persistent instability tied to any region of feature space.
 
-:math:`|\lambda_{\max}|` vs surrogate uncertainty
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Growing-prefix :math:`|\lambda_{\max}|` vs surrogate uncertainty
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. figure:: _static/demo_camd/fig3_stability_vs_unc.png
    :width: 70%
    :align: center
-   :alt: Maximum Lyapunov exponent vs surrogate posterior standard deviation
+   :alt: Growing-prefix maximum Lyapunov exponent vs surrogate posterior standard deviation
 
-The positive co-occurrence of high committee std and high :math:`|\lambda|`
-(upper-right of the scatter) is expected: both signals reflect the surrogate
-encountering data-sparse, high-curvature regions of feature space.  Stable
-points (:math:`|\lambda| < 1`, below the dashed line) appear primarily at
-moderate surrogate std, consistent with well-sampled regions where the KRR
-landscape is smooth.  This structural agreement validates the Lyapunov
-approach as a complementary, non-redundant diagnostic alongside committee
-uncertainty.
+Each point pairs one AL step's growing-prefix :math:`|\lambda_{\max}(A_r(t))|`
+with that step's mean committee standard deviation.  Unlike the tighter
+co-occurrence sometimes seen with a gradient-descent-Jacobian approach, the
+few unstable points here (above the dashed stability boundary) occur at
+moderate — not extreme — committee std, and several of the highest-std
+points are comfortably stable.  This is expected: DMDc stability reflects how
+*predictable the trajectory's own dynamics* are as a linear system, which is
+a different question from how uncertain the committee is at any one queried
+point; the two remain complementary, largely independent diagnostics.
 
 Lyapunov evolution over the campaign
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -349,17 +360,19 @@ Lyapunov evolution over the campaign
 .. figure:: _static/demo_camd/fig5_lyapunov_evolution.png
    :width: 80%
    :align: center
-   :alt: Lyapunov exponent and surrogate std over active learning steps
+   :alt: Growing-prefix Lyapunov exponent and surrogate std over active learning steps
 
-Dual y-axis: orange = per-step :math:`|\lambda_{\max}|` (left), blue =
-committee std (right).  At each step a fresh KRR is fitted on the accumulated
-labelled set in scaled PCA space and evaluated at the queried point.  The
-:math:`|\lambda_{\max}|` signal is volatile early when the labelled set is
-small and the per-step KRR is underdetermined; it stabilises as data
-accumulate and the surrogate landscape sharpens.  The committee-std curve
-declines steadily — it is largely decoupled from :math:`|\lambda_{\max}|`,
-confirming that uncertainty reduction and gradient-map stability are
-complementary diagnostics.
+Dual y-axis: orange = growing-prefix :math:`|\lambda_{\max}(A_r(t))|` (left),
+blue = committee std (right).  :func:`traits_audit.dmdc.stability_convergence`
+refits :math:`A_r` on the augmented-state trajectory up to step :math:`t` at
+every step; the earliest refits are naturally volatile (few points feeding a
+rank-5 fit), producing large early swings up to :math:`|\lambda_{\max}|
+\approx 4`.  As the trajectory lengthens the growing-prefix fit becomes
+better-determined and :math:`|\lambda_{\max}|` settles below the stability
+boundary (dashed) within about 20 steps, ending near 0.19 for this run.  The
+committee-std curve stays volatile throughout and is largely decoupled from
+:math:`|\lambda_{\max}|` — DMDc stability and committee uncertainty remain
+complementary, non-redundant diagnostics.
 
 Pareto frontier: committee std vs mean absolute error
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

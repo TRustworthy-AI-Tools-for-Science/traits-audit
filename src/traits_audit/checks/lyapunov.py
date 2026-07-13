@@ -90,7 +90,9 @@ class LyapunovStabilityCheck(AuditCheck):
     Required data (at least one route)
     -----------------------------------
     Precomputed (preferred): ``lambda_max`` kwarg (array_like) or
-    ``lambda_max`` key in each history dict (float per step).
+    ``lambda_max`` key in each history dict (float per step). Non-finite
+    entries (e.g. a NaN-padded warm-up prefix from a growing-window fit) are
+    dropped before windowing/aggregation, rather than counted as unstable.
     On-demand: ``surrogate_fn`` kwarg (callable) and ``op_states``
     kwarg (ndarray of shape (N, D)).
 
@@ -195,12 +197,14 @@ class LyapunovStabilityCheck(AuditCheck):
         # Route 1: precomputed lambda_max array (honour the window at aggregation)
         if "lambda_max" in kwargs and kwargs["lambda_max"] is not None:
             lm = np.asarray(kwargs["lambda_max"], dtype=float).ravel()
+            lm = lm[np.isfinite(lm)]  # drop NaN/inf (e.g. a warm-up prefix) before windowing
             if self.window is not None and lm.size > self.window:
                 lm = lm[-self.window:]
         else:
             vals = [h["lambda_max"] for h in history if "lambda_max" in h]
             if vals:
                 lm = np.asarray(vals, dtype=float)
+                lm = lm[np.isfinite(lm)]
                 if self.window is not None and lm.size > self.window:
                     lm = lm[-self.window:]
             elif "surrogate_fn" in kwargs and "op_states" in kwargs:

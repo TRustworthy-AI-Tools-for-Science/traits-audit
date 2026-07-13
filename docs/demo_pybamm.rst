@@ -88,6 +88,9 @@ the **pre-update posterior** at the UCB-selected point:
    * - ``VarianceErrorCorrelation``
      - PyBAMM oracle call
      - Whether the GPR is most uncertain at operating points where its capacity prediction is least accurate
+   * - ``LyapunovStability``
+     - End of run, last 30 steps
+     - Fraction of the *most recent* 30 queried operating points with :math:`|\lambda_{\max}| < 1` — a local/recent-window verdict (``window=30``), in contrast to the CAMD and SDL demos' global/cumulative default (``window=None``, the whole run since step 0)
 
 
 Methods
@@ -178,6 +181,15 @@ The step size :math:`\alpha = 0.05` is chosen to keep eigenvalues near the
 unit circle across all demos, balancing curvature visibility against numerical
 stability.  The Lyapunov analysis operates in the normalised :math:`[0,1]^2`
 (C-rate, temperature) space.
+
+"Local" above is *spatial* — each :math:`\lambda_{\max}` is a per-operating-point
+linearization. ``LyapunovStabilityCheck`` is wired into the audit pipeline with
+``window=30``, a separate, *temporal* local/global choice: it aggregates the
+stable fraction over only the most recent 30 queried points rather than the
+whole run, demonstrating the local (recent-window) side of that axis in
+contrast to the CAMD and SDL demos' global (cumulative) default — see
+:doc:`checks` and ``LYAPUNOV_ANALYSIS.md`` for the full local/global
+distinction.
 
 
 .. Computational trade-offs

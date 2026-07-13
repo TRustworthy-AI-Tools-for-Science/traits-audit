@@ -372,6 +372,24 @@ Lyapunov stability check
    with all operating points having :math:`|\lambda_{\max}|` < 1. (Right) Example with some operating
    points having :math:`|\lambda_{\max}|` > 1.
 
+"Local" is used in two distinct senses across this check and its documentation
+— worth disambiguating explicitly:
+
+- **Spatial locality** (per operating point): each :math:`\lambda_{\max}` comes
+  from linearizing the surrogate's gradient-descent map *at one operating
+  point* — a local property of the landscape there, not a global convergence
+  guarantee for the whole surface. This is the sense used when case-study docs
+  say a check "determines local stability."
+- **Temporal locality** (recent vs. cumulative), controlled by ``window``:
+  ``window=None`` (the default) aggregates the stable fraction over the
+  *entire* history — a global, whole-run verdict that dilutes recent behavior
+  with everything queried since step 0. Setting ``window=M`` restricts the
+  verdict to the *last M* operating points, so it reflects the model's
+  *current* operating region instead. The two senses are independent: a
+  cumulative (``window=None``) verdict is still built from per-point (spatially
+  local) Jacobians; setting a window just changes how many of those per-point
+  results get aggregated into the reported fraction.
+
 .. autoclass:: traits_audit.checks.LyapunovStabilityCheck
    :members:
    :no-index:

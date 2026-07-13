@@ -42,6 +42,7 @@ def _make_pipeline(check_every: int, logger=None):
         UncertaintyEvolutionCheck,
         UncertaintyAnomalyCheck,
         VarianceErrorCorrelationCheck,
+        LyapunovStabilityCheck,
     )
     pipeline = AuditPipeline(
         checks=[
@@ -56,6 +57,11 @@ def _make_pipeline(check_every: int, logger=None):
             UncertaintyEvolutionCheck(),
             UncertaintyAnomalyCheck(z_threshold=3.0),
             VarianceErrorCorrelationCheck(min_correlation=0.1),
+            # window=None (default): a GLOBAL/cumulative verdict, consistent
+            # with stability_convergence's already-cumulative growing-prefix
+            # nature. Contrast with the PyBAMM demo's window=30 (local). See
+            # docs/checks.rst and LYAPUNOV_ANALYSIS.md for the distinction.
+            LyapunovStabilityCheck(stability_threshold=1.0, min_stable_fraction=0.5),
         ],
         verbose=False,
     )
@@ -496,29 +502,9 @@ def run(
                   f"seed={len(seed_data)}  cand={len(cand_data)}  "
                   f"uncertainty={mean_std:.4f}")
 
-    # UncertaintyAnomalyCheck compares recent behaviour against an earlier
-    # baseline.  Use the first two check windows as the historical reference so
-    # the check detects genuine drift rather than within-series variance.
-    n_warmup = max(check_every * 2, len(uncertainties) // 5, 1)
-    report = hook.on_end(
-        historical_uncertainties=np.array(uncertainties[:n_warmup]),
-    )
-    print("\n" + report.summary())
-
-    report_path = out_dir / "audit_report.json"
-    with open(report_path, "w") as fh:
-        json.dump(report.to_dict(), fh, indent=2, default=str)
-    print(f"Saved audit report → {report_path}")
-
-    if _use_mlflow:
-        for r in report.results:
-            label = "PASS" if r.passed else "FAIL"
-            val   = f" ({r.value:.4f})" if r.value is not None else ""
-            _mlflow.set_tag(f"audit_verdict/{r.name}", f"{label}{val}")
-        _mlflow.set_tag("audit_verdict/overall", "PASS" if report.passed else "FAIL")
-        _mlflow.log_artifact(str(report_path), "audit")
-
     # ── Lyapunov analysis ──────────────────────────────────────────────────────
+    # Computed before hook.on_end() so LyapunovStabilityCheck (in the pipeline
+    # above) can be given the real lambda_max series via the precomputed route.
     print("\n[2/3] Lyapunov stability analysis …")
     from traits_audit._viz import (
         _fig_check_grid,
@@ -544,12 +530,36 @@ def run(
     # Align one |λ_max| value per AL step: the first (len(aug_traj) - len(_conv))
     # steps precede the DMDc warm-up and are NaN.  Padding to the actual step
     # count (not a fixed _min_obs_dmdc) keeps this in sync with `uncertainties`
-    # even when n_iter < _min_obs_dmdc leaves _conv empty.
+    # even when n_iter < _min_obs_dmdc leaves _conv empty.  LyapunovStabilityCheck
+    # drops the NaN prefix itself rather than counting it as unstable.
     _n_pad = max(0, len(aug_traj) - len(_conv))
     lambda_max_per_step = [float("nan")] * _n_pad + _conv.tolist()
 
     print(f"  DMDc augmented state: D={aug_traj.shape[1]} "
           f"({n_pca} PCA coords + committee std), T={len(aug_traj)} steps")
+
+    # UncertaintyAnomalyCheck compares recent behaviour against an earlier
+    # baseline.  Use the first two check windows as the historical reference so
+    # the check detects genuine drift rather than within-series variance.
+    n_warmup = max(check_every * 2, len(uncertainties) // 5, 1)
+    report = hook.on_end(
+        historical_uncertainties=np.array(uncertainties[:n_warmup]),
+        lambda_max=np.array(lambda_max_per_step),
+    )
+    print("\n" + report.summary())
+
+    report_path = out_dir / "audit_report.json"
+    with open(report_path, "w") as fh:
+        json.dump(report.to_dict(), fh, indent=2, default=str)
+    print(f"Saved audit report → {report_path}")
+
+    if _use_mlflow:
+        for r in report.results:
+            label = "PASS" if r.passed else "FAIL"
+            val   = f" ({r.value:.4f})" if r.value is not None else ""
+            _mlflow.set_tag(f"audit_verdict/{r.name}", f"{label}{val}")
+        _mlflow.set_tag("audit_verdict/overall", "PASS" if report.passed else "FAIL")
+        _mlflow.log_artifact(str(report_path), "audit")
 
     lyap = run_dmdc_lyapunov_analysis(
         aug_states=aug_traj,

@@ -429,6 +429,17 @@ def test_lyapunov_details_keys():
     assert result.details["n_stable"] == 1
 
 
+def test_lyapunov_drops_nan_prefix_instead_of_counting_unstable():
+    # A NaN-padded warm-up prefix (e.g. from a growing-window DMDc fit) must
+    # not be counted as "unstable" — it should be excluded entirely, so the
+    # verdict reflects only the valid entries.
+    lm = np.array([np.nan, np.nan, 0.3, 0.4, 0.5])
+    result = LyapunovStabilityCheck(min_stable_fraction=0.5).run([], lambda_max=lm)
+    assert result.passed
+    assert result.details["n_total"] == 3
+    assert result.details["n_stable"] == 3
+
+
 def test_lyapunov_from_surrogate_callable():
     # Flat quadratic bowl: f(x) = sum(x**2). Hessian = 2I, so GD Jacobian = I - 2α*I.
     # With alpha=0.01: J = (1 - 0.02)*I → |λ| = 0.98 < 1 → all stable.
