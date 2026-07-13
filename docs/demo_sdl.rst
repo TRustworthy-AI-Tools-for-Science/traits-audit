@@ -68,6 +68,21 @@ extracted at the proposed point:
    * - ``CalibrationError``
      - Simulator observation
      - Whether the Ax GP posterior at the proposed LED setting correctly brackets the true Fréchet distance
+   * - ``ConformalCoverage``
+     - Simulator observation
+     - Distribution-free marginal coverage
+   * - ``CRPS``
+     - Simulator observation
+     - CRPS as a proper scoring rule on each simulator evaluation
+   * - ``NegativeLogLikelihood``
+     - Simulator observation
+     - Gaussian NLL on each simulator evaluation
+   * - ``PITUniformity``
+     - Simulator observation
+     - PIT uniformity across all BO-phase observations
+   * - ``IntervalScore``
+     - Simulator observation
+     - Winkler score penalising non-coverage and excessive width
    * - ``IntervalCoverage``
      - Simulator observation
      - Whether the GP 1σ interval contains the simulated Fréchet value ~68 % of the time
@@ -76,13 +91,16 @@ extracted at the proposed point:
      - Whether GP posterior variance scales with prediction error across proposed colour settings
    * - ``UncertaintyEvolution``
      - Ax acquisition
-     - Trend in GP posterior std at proposed points — expected to decrease as BO concentrates near the optimum
+     - Count of channels with a declining uncertainty trend (0 = all stable)
    * - ``UncertaintyAnomalies``
      - Ax acquisition
-     - BO steps with anomalously large std (exploration excursion) or small std (exploitation lock-in)
+     - Fraction of current uncertainty values anomalously far from a historical baseline; skipped when no baseline is provided
    * - ``VarianceErrorCorrelation``
      - Simulator observation
      - Whether the GP is most uncertain at LED settings where it predicts colour distance poorly
+   * - ``LyapunovStability``
+     - End of run
+     - Whether gradient-descent dynamics of the GP surrogate are stable in PCA-reduced (R, G, B) space
 
 
 Methods
@@ -138,7 +156,7 @@ mode [Bakshy2018]_:
   after the Sobol phase.
 * **Uncertainty extraction:** After each BO step the GP posterior mean and
   standard deviation at the queried point are read back via
-  ``AxClient.generation_strategy.model.predict()``.  If the GP model is
+  ``AxClient.get_model_predictions_for_parameterizations()``.  If the GP model is
   not yet fitted (first 1-2 BO steps), the values are ``nan`` and the step
   is skipped.
 
@@ -154,15 +172,15 @@ dynamical system via the gradient-descent map [Strogatz2018]_:
 
 .. math::
 
-   F(x) = x - \alpha\,\nabla\hat{f}(x), \quad \alpha = 0.05
+   F(x) = x - \alpha\,\nabla\hat{f}(x), \quad \alpha = 0.01
 
 The Jacobian :math:`J = I - \alpha H_f` determines local stability: eigenvalues
 with :math:`|\lambda| < 1` are contractive and those with :math:`|\lambda| > 1`
 are expansive.
 
-The step size :math:`\alpha = 0.05` is chosen to keep eigenvalues near the
-unit circle across all demos, balancing curvature visibility against numerical
-stability.  The Lyapunov analysis operates in the normalised :math:`[0, 1]^3`
+The step size :math:`\alpha = 0.01` is chosen to keep eigenvalues near the
+unit circle, balancing curvature visibility against numerical stability.
+The Lyapunov analysis operates in the normalised :math:`[0, 1]^3`
 (R, G, B) space.
 
 
@@ -227,7 +245,7 @@ Audit checks over AL steps
 .. figure:: _static/demo_sdl/fig6_audit_evolution.png
    :width: 100%
    :align: center
-   :alt: Six audit check values over BO steps for the SDL demo
+   :alt: Eleven audit check values over BO steps for the SDL demo
 
    (snapshot every 5 steps, seed 0).
    
@@ -406,8 +424,8 @@ A typical output for a 25-iteration BO run:
    ── Audit report ────────────────────────────────────────────────────
    CalibrationError         PASS  value=0.108  threshold=0.150
    IntervalCoverage         PASS  value=0.720  threshold=[0.533, 0.833]
-   VarianceAlignment        PASS  value=0.912  threshold=[0.500, 1.500]
-   UncertaintyEvolution     PASS  value=-0.042 threshold=-0.050
+   VarianceAlignment        PASS  value=0.912  threshold=1.0
+   UncertaintyEvolution     PASS  value=0     threshold=0.0
    UncertaintyAnomalies     PASS  value=0.040  threshold=0.050
    VarianceErrorCorrelation PASS  value=0.221  threshold=0.100
    ── Overall: PASS ────────────────────────────────────────────────────
@@ -426,7 +444,7 @@ SDL-specific interpretation notes:
   and not a failure of the BO loop — it reflects the exploration-exploitation
   tension inherent in EI.
 
-* **UncertaintyEvolution FAIL (slope < −0.05):** EI rapidly collapses
+* **UncertaintyEvolution FAIL (declining channels > 0):** EI rapidly collapses
   uncertainty near the optimum.  If the slope is too steep, increase
   ``--n-init`` so the Sobol phase builds a broader initial model, or
   increase ``--n-iter`` to give the model more exploration steps.

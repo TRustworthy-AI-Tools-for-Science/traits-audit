@@ -99,6 +99,12 @@ def make_gd_predictor(f_scalar, alpha: float = 0.01, eps: float = 1e-5):
     Models x_{t+1} = x_t − α ∇f(x_t).  The Jacobian of this map equals
     J = I − α H_f, so |λ(J)| < 1 iff all eigenvalues of H_f lie in (0, 2/α).
 
+    **Purely real poles**: Because f_scalar is a real scalar function, its
+    Hessian H_f is always real and symmetric, and J = I − α H_f inherits
+    that symmetry.  All eigenvalues of J are therefore guaranteed to be purely
+    real regardless of the surrogate architecture.  :func:`plot_poles`
+    automatically renders a 1-D strip plot in this case.
+
     Parameters
     ----------
     f_scalar : callable
@@ -131,53 +137,106 @@ def plot_poles(
     model_label: str,
     out_dir: Path,
 ) -> None:
-    """Eigenvalues on the complex unit circle.
+    """Eigenvalue diagram for the GD-predictor Jacobian J = I − αH_f.
 
-    Adaptively clips the axes so the unit circle is always readable.  When
-    eigenvalues extend far beyond the unit circle (|λ| > 5) the axes are
-    locked to ±1.5 and out-of-range poles are reported in a text annotation
-    instead of collapsing the unit circle to a single pixel.
+    For gradient-descent predictors built on a real scalar surrogate, H_f is
+    always real and symmetric, so all eigenvalues of J are purely real.  In
+    that case this function renders a 1-D strip plot along the real axis —
+    much more readable than an empty complex plane.
+
+    When significant imaginary parts are present (max|Im(λ)| > 1e-8·max|λ|)
+    the function falls back to the full complex unit-circle diagram.
     """
-    fig, ax = plt.subplots(figsize=(3.5, 3.5))
+    eigs = np.asarray(all_eigenvalues)
+    mags = np.abs(eigs)
+    max_m = float(mags.max()) if len(mags) else 1.0
+    purely_real = (
+        max_m == 0.0
+        or float(np.abs(eigs.imag).max()) < 1e-8 * max_m
+    )
 
-    eigs  = np.asarray(all_eigenvalues)
-    mags  = np.abs(eigs)
-    max_m = float(mags.max())
+    if purely_real:
+        # ── 1-D strip plot: Re(λ) along the real axis ────────────────────
+        re = eigs.real
+        stable   = np.abs(re) < 1.0
+        unstable = ~stable
 
-    # Lock view on the unit circle for highly unstable systems (max|λ| > 5).
-    # Otherwise expand just enough to show all poles.
-    lim = max(1.5, max_m * 1.15) if max_m <= 5.0 else 1.5
+        fig, ax = plt.subplots(figsize=(3.5, 2.0))
 
-    theta = np.linspace(0, 2 * np.pi, 300)
-    ax.plot(np.cos(theta), np.sin(theta), "k--", lw=0.8, alpha=0.5,
-            label="Unit circle")
+        rng_spread = float(np.abs(re).max()) * 1.15
+        lim = max(1.3, rng_spread)
 
-    in_view = (np.abs(eigs.real) <= lim) & (np.abs(eigs.imag) <= lim)
-    n_out   = int((~in_view).sum())
+        # Jitter in y so overlapping poles are visible
+        jitter = np.random.default_rng(0).uniform(-0.08, 0.08, size=len(re))
 
-    if in_view.any():
-        ax.scatter(eigs[in_view].real, eigs[in_view].imag,
-                   c="C0", s=18, alpha=0.7, linewidths=0, label=model_label)
+        if stable.any():
+            ax.scatter(re[stable], jitter[stable],
+                       c="C0", s=22, alpha=0.7, linewidths=0,
+                       label=f"Stable |λ|<1  ({stable.sum()})")
+        if unstable.any():
+            ax.scatter(re[unstable], jitter[unstable],
+                       c="C3", s=22, alpha=0.8, linewidths=0,
+                       label=f"Unstable |λ|≥1  ({unstable.sum()})")
+
+        ax.axvline(-1.0, color="k", lw=0.8, ls="--", alpha=0.55)
+        ax.axvline(+1.0, color="k", lw=0.8, ls="--", alpha=0.55,
+                   label="Stability boundary (±1)")
+        ax.axhline(0.0,  color="k", lw=0.4, alpha=0.25)
+
+        out_view = int((np.abs(re) > lim).sum())
+        if out_view:
+            ax.text(0.97, 0.05,
+                    f"{out_view} pole(s) outside view  "
+                    f"[{re.min():.2f}, {re.max():.2f}]",
+                    transform=ax.transAxes, ha="right", va="bottom",
+                    fontsize=7, color="C3")
+
+        ax.set_xlim(-lim, lim)
+        ax.set_ylim(-0.35, 0.35)
+        ax.set_xlabel("Re(λ)  [Im(λ) ≡ 0 — GD on real scalar f]")
+        ax.set_yticks([])
+        ax.set_title(model_label, fontsize=9)
+        ax.legend(frameon=False, fontsize=8, loc="upper left")
+        ax.grid(True, alpha=0.3, axis="x")
+        fig.tight_layout()
+
     else:
-        ax.scatter([], [], c="C0", s=18, linewidths=0, label=model_label)
+        # ── Complex unit-circle diagram ───────────────────────────────────
+        fig, ax = plt.subplots(figsize=(3.5, 3.5))
 
-    if n_out:
-        msg = (f"{n_out} pole(s) outside view\n"
-               f"|λ| ∈ [{mags.min():.2e}, {mags.max():.2e}]")
-        ax.text(0.03, 0.03, msg,
-                transform=ax.transAxes, ha="left", va="bottom",
-                fontsize=7, color="C0", alpha=0.85)
+        lim = max(1.5, max_m * 1.15) if max_m <= 5.0 else 1.5
 
-    ax.axhline(0, color="k", lw=0.5, alpha=0.3)
-    ax.axvline(0, color="k", lw=0.5, alpha=0.3)
-    ax.set_xlim(-lim, lim)
-    ax.set_ylim(-lim, lim)
-    ax.set_xlabel("Re(λ)")
-    ax.set_ylabel("Im(λ)")
-    ax.set_aspect("equal")
-    ax.legend(frameon=False)
-    ax.grid(True, alpha=0.3)
-    fig.tight_layout()
+        theta = np.linspace(0, 2 * np.pi, 300)
+        ax.plot(np.cos(theta), np.sin(theta), "k--", lw=0.8, alpha=0.5,
+                label="Unit circle")
+
+        in_view = (np.abs(eigs.real) <= lim) & (np.abs(eigs.imag) <= lim)
+        n_out   = int((~in_view).sum())
+
+        if in_view.any():
+            ax.scatter(eigs[in_view].real, eigs[in_view].imag,
+                       c="C0", s=18, alpha=0.7, linewidths=0, label=model_label)
+        else:
+            ax.scatter([], [], c="C0", s=18, linewidths=0, label=model_label)
+
+        if n_out:
+            msg = (f"{n_out} pole(s) outside view\n"
+                   f"|λ| ∈ [{mags.min():.2e}, {mags.max():.2e}]")
+            ax.text(0.03, 0.03, msg,
+                    transform=ax.transAxes, ha="left", va="bottom",
+                    fontsize=7, color="C0", alpha=0.85)
+
+        ax.axhline(0, color="k", lw=0.5, alpha=0.3)
+        ax.axvline(0, color="k", lw=0.5, alpha=0.3)
+        ax.set_xlim(-lim, lim)
+        ax.set_ylim(-lim, lim)
+        ax.set_xlabel("Re(λ)")
+        ax.set_ylabel("Im(λ)")
+        ax.set_aspect("equal")
+        ax.legend(frameon=False)
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+
     _save(fig, out_dir, "fig1_poles")
     print("  Saved fig1_poles.png")
 
@@ -197,7 +256,7 @@ def plot_stability_contours(
     z = pca.fit_transform(states - states.mean(axis=0))
     z2 = z[:, 1] if z.shape[1] > 1 else np.zeros(len(z))
 
-    fig, ax = plt.subplots(figsize=(3.5, 3.5))
+    fig, ax = plt.subplots(figsize=(3.5, 5.5))
 
     if P is not None and n_comp == 2:
         V = pca.components_.T[:, :2]   # (D, 2)
@@ -387,7 +446,7 @@ def plot_lyapunov_evolution(
     n = len(lambda_max_seq)
     steps = np.arange(n)
 
-    fig, ax1 = plt.subplots(figsize=(3.5, 2.625))
+    fig, ax1 = plt.subplots(figsize=(5.5, 3.5))
     ax2 = ax1.twinx()
 
     lm = np.asarray(lambda_max_seq, dtype=float)
@@ -403,7 +462,7 @@ def plot_lyapunov_evolution(
     ax2.set_ylabel("Surrogate std (uncertainty)", color="C0")
     ax2.tick_params(axis="y", labelcolor="C0")
 
-    fig.legend(handles=[l1, l2], loc="upper right",
+    fig.legend(handles=[l1, l2], loc="upper left",
                bbox_to_anchor=(1.0, 1.0), bbox_transform=ax1.transAxes,
                frameon=False, fontsize=8)
     ax1.grid(True, alpha=0.3)

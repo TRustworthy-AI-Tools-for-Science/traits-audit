@@ -223,10 +223,12 @@ def test_anomaly_fails_with_spikes_vs_baseline():
     assert result.value > 0.05
 
 
-def test_anomaly_skips_without_baseline():
+def test_anomaly_falls_back_to_within_series_without_baseline():
+    # When no historical_uncertainties provided, check should fall back to
+    # within-series z-scoring and return a real value rather than skipping.
     result = UncertaintyAnomalyCheck().run([], uncertainties=[1.0, 2.0, 3.0])
     assert result.passed
-    assert "historical baseline" in result.message
+    assert result.value is not None
 
 
 def test_anomaly_skips_when_no_data():

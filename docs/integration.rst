@@ -19,7 +19,7 @@ you control the loop directly.
 
    pipeline = AuditPipeline([
        CalibrationErrorCheck(threshold=0.1),
-       UncertaintyEvolutionCheck(slope_threshold=-0.05),
+       UncertaintyEvolutionCheck(),
    ], verbose=True)
 
    hook = AuditHook(pipeline)

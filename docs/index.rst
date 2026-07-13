@@ -50,7 +50,7 @@ At a glance
 
    pipeline = AuditPipeline([
        CalibrationErrorCheck(threshold=0.1),
-       UncertaintyEvolutionCheck(slope_threshold=-0.05),
+       UncertaintyEvolutionCheck(),
    ])
 
    hook = AuditHook(pipeline)

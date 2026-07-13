@@ -58,6 +58,21 @@ the **pre-update posterior** at the UCB-selected point:
    * - ``CalibrationError``
      - PyBAMM oracle call
      - Whether the GPR posterior at the UCB-selected operating point correctly brackets the true discharge capacity
+   * - ``ConformalCoverage``
+     - PyBAMM oracle call
+     - Distribution-free marginal coverage
+   * - ``CRPS``
+     - PyBAMM oracle call
+     - CRPS as a proper scoring rule on each oracle evaluation
+   * - ``NegativeLogLikelihood``
+     - PyBAMM oracle call
+     - Gaussian NLL on each oracle evaluation
+   * - ``PITUniformity``
+     - PyBAMM oracle call
+     - PIT uniformity across all queried (C-rate, T) points
+   * - ``IntervalScore``
+     - PyBAMM oracle call
+     - Winkler score penalising non-coverage and excessive width
    * - ``IntervalCoverage``
      - PyBAMM oracle call
      - Whether the GPR 1σ interval contains the simulated capacity ~68 % of the time
@@ -66,10 +81,10 @@ the **pre-update posterior** at the UCB-selected point:
      - Whether GPR posterior variance explains prediction error across queried (C-rate, T) points
    * - ``UncertaintyEvolution``
      - UCB acquisition
-     - Trend in GPR posterior std at the UCB-selected point — expected to decrease as the surrogate maps the capacity surface
+     - Count of channels with a declining uncertainty trend (0 = all stable)
    * - ``UncertaintyAnomalies``
      - UCB acquisition
-     - Anomalous posterior std indicating the surrogate is exploring far outside its current support
+     - Fraction of current uncertainty values anomalously far from a historical baseline; skipped when no baseline is provided
    * - ``VarianceErrorCorrelation``
      - PyBAMM oracle call
      - Whether the GPR is most uncertain at operating points where its capacity prediction is least accurate
@@ -224,7 +239,7 @@ Audit checks over AL steps
 .. figure:: _static/demo_pybamm/fig6_audit_evolution.png
    :width: 100%
    :align: center
-   :alt: Six audit check values at snapshot intervals for the PyBAMM demo
+   :alt: Eleven audit check values at snapshot intervals for the PyBAMM demo
 
 
 ``CalibrationError`` starts at 0.22 (FAIL, 8 seed observations too few
@@ -391,8 +406,8 @@ A typical output for a 28-point run (8 seed + 20 UCB):
    ── Audit report ────────────────────────────────────────────────────
    CalibrationError         PASS  value=0.112  threshold=0.150
    IntervalCoverage         PASS  value=0.643  threshold=[0.533, 0.833]
-   VarianceAlignment        PASS  value=1.031  threshold=[0.500, 1.500]
-   UncertaintyEvolution     PASS  value=-0.038 threshold=-0.050
+   VarianceAlignment        PASS  value=1.031  threshold=1.0
+   UncertaintyEvolution     PASS  value=0     threshold=0.0
    UncertaintyAnomalies     PASS  value=0.000  threshold=0.050
    VarianceErrorCorrelation PASS  value=0.357  threshold=0.100
    ── Overall: PASS ────────────────────────────────────────────────────

@@ -130,7 +130,9 @@ class UncertaintyAnomalyCheck(AuditCheck):
 
     Required data
     -------------
-    ``uncertainties`` (current) **and** ``historical_uncertainties`` (baseline).
+    ``uncertainties`` (current) or ``uncertainty`` key in history dicts.
+    ``historical_uncertainties`` (baseline) is optional: when omitted the check
+    falls back to within-series z-scoring of the accumulated history.
     """
 
     def __init__(self, z_threshold: float = 3.0, max_anomaly_fraction: float = 0.05):
@@ -164,10 +166,14 @@ class UncertaintyAnomalyCheck(AuditCheck):
                 message="Skipped — no current uncertainty data.",
             )
         if len(historical_u) == 0:
-            return AuditResult(
-                name=self.name, passed=True, category=self.category,
-                message="Skipped — no historical baseline.",
-            )
+            # No explicit baseline — fall back to within-series z-scoring so the
+            # check works without the caller having to supply historical_uncertainties.
+            if len(current_u) < 3:
+                return AuditResult(
+                    name=self.name, passed=True, category=self.category,
+                    message="Too few steps for anomaly detection.",
+                )
+            historical_u = current_u
 
         hist_mean = float(np.mean(historical_u))
         hist_std  = float(np.std(historical_u))

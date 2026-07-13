@@ -58,6 +58,21 @@ to the hook are **means over the batch**:
    * - ``CalibrationError``
      - Hypothesis evaluation
      - Whether committee confidence, averaged over the batch, matches the fraction satisfying the stability criterion
+   * - ``ConformalCoverage``
+     - Hypothesis evaluation
+     - Distribution-free marginal coverage over the batch
+   * - ``CRPS``
+     - Hypothesis evaluation
+     - CRPS as a proper scoring rule on the evaluated batch
+   * - ``NegativeLogLikelihood``
+     - Hypothesis evaluation
+     - Gaussian NLL on the evaluated batch
+   * - ``PITUniformity``
+     - Hypothesis evaluation
+     - PIT uniformity across all evaluated hypotheses
+   * - ``IntervalScore``
+     - Hypothesis evaluation
+     - Winkler score penalising non-coverage and excessive width
    * - ``IntervalCoverage``
      - Hypothesis evaluation
      - Whether the batch-mean ±1σ committee interval contains the batch-mean true stability value
@@ -66,10 +81,10 @@ to the hook are **means over the batch**:
      - Whether batch-mean committee variance scales with batch-mean squared error
    * - ``UncertaintyEvolution``
      - Hypothesis selection
-     - Trend in mean committee std across batches — expected to decrease as explored regions are covered
+     - Count of channels with a declining uncertainty trend (0 = all stable)
    * - ``UncertaintyAnomalies``
      - Hypothesis selection
-     - Batches where committee std is anomalously high or low
+     - Fraction of current uncertainty values anomalously far from a historical baseline; skipped when no baseline is provided
    * - ``VarianceErrorCorrelation``
      - Hypothesis evaluation
      - Whether the committee assigns greater spread to batches it predicts most poorly
@@ -81,10 +96,11 @@ Methods
 Dataset and domain
 ~~~~~~~~~~~~~~~~~~
 
-The demo loads the built-in CAMD test dataset via
-``camd.utils.data.load_dataframe("test")``.  When the optional ``camd``
-package is unavailable it falls back to a synthetic 300-sample, 12-feature
-dataset with a quadratic stability proxy:
+The demo downloads the OQMD Voronoi-Magpie fingerprints dataset (~150 MB)
+from ``data.matr.io`` on first run, caches it under
+``~/.cache/traits_audit/``, and reads it with ``pd.read_pickle()``.  If the
+download fails it falls back to a synthetic 300-sample, 12-feature dataset
+with a quadratic stability proxy:
 
 .. math::
 
@@ -261,7 +277,7 @@ Audit checks over AL steps
 .. figure:: _static/demo_camd/fig6_audit_evolution.png
    :width: 100%
    :align: center
-   :alt: Six audit check values evaluated at snapshot intervals
+   :alt: Eleven audit check values evaluated at snapshot intervals
 
 Green dots are PASS; red dots are FAIL.  ``VarianceAlignment`` is the
 dominant persistent FAIL throughout the run.  ``CalibrationError`` and
@@ -437,8 +453,8 @@ A typical run with ``--n-iter 100`` produces an audit report similar to:
    ── Audit report ───────────────────────────────────────────────────
    CalibrationError         PASS  value=0.085  threshold=0.150
    IntervalCoverage         PASS  value=0.700  threshold=[0.533, 0.833]
-   VarianceAlignment        FAIL  value=1.928  threshold=[0.500, 1.500]
-   UncertaintyEvolution     PASS  value=-0.035 threshold=-0.050
+   VarianceAlignment        FAIL  value=1.928  threshold=1.0
+   UncertaintyEvolution     PASS  value=0     threshold=0.0
    UncertaintyAnomalies     PASS  value=0.000  threshold=0.050
    VarianceErrorCorrelation FAIL  value=-0.031 threshold=0.100
    ── Overall: FAIL (2 checks failed) ────────────────────────────────

@@ -8,23 +8,15 @@ Requirements: Python ≥ 3.11.  Core dependencies are ``numpy``, ``scipy``,
 uv workspace (recommended)
 ---------------------------
 
-If ``traits-audit`` is a member of your uv workspace, install everything
-in editable mode with:
+If ``traits-audit`` is a member of your uv workspace, a single command
+installs the package in editable mode *and* all four demo extras:
 
 .. code-block:: bash
 
-   uv sync --all-packages
+   uv sync
 
-Source changes take effect immediately without reinstalling.
-
-To install individual optional extras:
-
-.. code-block:: bash
-
-   uv sync --extra mlflow
-   uv sync --extra pybamm
-   uv sync --extra sdl
-   uv sync --extra camd     # see camd note below for two additional pip steps
+Source changes take effect immediately without reinstalling.  Works on
+Linux, macOS, and Windows.
 
 
 Standalone pip install
@@ -36,7 +28,7 @@ Standalone pip install
    pip install ".[mlflow]"     # + MLflow logging
    pip install ".[pybamm]"     # + PyBAMM demo
    pip install ".[sdl]"        # + self-driving lab demo
-   # camd — see note below
+   pip install ".[camd]"       # + materials screening demo
 
 
 Optional extras
@@ -50,7 +42,7 @@ Optional extras
      - Key packages
      - Required for
    * - ``mlflow``
-     - mlflow, plotly
+     - mlflow, plotly, matplotlib
      - MLflow experiment tracking and figure logging
    * - ``pybamm``
      - pybamm, scikit-learn
@@ -68,24 +60,14 @@ Optional extras
      - pytest, pytest-cov
      - Running the test suite
 
+.. note::
 
-camd — legacy compatibility
-----------------------------
-
-The ``camd`` and ``qmpy-tri`` packages pin old versions of scipy and bokeh
-that conflict with other extras (``pybamm`` requires ``scipy ≥ 1.11.4``).
-They must be installed separately, *without* their declared dependencies:
-
-.. code-block:: bash
-
-   pip install ".[camd]"        # installs pymatgen, matminer, django, PuLP …
-   pip install camd --no-deps   # camd itself — skips scipy-pinning GPy
-   pip install qmpy-tri --no-deps  # qmpy thermodynamics — skips old bokeh pin
-
-On first run, ``ta-camd-demo`` downloads the OQMD Voronoi-Magpie fingerprints
-dataset (~150 MB) from `data.matr.io <https://data.matr.io>`_ and caches it
-under ``~/.cache/traits_audit/``.  If the download fails, synthetic data
-with the same schema is used automatically.
+   ``ta-camd-demo`` uses a scikit-learn BaggingRegressor surrogate and does
+   not require the ``camd`` Python package.  On first run it attempts to
+   download the OQMD Voronoi-Magpie fingerprints dataset (~150 MB) from
+   `data.matr.io <https://data.matr.io>`_ and caches it under
+   ``~/.cache/traits_audit/``.  If the download fails, synthetic data with
+   the same schema is used automatically.
 
 
 Conda environment
@@ -96,11 +78,8 @@ Use the conda env as the base and install pip packages on top:
 .. code-block:: bash
 
    conda activate traits-audit
-   pip install -e "."          # editable install of core
-   pip install -e ".[pybamm]"  # add PyBAMM extra, etc.
-
-For the camd demo, apply the three-step install above after activating the
-conda environment.
+   pip install -e "."
+   pip install -e ".[mlflow,camd,pybamm,sdl]"
 
 
 Verifying the install

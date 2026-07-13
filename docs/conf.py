@@ -7,7 +7,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 project   = "traits-audit"
 author    = "Ashley Dale"
 copyright = "2026, Ashley Dale"
-release   = "0.1.0"
+release   = "0.1.3"
 
 # ── Extensions ────────────────────────────────────────────────────────────────
 extensions = [

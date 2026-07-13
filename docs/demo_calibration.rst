@@ -22,7 +22,7 @@ and its empirical error rate. Overconfident models produce narrow uncertainty in
 miss observations; underconfident models report wide uncertainty estimates with
 little decision-relevant information.
 
-**Questions:** (1) Can the six audit checks reliably distinguish a
+**Questions:** (1) Can the eleven audit checks reliably distinguish a
 well-calibrated ensemble from overconfident and underconfident variants of the
 same surrogate on identical data?  (2) What does the ideal calibration
 trajectory look like when the surrogate is paired with a correctly-specified
@@ -51,6 +51,21 @@ surrogate's pre-update prediction at the LCB-selected point:
    * - ``CalibrationError``
      - Oracle query
      - Whether the bootstrap posterior at the acquired point correctly brackets the oracle outcome, accumulated over all steps
+   * - ``ConformalCoverage``
+     - Oracle query
+     - Distribution-free marginal coverage validity
+   * - ``CRPS``
+     - Oracle query
+     - Continuous Ranked Probability Score as a proper scoring rule
+   * - ``NegativeLogLikelihood``
+     - Oracle query
+     - Gaussian NLL as a proper scoring rule
+   * - ``PITUniformity``
+     - Oracle query
+     - KS test for PIT uniformity across all queried points
+   * - ``IntervalScore``
+     - Oracle query
+     - Winkler interval score penalising non-coverage and excessive width
    * - ``IntervalCoverage``
      - Oracle query
      - Whether the 1σ bootstrap interval contains the oracle value ~68 % of the time
@@ -59,10 +74,10 @@ surrogate's pre-update prediction at the LCB-selected point:
      - Whether bootstrap ensemble spread explains prediction error globally
    * - ``UncertaintyEvolution``
      - LCB acquisition
-     - Trend in posterior std at the LCB-selected point — expected to decrease as the surrogate fills in the domain
+     - Count of channels with a declining uncertainty trend (0 = all stable)
    * - ``UncertaintyAnomalies``
      - LCB acquisition
-     - Anomalous spikes or drops in acquisition-point std across the run
+     - Fraction of current uncertainty values anomalously far from a historical baseline; skipped when no baseline is provided
    * - ``VarianceErrorCorrelation``
      - Oracle query
      - Whether the surrogate assigns larger σ to points where it errs most
@@ -240,7 +255,7 @@ Check-grid heatmap
 
 Rows are pipeline stages — intermediate
 audit reports produced every 10 steps plus the final report; columns are
-the six checks.  Green cells indicate PASS; red cells indicate FAIL.  The
+the eleven checks.  Green cells indicate PASS; red cells indicate FAIL.  The
 colour intensity is proportional to the magnitude of the check value
 relative to the threshold, so mild failures appear light red and severe
 failures appear deep red.
@@ -304,8 +319,9 @@ variance), ``VarErrCorr = 0.188`` (moderate Spearman correlation).
     report, just below the 1.5 upper tolerance — a PASS throughout, confirming that
     the oracle-matched floor keeps global variance close to empirical squared error.
 
-* ``UncEvolution`` fails sharply at step 10 (−0.219) and step 20 (−0.143) as LCB
-    depletes high-uncertainty pool regions, then passes from step 60 onward (−0.050).
+* ``UncEvolution`` flags channels with a declining uncertainty trend (non-zero
+    count) at step 10 and step 20 as LCB depletes high-uncertainty pool regions,
+    then passes (count = 0) from step 60 onward.
 
 * ``UncAnomalies`` and ``VarErrCorr`` pass throughout.
 
@@ -470,7 +486,7 @@ Discussion
 
 ``hook.on_end()`` returns an :class:`~traits_audit.base.AuditReport` for each scenario. The per-scenario reports below show the final check values at 250 steps:
 
-The ``perfectly_calibrated`` scenario passes five of six checks at 250 steps;
+The ``perfectly_calibrated`` scenario passes ten of eleven checks at 250 steps;
 ``VarianceErrorCorrelation`` fails because the well-explored surrogate has near-zero
 epistemic variance everywhere, weakening the rank correlation with absolute error:
 
@@ -480,7 +496,7 @@ epistemic variance everywhere, weakening the rank correlation with absolute erro
    CalibrationError         PASS  value=0.017  threshold=0.150
    IntervalCoverage         PASS  value=0.720  threshold=[0.533, 0.833]
    VarianceAlignment        PASS  value=1.024  threshold=1.000
-   UncertaintyEvolution     PASS  value=-0.000 threshold=-0.050
+   UncertaintyEvolution     PASS  value=0     threshold=0.0
    UncertaintyAnomalies     PASS  value=0.008  threshold=0.050
    VarianceErrorCorrelation FAIL  value=-0.077 threshold=0.100
    ── Overall: FAIL ──────────────────────────────────────────────
@@ -497,7 +513,7 @@ producing underconfident per-step measurements that persist in the averaged ECE
    CalibrationError         FAIL  value=0.220  threshold=0.150
    IntervalCoverage         FAIL  value=0.348  threshold=[0.533, 0.833]
    VarianceAlignment        PASS  value=1.431  threshold=1.000
-   UncertaintyEvolution     PASS  value=-0.006 threshold=-0.050
+   UncertaintyEvolution     PASS  value=0     threshold=0.0
    UncertaintyAnomalies     PASS  value=0.028  threshold=0.050
    VarianceErrorCorrelation PASS  value=0.291  threshold=0.100
    ── Overall: FAIL ──────────────────────────────────────────────
@@ -525,7 +541,7 @@ inflates sigma far above the oracle noise throughout all 250 steps.
      - 0.5 - 1.5
      - Mean predicted variance is not commensurate with mean squared error
    * - UncertaintyEvolution
-     - slope ≥ -0.05
+     - 0 channels declining (threshold = 0.0)
      - Uncertainty is collapsing faster than data collection justifies
    * - UncertaintyAnomalies
      - ≤ 5 % steps with \|z\| > 3

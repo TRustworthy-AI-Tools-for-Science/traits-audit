@@ -133,48 +133,98 @@ def plot_poles(
     model_label: str,
     out_dir: Path,
 ) -> None:
-    """Eigenvalues on the complex unit circle (fig1_poles)."""
-    fig, ax = plt.subplots(figsize=(3.5, 3.5))
+    """Eigenvalue diagram (fig1_poles).
 
+    When all eigenvalues are purely real (max|Im(λ)| < 1e-8 · max|λ|) renders
+    a 1-D strip plot along the real axis — GD-predictor Jacobians are always
+    real-symmetric so this case is common.  Otherwise falls back to the
+    standard complex unit-circle diagram.
+    """
     eigs  = np.asarray(all_eigenvalues)
     mags  = np.abs(eigs)
-    max_m = float(mags.max())
+    max_m = float(mags.max()) if len(mags) else 1.0
+    purely_real = (
+        max_m == 0.0
+        or float(np.abs(eigs.imag).max()) < 1e-8 * max_m
+    )
 
-    # Expand view to show all poles, but cap at ±5 so the unit circle stays
-    # prominent (occupies ≥ 20% of the plot width). Poles beyond the cap are
-    # annotated. This avoids the hard cliff in the original max_m <= 5 branch.
-    lim = max(1.5, min(max_m * 1.15, 5.0))
+    if purely_real:
+        re = eigs.real
+        stable   = np.abs(re) < 1.0
+        unstable = ~stable
 
-    theta = np.linspace(0, 2 * np.pi, 300)
-    ax.plot(np.cos(theta), np.sin(theta), "k--", lw=0.8, alpha=0.5,
-            label="Unit circle")
+        fig, ax = plt.subplots(figsize=(3.5, 2.0))
+        rng_spread = float(np.abs(re).max()) * 1.15
+        lim = max(1.3, rng_spread)
+        jitter = np.random.default_rng(0).uniform(-0.08, 0.08, size=len(re))
 
-    in_view = (np.abs(eigs.real) <= lim) & (np.abs(eigs.imag) <= lim)
-    n_out   = int((~in_view).sum())
+        if stable.any():
+            ax.scatter(re[stable], jitter[stable],
+                       c="C0", s=22, alpha=0.7, linewidths=0,
+                       label=f"Stable |λ|<1  ({stable.sum()})")
+        if unstable.any():
+            ax.scatter(re[unstable], jitter[unstable],
+                       c="C3", s=22, alpha=0.8, linewidths=0,
+                       label=f"Unstable |λ|≥1  ({unstable.sum()})")
 
-    if in_view.any():
-        ax.scatter(eigs[in_view].real, eigs[in_view].imag,
-                   c="C0", s=18, alpha=0.7, linewidths=0, label=model_label)
+        ax.axvline(-1.0, color="k", lw=0.8, ls="--", alpha=0.55)
+        ax.axvline(+1.0, color="k", lw=0.8, ls="--", alpha=0.55,
+                   label="Stability boundary (±1)")
+        ax.axhline(0.0,  color="k", lw=0.4, alpha=0.25)
+
+        out_view = int((np.abs(re) > lim).sum())
+        if out_view:
+            ax.text(0.97, 0.05,
+                    f"{out_view} pole(s) outside view  "
+                    f"[{re.min():.2f}, {re.max():.2f}]",
+                    transform=ax.transAxes, ha="right", va="bottom",
+                    fontsize=7, color="C3")
+
+        ax.set_xlim(-lim, lim)
+        ax.set_ylim(-0.35, 0.35)
+        ax.set_xlabel("Re(λ)  [Im(λ) ≡ 0 — GD on real scalar f]")
+        ax.set_yticks([])
+        ax.set_title(model_label, fontsize=9)
+        ax.legend(frameon=False, fontsize=8, loc="upper left")
+        ax.grid(True, alpha=0.3, axis="x")
+        fig.tight_layout()
+
     else:
-        ax.scatter([], [], c="C0", s=18, linewidths=0, label=model_label)
+        fig, ax = plt.subplots(figsize=(3.5, 3.5))
 
-    if n_out:
-        msg = (f"{n_out} pole(s) outside view\n"
-               f"|λ| ∈ [{mags.min():.2e}, {mags.max():.2e}]")
-        ax.text(0.03, 0.03, msg,
-                transform=ax.transAxes, ha="left", va="bottom",
-                fontsize=7, color="C0", alpha=0.85)
+        lim = max(1.5, min(max_m * 1.15, 5.0))
 
-    ax.axhline(0, color="k", lw=0.5, alpha=0.3)
-    ax.axvline(0, color="k", lw=0.5, alpha=0.3)
-    ax.set_xlim(-lim, lim)
-    ax.set_ylim(-lim, lim)
-    ax.set_xlabel("Re(λ)")
-    ax.set_ylabel("Im(λ)")
-    ax.set_aspect("equal")
-    ax.legend(frameon=False)
-    ax.grid(False)
-    fig.tight_layout()
+        theta = np.linspace(0, 2 * np.pi, 300)
+        ax.plot(np.cos(theta), np.sin(theta), "k--", lw=0.8, alpha=0.5,
+                label="Unit circle")
+
+        in_view = (np.abs(eigs.real) <= lim) & (np.abs(eigs.imag) <= lim)
+        n_out   = int((~in_view).sum())
+
+        if in_view.any():
+            ax.scatter(eigs[in_view].real, eigs[in_view].imag,
+                       c="C0", s=18, alpha=0.7, linewidths=0, label=model_label)
+        else:
+            ax.scatter([], [], c="C0", s=18, linewidths=0, label=model_label)
+
+        if n_out:
+            msg = (f"{n_out} pole(s) outside view\n"
+                   f"|λ| ∈ [{mags.min():.2e}, {mags.max():.2e}]")
+            ax.text(0.03, 0.03, msg,
+                    transform=ax.transAxes, ha="left", va="bottom",
+                    fontsize=7, color="C0", alpha=0.85)
+
+        ax.axhline(0, color="k", lw=0.5, alpha=0.3)
+        ax.axvline(0, color="k", lw=0.5, alpha=0.3)
+        ax.set_xlim(-lim, lim)
+        ax.set_ylim(-lim, lim)
+        ax.set_xlabel("Re(λ)")
+        ax.set_ylabel("Im(λ)")
+        ax.set_aspect("equal")
+        ax.legend(frameon=False, )
+        ax.grid(False)
+        fig.tight_layout()
+
     _save(fig, out_dir, "fig1_poles")
     print("  Saved fig1_poles.png")
 
@@ -194,7 +244,7 @@ def plot_stability_contours(
     z = pca.fit_transform(states - states.mean(axis=0))
     z2 = z[:, 1] if z.shape[1] > 1 else np.zeros(len(z))
 
-    fig, ax = plt.subplots(figsize=(3.5, 3.5))
+    fig, ax = plt.subplots(figsize=(5.5, 3.5))
 
     if P is not None and n_comp == 2:
         V = pca.components_.T[:, :2]
@@ -1344,7 +1394,7 @@ def plot_exploration_campaign(
             cov_vals.append(len(_visited & _pool_cells) / n_pool_cells)
 
     with plt.rc_context(_RCPARAMS):
-        fig = plt.figure(figsize=(7.5, 3.8))
+        fig = plt.figure(figsize=(11, 3.5))
         gs = GridSpec(1, 2, figure=fig, width_ratios=[1.4, 1.0], wspace=0.52)
 
         # ── Left panel: exploration map ─────────────────────────────────────
@@ -1616,4 +1666,124 @@ def run_lyapunov_analysis(
         "P":           P,
         "csv_path":    csv_path,
         "n_stable":    n_stable,
+    }
+
+
+def run_dmdc_lyapunov_analysis(
+    aug_states: np.ndarray,
+    model_label: str,
+    out_dir: Path,
+    n_components: int = 5,
+    gp_std_seq: np.ndarray | None = None,
+    actions: np.ndarray | None = None,
+    min_obs: int | None = None,
+) -> dict:
+    """DMDc-based Lyapunov analysis on an augmented state trajectory.
+
+    Fits a reduced-order dynamics matrix ``A_r`` directly from the AL query
+    trajectory via DMDc.  Unlike :func:`run_lyapunov_analysis` (which
+    differentiates a scalar surrogate to get ``J = I − α H_f``), ``A_r`` is a
+    *general* (non-symmetric) real matrix and will generally have complex
+    conjugate eigenvalues representing spiral modes in the joint
+    state/uncertainty space.
+
+    The augmented state should be ``[surrogate-feature coords | posterior std]``
+    — analogous to battery-forecast's ``[ECM means | ECM stds]``.
+
+    Parameters
+    ----------
+    aug_states : np.ndarray, shape (T, D)
+        Per-step augmented state trajectory.
+    model_label : str
+        Used in figure titles and CSV.
+    out_dir : Path
+        Output directory for figures and ``lyapunov_stability.csv``.
+    n_components : int
+        DMDc rank (clipped internally to ``min(n_components, D, T-1)``).
+    gp_std_seq : np.ndarray, optional
+        Per-step surrogate posterior std for :func:`plot_stability_vs_uncertainty`.
+    actions : np.ndarray, optional
+        Per-step action array, shape ``(T, m)``.  Defaults to a column of ones.
+    min_obs : int, optional
+        Minimum observations before fitting DMDc in the convergence sweep.
+        Defaults to ``n_components + 2``.
+
+    Returns
+    -------
+    dict with keys ``lambda_max`` (per-step array), ``eigenvalues``,
+    ``P``, ``A_r``, ``B_r``, ``U_r``, ``csv_path``.
+    """
+    import csv as _csv
+    from traits_audit import dmdc as dm
+
+    aug_states = np.asarray(aug_states, dtype=np.float64)
+    T = len(aug_states)
+    if actions is None:
+        actions = np.ones((T, 1))
+    actions = np.asarray(actions, dtype=np.float64)
+    if min_obs is None:
+        min_obs = n_components + 2
+
+    A_r, B_r, U_r = dm.fit_dmdc(aug_states, actions, n_components)
+    eigs = np.linalg.eigvals(A_r)
+    lm_final = float(np.abs(eigs).max())
+
+    # Per-step lambda_max via growing-prefix DMDc
+    conv = dm.stability_convergence(
+        aug_states, actions, min_obs=min_obs, n_components=n_components,
+    )
+    lambda_max_arr = np.concatenate([np.full(min_obs, np.nan), conv])[:T]
+    lm_filled = np.where(np.isfinite(lambda_max_arr), lambda_max_arr, lm_final)
+
+    P = compute_lyapunov(A_r)
+    if P is not None:
+        rho = lm_final
+        if rho < 1.0:
+            print("  Lyapunov matrix P computed (final A_r is stable)")
+        else:
+            print(f"  Final A_r unstable (|λ_max|={rho:.3f}) — "
+                  "P from rescaled A_r (spectral radius 0.99)")
+    else:
+        print("  Lyapunov solve failed — P omitted from contour plot")
+
+    # Projected states for contour (r-dimensional reduced space)
+    op_states_r = aug_states @ U_r
+
+    print(f"  Running DMDc Lyapunov analysis — T={T} steps, "
+          f"D={aug_states.shape[1]} → r={A_r.shape[0]} …")
+
+    plot_poles(eigs, model_label, out_dir)
+    plot_stability_contours(P, op_states_r, lm_filled, model_label, out_dir)
+    if gp_std_seq is not None:
+        std_arr = np.asarray(gp_std_seq, dtype=float)
+        n = min(len(lm_filled), len(std_arr))
+        plot_stability_vs_uncertainty(lm_filled[:n], std_arr[:n], model_label, out_dir)
+
+    rows = [
+        {
+            "model":        model_label,
+            "op_point_idx": i,
+            "lambda_max":   float(lm_filled[i]),
+            "gp_std":       float(gp_std_seq[i]) if gp_std_seq is not None and i < len(gp_std_seq) else float("nan"),
+            "is_stable":    bool(lm_filled[i] < 1.0),
+        }
+        for i in range(T)
+    ]
+    csv_path = out_dir / "lyapunov_stability.csv"
+    with open(csv_path, "w", newline="") as fh:
+        writer = _csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+    print(f"  Saved lyapunov_stability.csv ({T} rows)")
+
+    n_stable = sum(r["is_stable"] for r in rows)
+    print(f"  Stable: {n_stable}/{T}  |λ_max| final={lm_final:.3f}")
+
+    return {
+        "lambda_max": lm_filled,
+        "gp_std":     np.asarray(gp_std_seq) if gp_std_seq is not None else np.array([]),
+        "eigenvalues": eigs,
+        "P":           P,
+        "A_r": A_r, "B_r": B_r, "U_r": U_r,
+        "csv_path": csv_path,
     }
