@@ -9,8 +9,6 @@
 ![license](https://img.shields.io/badge/license-MIT-green)
 ![tests](https://github.com/TRustworthy-AI-Tools-for-Science/traits-audit/actions/workflows/ci.yml/badge.svg)
 ![docs](https://github.com/TRustworthy-AI-Tools-for-Science/traits-audit/actions/workflows/docs-pages.yml/badge.svg)
-[![codecov](https://codecov.io/gh/TRustworthy-AI-Tools-for-Science/traits-audit/graph/badge.svg)](https://codecov.io/gh/TRustworthy-AI-Tools-for-Science/traits-audit)
-
 
 A flexible uncertainty audit pipeline that hooks into any pre-existing active learning loop.
 
