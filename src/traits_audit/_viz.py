@@ -185,9 +185,10 @@ def plot_poles(
         ax.set_xlabel("Re(λ)  [Im(λ) ≡ 0 — GD on real scalar f]")
         ax.set_yticks([])
         ax.set_title(model_label, fontsize=9)
-        ax.legend(frameon=False, fontsize=8, loc="upper left")
         ax.grid(True, alpha=0.3, axis="x")
         fig.tight_layout()
+        ax.legend(frameon=False, fontsize=7, ncol=1,
+                   bbox_to_anchor=(1.02, 0.5), loc="center left")
 
     else:
         fig, ax = plt.subplots(figsize=(3.5, 3.5))
@@ -221,9 +222,10 @@ def plot_poles(
         ax.set_xlabel("Re(λ)")
         ax.set_ylabel("Im(λ)")
         ax.set_aspect("equal")
-        ax.legend(frameon=False, )
         ax.grid(False)
         fig.tight_layout()
+        ax.legend(frameon=False, fontsize=7,
+                   bbox_to_anchor=(1.02, 0.5), loc="center left")
 
     _save(fig, out_dir, "fig1_poles")
     print("  Saved fig1_poles.png")
@@ -295,9 +297,10 @@ def plot_stability_vs_uncertainty(
     ax.axhline(1.0, color="k", lw=0.8, ls="--", alpha=0.6, label="Stability boundary")
     ax.set_xlabel("Surrogate posterior std")
     ax.set_ylabel("|λ_max|")
-    ax.legend(frameon=False)
     ax.grid(False)
     fig.tight_layout()
+    ax.legend(frameon=False, fontsize=7,
+              bbox_to_anchor=(0.5, 1.02), loc="lower center", ncol=1)
     _save(fig, out_dir, "fig3_stability_vs_unc")
     print("  Saved fig3_stability_vs_unc.png")
 
@@ -498,10 +501,10 @@ def plot_uncertainty_evolution(
 ) -> None:
     """Per-step surrogate uncertainty over the AL loop (fig4)."""
     fig, ax = plt.subplots(figsize=(3.5, 2.625))
-    ax.plot(np.arange(len(uncertainties)), uncertainties, color="C0", label=model_label)
+    ax.plot(np.arange(len(uncertainties)), uncertainties, color="C0")
     ax.set_xlabel("Step")
     ax.set_ylabel("Surrogate std")
-    ax.legend(frameon=False)
+    ax.set_title(model_label, fontsize=9)
     ax.grid(False)
     fig.tight_layout()
     _save(fig, out_dir, "fig4_uncertainty_evolution")
@@ -534,12 +537,12 @@ def plot_lyapunov_evolution(
     ax2.set_ylabel("Surrogate std (uncertainty)", color="C0")
     ax2.tick_params(axis="y", labelcolor="C0")
 
-    fig.legend(handles=[l1, l2], loc="upper right",
-               bbox_to_anchor=(1.0, 1.0), bbox_transform=ax1.transAxes,
-               frameon=False, fontsize=_RCPARAMS["legend.fontsize"])
     ax1.grid(False)
     ax1.set_title(model_label)
     fig.tight_layout()
+    fig.legend(handles=[l1, l2], loc="center left",
+               bbox_to_anchor=(1.12, 0.5), bbox_transform=fig.transFigure,
+               frameon=False, fontsize=_RCPARAMS["legend.fontsize"])
     _save(fig, out_dir, "fig5_lyapunov_evolution")
     print("  Saved fig5_lyapunov_evolution.png")
 
@@ -674,9 +677,10 @@ def plot_convergence(
     ax.axhline(baseline, color="k", lw=0.8, ls="--", alpha=0.5, label="Seed baseline")
     ax.set_xlabel("Cumulative AL queries")
     ax.set_ylabel(y_label)
-    ax.legend(frameon=False)
     ax.grid(False)
     fig.tight_layout()
+    ax.legend(frameon=False, fontsize=7,
+              bbox_to_anchor=(0.5, 1.02), loc="lower center", ncol=1)
     _save(fig, out_dir, fig_title)
     print(f"  Saved {fig_title}")
 
@@ -1545,7 +1549,8 @@ def plot_discovery_rate(
         ax1.set_xlabel("Cumulative AL queries")
         ax1.set_ylabel("Stable materials found")
 
-        ax1.legend(frameon=False)
+        ax1.legend(frameon=False, fontsize=7,
+                   bbox_to_anchor=(0.5, 1.02), loc="lower center", ncol=1)
         ax1.text(0.98, 0.05,
                  f"Stable in pool: {n_stable_total}/{n_pool} ({stable_frac:.1%})",
                  transform=ax1.transAxes, ha="right", va="bottom", fontsize=7,
@@ -1562,7 +1567,8 @@ def plot_discovery_rate(
         ax2.set_xlabel("Cumulative AL queries")
         ax2.set_ylabel("Enrichment factor  (AL / random)")
 
-        ax2.legend(frameon=False)
+        ax2.legend(frameon=False, fontsize=7,
+                   bbox_to_anchor=(0.5, 1.02), loc="lower center", ncol=1)
         ax2.grid(False)
 
         # Annotate final enrichment

@@ -31,6 +31,31 @@ import numpy as np
 _LYAPUNOV_ALPHA = 0.01
 
 
+def _ensure_self_driving_lab_demo_importable() -> None:
+    """self_driving_lab_demo's __init__.py unconditionally imports
+    utils.search, which does ``from ax import optimize`` — an API removed
+    from the modern ax-platform this demo needs elsewhere (AxClient service
+    API, generation_strategy modules below). We only use
+    SelfDrivingLabDemoLight, never utils.search, so stub that submodule out
+    and retry rather than pinning ax-platform to a version incompatible with
+    the rest of this file.
+    """
+    if "self_driving_lab_demo" in sys.modules:
+        return
+    try:
+        import self_driving_lab_demo  # noqa: F401
+    except ImportError as exc:
+        if not (getattr(exc, "name", None) == "ax" and "optimize" in str(exc)):
+            raise
+        import types
+        stub = types.ModuleType("self_driving_lab_demo.utils.search")
+        stub.ax_bayesian_optimization = None
+        stub.grid_search = None
+        stub.random_search = None
+        sys.modules["self_driving_lab_demo.utils.search"] = stub
+        import self_driving_lab_demo  # noqa: F401  (retry)
+
+
 # ── Shared audit pipeline ──────────────────────────────────────────────────────
 
 def _make_pipeline(check_every: int, logger=None):
@@ -110,6 +135,7 @@ def run(
     )
 
     try:
+        _ensure_self_driving_lab_demo_importable()
         from self_driving_lab_demo import SelfDrivingLabDemoLight
     except ImportError:
         print("ERROR: self-driving-lab-demo is not installed.")

@@ -264,6 +264,7 @@ def run(
     )
     gpr = GaussianProcessRegressor(
         kernel=kernel, n_restarts_optimizer=3, normalize_y=True,
+        random_state=int(seed),
     )
 
     hook = _make_pipeline(check_every, logger=_mlflow_logger)

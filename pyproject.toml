@@ -45,7 +45,7 @@ ta-pybamm-demo = "traits_audit._pybamm_demo:main"
 [project.optional-dependencies]
 mlflow  = ["mlflow", "plotly", "matplotlib"]
 sdl     = ["self-driving-lab-demo", "ax-platform>=1.3.0"]
-camd    = ["scikit-learn", "pandas", "pymatgen", "matminer", "django", "PuLP"]
+camd    = ["camd==2022.8.24", "scikit-learn", "pandas", "pymatgen", "matminer", "django", "PuLP"]
 pybamm  = ["pybamm", "scikit-learn"]
 docs = [
     "sphinx>=7",
@@ -60,6 +60,28 @@ testpaths = ["tests"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/traits_audit"]
+
+[tool.uv]
+# camd (via qmpy-tri) hard-pins bokeh==0.12.15, which has no wheel for
+# Python >=3.11 and fails to build from source (its versioneer.py calls
+# configparser.SafeConfigParser, removed in 3.12). camd itself also
+# hard-pins GPy==1.10.0, whose last wheels are cp39, and matplotlib==3.5.3,
+# whose last wheels are cp310 (both would otherwise force a source build on
+# this project's supported Python versions). None of the three are ever
+# imported by camd.agent.stability/camd.analysis/camd.utils.data or the
+# qmpy.analysis.thermodynamics.phase/space modules that path uses (bokeh and
+# GPy are only used by unrelated camd/qmpy submodules we don't import;
+# matplotlib is only used inside plotting methods we never call) — so it's
+# safe to override to modern, installable versions rather than the exact
+# pins, instead of vendoring a patched bokeh/GPy build.
+override-dependencies = [
+    "bokeh>=3",
+    "GPy>=1.13",
+    "matplotlib>=3.5.3",
+    "boto3>=1.24.51",
+    "awscli>=1.32",
+    "matminer>=0.9",
+]
 
 [tool.uv.workspace]
 members = [

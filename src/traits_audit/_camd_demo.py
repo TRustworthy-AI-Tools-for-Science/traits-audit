@@ -404,6 +404,8 @@ def run(
         agent = None
         _use_camd_agent = False
 
+    _model_label = "AdaBoost-QBC (CAMD)" if _use_camd_agent else "BaggingRegressor-QBC (CAMD fallback)"
+
     # Feature set for PCA / Lyapunov: CAMD agent uses its own feature_labels
     # (which may differ from _feature_cols() by one column), sklearn path uses feat.
     _feat_pca = agent.feature_labels if _use_camd_agent else feat
@@ -563,7 +565,7 @@ def run(
 
     lyap = run_dmdc_lyapunov_analysis(
         aug_states=aug_traj,
-        model_label="AdaBoost-QBC (CAMD)",
+        model_label=_model_label,
         out_dir=fig_dir,
         n_components=n_pca,
         gp_std_seq=np.array(uncertainties),
@@ -573,21 +575,21 @@ def run(
 
     plot_uncertainty_evolution(
         np.array(uncertainties),
-        model_label="AdaBoost-QBC (CAMD)",
+        model_label=_model_label,
         out_dir=fig_dir,
     )
 
     plot_lyapunov_evolution(
         lambda_max_seq=np.array(lambda_max_per_step),
         uncertainties=np.array(uncertainties),
-        model_label="AdaBoost-QBC (CAMD)",
+        model_label=_model_label,
         out_dir=fig_dir,
     )
 
     plot_audit_evolution(
         pipeline=hook._pipeline,
         history=hook.history,
-        model_label="AdaBoost-QBC (CAMD)",
+        model_label=_model_label,
         out_dir=fig_dir,
         snapshot_every=4,
     )
@@ -602,7 +604,7 @@ def run(
             for i, r in enumerate(hook.intermediate_reports)
         ]
         stage_reports.append(("final", report))
-        fig_grid = _fig_check_grid(stage_reports, "AdaBoost-QBC (CAMD)")
+        fig_grid = _fig_check_grid(stage_reports, _model_label)
         if fig_grid is not None:
             _grid_png = fig_dir / "fig10_check_grid.png"
             try:
@@ -624,7 +626,7 @@ def run(
         y_vals=np.array(abs_errors_al),
         x_label="Committee std (stability units)",
         y_label="Mean absolute error (MAE)",
-        model_label="AdaBoost-QBC (CAMD)",
+        model_label=_model_label,
         out_dir=fig_dir,
         minimize_x=True,
         minimize_y=True,
@@ -644,7 +646,7 @@ def run(
         best_vals=best_stability,
         query_counts=np.arange(1, len(best_stability) + 1) * n_query,
         y_label=r"Best $\Delta E$ (eV/atom)",
-        model_label="AdaBoost-QBC (CAMD)",
+        model_label=_model_label,
         out_dir=fig_dir,
         maximise=False,
     )
@@ -655,7 +657,7 @@ def run(
         target=target,
         seed_df=initial_seed,
         queried_batches=queried_batches,
-        model_label="AdaBoost-QBC (CAMD)",
+        model_label=_model_label,
         out_dir=fig_dir,
     )
 
@@ -672,7 +674,7 @@ def run(
         y_true_per_batch=_y_true_per_batch,
         df_all_target=df_full[target].values,
         stability_threshold=_stability_threshold,
-        model_label="AdaBoost-QBC (CAMD)",
+        model_label=_model_label,
         out_dir=fig_dir,
     )
 
