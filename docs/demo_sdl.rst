@@ -4,9 +4,12 @@ Self-driving lab color-matching demo (``ta-sdl-demo``)
 =======================================================
 
 This demo applies the uncertainty audit to a self-driving laboratory (SDL)
-workflow for LED color matching; [you can find the full implementation here](https://github.com/sparks-baird/self-driving-lab-demo).  A Bayesian optimisation loop built on [Ax](https://ax.dev/)
-and[BoTorch](https://botorch.org/) searches the (R, G, B) intensity space for the settings that
-minimise the Fréchet distance between the emitted spectrum and a target color.
+workflow for LED color matching; `the full implementation is here
+<https://github.com/sparks-baird/self-driving-lab-demo>`_.  A Bayesian
+optimisation loop built on `Ax <https://ax.dev/>`_ and
+`BoTorch <https://botorch.org/>`_ searches the (R, G, B) intensity space for
+the settings that minimise the Fréchet distance between the emitted
+spectrum and a target color.
 The ``SelfDrivingLabDemoLight`` class runs in simulation mode — no physical
 hardware is required.
 
@@ -234,18 +237,25 @@ GP posterior uncertainty evolution
 
    (Fréchet-distance scale).
    The y-axis values (0-15 000) reflect the raw Fréchet distance scale,
-   not a normalised quantity.  
-   
-The envelope is clearly declining: from
-≈ 12 500 at step 0 to ≈ 1 000 at step 24.  But the path is highly
-oscillatory, with peaks at steps 4 (15 000), 8 (9 500), and 14 (7 500).
-The zig-zag pattern is the EI acquisition function alternating between
-exploitation (queries near the current minimum, where the GP is already
-certain, producing low-uncertainty steps) and exploration (queries at
-the boundaries of the 3-D RGB space, producing high-uncertainty spikes).
-The declining envelope confirms that each exploration episode is resolved
-after the new observation is added, progressively reducing the GP's
-overall uncertainty.
+   not a normalised quantity.
+
+The path is highly oscillatory throughout, without a clean declining
+envelope: it opens at ≈ 12 500, dips to ≈ 3 700 at step 1, spikes back up
+to the run's maximum (≈ 14 600) at step 2, then falls to a low ≈ 1 300–1 700
+band through steps 4–6.  Two more exploration episodes follow — a spike to
+≈ 8 500 at step 7 and a sustained rise peaking at ≈ 12 200 around step
+13 — each time falling back to the 1 000–2 000 range within a few steps.
+Two smaller late spikes (≈ 7 800 at step 17, ≈ 8 500 at step 20) show the
+loop is still capable of large exploration excursions well past its
+midpoint, before settling to ≈ 2 000 by the final step.  The zig-zag
+pattern is the EI acquisition function alternating between exploitation
+(queries near the current minimum, where the GP is already certain,
+producing low-uncertainty steps) and exploration (queries at the
+boundaries of the 3-D RGB space, producing high-uncertainty spikes) —
+each exploration episode is resolved within a few steps after the new
+observation is added, but the run as a whole does not settle into a
+steadily shrinking envelope the way the Lyapunov analysis below eventually
+does.
 
 Audit checks over AL steps
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -253,28 +263,42 @@ Audit checks over AL steps
 .. figure:: _static/demo_sdl/fig6_audit_evolution.png
    :width: 100%
    :align: center
-   :alt: Eleven audit check values over BO steps for the SDL demo
+   :alt: Twelve audit check values over BO steps for the SDL demo
 
    (snapshot every 5 steps, seed 0).
-   
-``CalibrationError`` ranges 0.28-0.40, all FAIL throughout the run.
-With only 25 BO-phase observations in a 3-D continuous space, the BoTorch
-GP has insufficient coverage to achieve calibrated intervals; 0.28 is
-nearly twice the 0.15 threshold even at step 25.
-``IntervalCoverage`` falls from 0.40 to 0.18 (all FAIL): the GP's
-1-σ bands capture fewer and fewer observations as EI focuses exploitation
-near the minimum, tightening intervals in a region that is actually
-highly variable in the Fréchet metric.
-``VarianceAlignment`` starts near 0.8 and drops to ≈ 0.2: predicted
-variance is only 20 % of actual squared error by the end, confirming
-severe overconfidence in the exploitation phase.
-``UncertaintyEvolution`` passes (slope 0 to −0.04), consistent with
-a healthy overall decline.
-``UncertaintyAnomalies`` is zero throughout — EI spikes are large but
-not outliers relative to the mean, so z-scores stay below 3.
-``VarianceErrorCorrelation`` recovers from −0.2 at step 5 to +0.65 at
-step 25: the GP eventually learns to assign its remaining uncertainty
-to the predictions furthest from the true Fréchet distance.
+
+``CalibrationError`` FAILs at the first three snapshots (0.175, 0.180,
+0.153) then PASSes for the last two (0.115, 0.140) — with only 25 BO-phase
+observations in a 3-D continuous space, the BoTorch GP takes a while to
+reach calibrated intervals, and even then hovers close to the 0.15
+threshold rather than settling comfortably below it.  ``IntervalCoverage``
+starts PASS (0.60 at step 5) then FAILs for the rest of the run, oscillating
+0.40–0.48 — well short of the acceptable [0.533, 0.833] band — the GP's
+1σ bands capture well under half the observations from step 10 onward.
+``VarianceAlignment`` PASSes at steps 5 and 10 (0.76, 0.53) then collapses
+to FAIL from step 15 onward (0.061, 0.066, 0.071): predicted variance falls
+to roughly a fifteenth of actual squared error late in the run, a sharp
+swing into severe overconfidence.  ``UncertaintyEvolution`` FAILs at every
+snapshot except step 15 (which happens to land right after a sharp drop in
+the uncertainty-evolution figure above) — a stricter reading than the
+overall oscillatory pattern might suggest, since this check flags a
+declining channel over the history seen *so far*, not the run's long-run
+average behaviour.  ``UncertaintyAnomalies`` is zero throughout — EI
+spikes are large but not outliers relative to the mean, so z-scores stay
+below 3.  ``VarianceErrorCorrelation`` PASSes at every snapshot, rising
+from +0.30 at step 5 to +0.72 by step 10 and staying in the 0.65–0.69 range
+thereafter — the GP consistently assigns higher uncertainty to its worst
+predictions from step 10 onward.  Two checks that need a minimum sample
+count are undefined until enough steps have accumulated: ``ConformalCoverage``
+first reports at step 10 (FAIL throughout, q-ratio 3.1 → 9.2, well above
+the 1.5 threshold) and ``PITUniformity`` only at steps 20 and 25 (FAIL,
+KS p-value ≈ 0.001 and 0.003 respectively). ``LyapunovStability`` — fed a
+*rolling* :math:`\lambda_{\max}` computed live inside the loop at every
+step and logged via ``hook.on_step()``, so it has a value at every
+snapshot here, unlike the CAMD/PyBAMM demos' end-of-run-only precomputed
+route — FAILs at every snapshot (stable fraction 0.0 at step 5, then 0.2
+for the rest of the run, threshold 0.5), consistent with the
+still-substantial pole magnitudes discussed below.
 
 Lyapunov pole diagram
 ~~~~~~~~~~~~~~~~~~~~~
@@ -282,19 +306,19 @@ Lyapunov pole diagram
 .. figure:: _static/demo_sdl/fig1_poles.png
    :width: 65%
    :align: center
-   :alt: Complex eigenvalue pole diagram for the SDL BoTorch GP
+   :alt: Real eigenvalue pole diagram (1-D strip) for the SDL BoTorch GP
 
-   The annotation "75 pole(s) outside view,
+   36 stable (:math:`|\lambda|<1`), 39 unstable (:math:`|\lambda|\geq 1`).
 
-:math:`|\lambda| \in [1.12 \times 10^2,\, 2.31 \times 10^6]`" reveals
-catastrophically large eigenvalues.  Only one pole is visible inside
-the viewing window, at approximately Re ≈ −0.45 (inside the unit circle,
-convergent).  The remaining 75 poles have magnitudes up to 2.31 million —
-several orders of magnitude larger than the PyBAMM case.  These extreme
-values arise because the BoTorch GP in the 3-D Fréchet space has not
-yet resolved the true landscape shape: the GP's posterior mean contains
-steep artificial gradients in under-sampled regions of the 255³ RGB cube,
-and the gradient-descent map amplifies those gradients exponentially.
+All 75 eigenvalues are real (:math:`\mathrm{Im}(\lambda)\equiv 0`, since the
+gradient-descent map differentiates a real scalar surrogate) and range from
+≈ −79 to ≈ 143 — no poles fall outside the plotted range for this run.  A
+dense cluster of ~40 eigenvalues sits between 0.4 and 1.1, straddling the
+stability boundary; the remaining unstable population splits into a
+negative group (≈ −79 to −2, about a dozen points) and a positive group
+(≈ 7 to 143, about fifteen points, including the single largest-magnitude
+pole in the run at ≈ 143).  Just over half the poles are unstable —
+consistent with the low ``LyapunovStability`` fraction reported above.
 
 Queried operating points in normalised RGB space
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -302,18 +326,23 @@ Queried operating points in normalised RGB space
 .. figure:: _static/demo_sdl/fig2_stability_contours.png
    :width: 70%
    :align: center
-   :alt: PCA scatter of queried RGB points coloured by Lyapunov exponent
+   :alt: PCA scatter of queried RGB points coloured by Lyapunov exponent, overlaid on the Lyapunov function contour
 
-   PCA, coloured by** :math:`|\lambda_{\max}|` (blue ≈ 0, red ≈ 1.6 × 10⁶).
-
-The left cluster (PC1 ≈ −0.5, corresponding to lower RGB values) is
-predominantly blue — stable, low-gradient regions — while the right
-cluster (PC1 ≈ +0.5, higher RGB values) shows orange and red — high
-:math:`|\lambda_{\max}|` — consistent with the Fréchet distance landscape having steep
-gradient walls near high-intensity LED settings.  The spatial separation
-of stable and unstable points suggests that EI is initially exploring
-the high-gradient (high RGB) corners before retreating to the
-well-behaved central region.
+Background contours show :math:`V(x) = x^T P x`, the discrete Lyapunov
+function.  For this run the mean operating point is itself unstable
+(:math:`|\lambda_{\max}| \approx 1.02`), so :math:`P` is solved from a
+rescaled Jacobian (spectral radius reduced to 0.99) rather than the raw
+mean-point Jacobian, purely to give a comparably-scaled contour background
+— the per-point :math:`|\lambda_{\max}|` colouring of the scatter itself
+uses the unrescaled values.  Each scatter point is one queried point
+projected onto the first two principal components, coloured by its own
+:math:`|\lambda_{\max}|` (blue ≈ 1 up to dark red ≈ 140).  The lowest
+values (grey/light, near the stability boundary) sit in a loose cluster
+around PC1 ≈ 0.15–0.3, PC2 ≈ 0; most other points are orange-to-red,
+scattered around the ellipse from PC1 ≈ −0.75 to 0.4, with the single
+darkest (highest-:math:`|\lambda_{\max}|` ≈ 143) point at the extreme
+PC1 ≈ −0.62, PC2 ≈ −0.55 — consistent with the Fréchet landscape having
+steeper local curvature away from the small region EI has exploited most.
 
 Lyapunov exponent vs GP uncertainty
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -323,18 +352,17 @@ Lyapunov exponent vs GP uncertainty
    :align: center
    :alt: Lyapunov exponent vs GP posterior std for the SDL demo
 
-   (y-axis scale 1 × 10⁶).
-
-Most points cluster at low GP std (< 50) with :math:`|\lambda_{\max}|` spanning 0 to
-1.7 × 10⁶.  Two outliers at std ≈ 350 sit at :math:`|\lambda_{\max}|` ≈ 2.3 × 10⁶ —
-the highest-uncertainty, highest-instability observations in the run,
-corresponding to early EI exploration queries in unseen RGB corners.
-One outlier at std ≈ 800 has near-zero :math:`|\lambda_{\max}|`, indicating a rare case
-where a very uncertain region has a locally flat surrogate landscape.
-The overall picture is that high uncertainty and high Lyapunov exponent
-are correlated at the extremes but decorrelated in the bulk, again
-reinforcing that Lyapunov analysis captures landscape structure not
-visible from uncertainty alone.
+A handful of low-std points (≈ 520, 655, 695) sit right at the stability
+boundary (:math:`|\lambda_{\max}| \approx 1`).  The rest of the run
+clusters at much higher std (≈ 715–830), where :math:`|\lambda_{\max}|`
+spans nearly the whole observed range — from single digits up to the
+run's maximum (≈ 143, at the single highest std, ≈ 828).  So while the
+very lowest-uncertainty points are reliably stable, high std does not
+reliably predict high :math:`|\lambda_{\max}|`: several points in that
+same 715–830 std band have :math:`|\lambda_{\max}|` under 10, sitting
+right alongside points an order of magnitude more unstable.  This
+reinforces that Lyapunov analysis captures landscape curvature that GP
+uncertainty alone does not.
 
 Lyapunov evolution
 ~~~~~~~~~~~~~~~~~~
@@ -344,20 +372,24 @@ Lyapunov evolution
    :align: center
    :alt: Lyapunov exponent and GP std over BO steps for the SDL demo
 
-   (orange = :math:`|\lambda_{\max}|` × 10⁶, left
+   (orange = :math:`|\lambda_{\max}|`, left
    axis; blue = GP std, right axis).
 
-Both signals open extremely high — :math:`|\lambda_{\max}|` ≈ 2.3 × 10⁶ and std ≈
-12 500 — and decline together through step 15 before settling.  The
-co-variation is tighter here than in any other demo: every major spike
-in surrogate uncertainty corresponds to a proportional spike in
-:math:`|\lambda_{\max}|`.  After step 15 both quantities plateau near their minima
-(:math:`|\lambda_{\max}|` ≈ 10⁵, std ≈ 500), suggesting the BO loop has found a stable
-region of the Fréchet landscape.  The convergence of both signals
-simultaneously is a strong positive indicator: the surrogate is becoming
-simultaneously less uncertain *and* less dynamically sensitive,
-confirming that the BO has located a genuine minimum rather than a
-numerical artefact.
+Both signals open elevated — :math:`|\lambda_{\max}|` ≈ 58 and std ≈ 12 200
+— and remain volatile for the whole run, without either one settling into
+a flat late-run plateau.  The two loosely co-move at some points (both dip
+toward their respective floors around steps 8–10) but not others: the
+std series' single biggest spike is at step 2 (≈ 14 600), while
+:math:`|\lambda_{\max}|`'s biggest spike is at step 20 (≈ 144, the run
+maximum) — a point where std is comparatively unremarkable.  Both series
+still show large excursions in the run's final third (std spikes at steps
+17 and 24; :math:`|\lambda_{\max}|` spikes at step 20 and rises again
+toward step 24), consistent with ``LyapunovStability``'s stable fraction
+staying flat at 0.2 rather than improving toward the end of the run.  The
+partial, inconsistent co-movement suggests surrogate uncertainty and
+dynamical sensitivity are tracking
+related — though not identical — aspects of how well-resolved the Fréchet
+landscape is in each queried region.
 
 Pareto frontier: GP posterior std vs Fréchet distance
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -368,34 +400,29 @@ Pareto frontier: GP posterior std vs Fréchet distance
    :alt: Pareto frontier of GP uncertainty vs Fréchet distance for the SDL demo
 
    (coloured by
-   BO step, viridis scale from early = dark to late = light).  
-   
-Each point
-is one BO-phase evaluation; the Pareto-optimal set (circled) achieves
-simultaneously the lowest Fréchet distance *and* the lowest GP
+   BO step, viridis scale from early = dark yellow to late = purple).
+
+Each point is one BO-phase evaluation; the Pareto-optimal set (circled)
+achieves simultaneously the lowest Fréchet distance *and* the lowest GP
 uncertainty — the most reliable candidate LED settings identified by the
-BO loop.
+BO loop.  Three points are Pareto-optimal: two sit at low std (≈ 1 200–1 500,
+both late steps, one at Fréchet ≈ 15 000 and one at Fréchet ≈ 2 500), and a
+third stands well apart at moderate std (≈ 7 000) and by far the highest
+Fréchet distance in the run (≈ 130 000, around step 11–13) — worth keeping
+on the frontier only because nothing else matches its comparatively low
+std at that Fréchet distance.  The remaining points scatter widely: several
+early-to-mid steps at std ≈ 1 200–2 000 with Fréchet 15 000–30 000, a
+handful at std ≈ 8 000–14 500 (late and early steps alike) with Fréchet
+17 000–27 000, and one clear outlier (teal, std ≈ 10 500) at Fréchet
+≈ 69 000.
 
-The EI acquisition drives a characteristic trajectory.  Early BO steps
-(dark) scatter widely in both std and Fréchet distance as EI explores
-the 3-D RGB cube; these points are rarely Pareto-optimal because they
-either have high uncertainty (exploration queries) or high Fréchet
-distance (poor color match).  From step 10 onward (lighter shades),
-successive EI selections converge toward the lower-left: std falls as
-the GP conditions on more observations, and the Fréchet distance falls
-as EI exploits the improving posterior.  The Pareto-optimal points are
-almost exclusively late-step evaluations, confirming that the BO loop
-needed the initial exploration phase before it could identify both
-accurate *and* well-characterized LED settings.
-
-A key distinction from the PyBAMM and CAMD cases: in the SDL demo the
-GP cannot simultaneously achieve low Fréchet distance *and* low std
-at early steps, because EI deliberately queries high-uncertainty regions
-to build its model.  The Pareto frontier therefore grows rightward
-(lower Fréchet) over time rather than downward (lower std).  This
-confirms that EI's implicit Pareto trade-off prioritises model accuracy
-over uncertainty reduction — calibration checks in the early phase are
-expected to fail, and the frontier shows why.
+A key distinction from the PyBAMM and CAMD cases: in the SDL demo the GP
+does not achieve low Fréchet distance and low std in lockstep — the
+Pareto-optimal set spans an enormous range of Fréchet distances
+(2 500–130 000) and a meaningful range of std too (1 200–7 000), rather
+than std and Fréchet distance falling together as the run progresses.
+This reflects EI deliberately querying high-uncertainty regions throughout
+the run to build its model, not just in an early exploration phase.
 
 Convergence: running best Fréchet distance vs cumulative BO queries.
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -409,13 +436,18 @@ Convergence: running best Fréchet distance vs cumulative BO queries.
    the 6 Sobol warm-start trials.  The solid curve shows the running minimum
    as BO iterations accumulate.  
    
-The typical EI convergence pattern is
-visible: the best Fréchet distance may not improve for several steps while
-EI explores (building global GP coverage), then drops sharply once the GP
-has sufficient coverage to identify high-value exploitation targets.
-A curve that matches the Sobol baseline for the entire BO phase indicates
-that EI is still in the exploration regime — more ``--n-iter`` steps or a
-higher ``--n-init`` warm-start budget would be needed.
+The dashed baseline (≈ 23 600, best of the 6 Sobol trials) drops sharply to
+≈ 16 400 at query 2 — the first BO query already beats the warm-start.
+From there the curve declines gradually and in small steps: to ≈ 15 400 by
+query 7, ≈ 14 400 by query 11, holding an extended near-flat plateau
+(≈ 14 200–14 400) through query 19, then a small step down to ≈ 13 500 by
+query 24.  The final query produces by far the largest single improvement
+in the whole run — a sharp drop to ≈ 2 700, roughly a fifth of the
+previous best — showing that even after a long plateau, EI can still
+locate a substantially better region right at the very end of the budget.
+A curve that matches the Sobol baseline for the entire BO phase would
+indicate EI is still in the exploration regime — more ``--n-iter`` steps
+or a higher ``--n-init`` warm-start budget would be needed.
 The convergence figure and the Pareto frontier complement each other: the
 frontier identifies *which* queries achieved both good performance *and*
 low uncertainty; the convergence curve shows *when* the best objective
@@ -425,43 +457,64 @@ value was first achieved.
 Discussion
 ----------
 
-A typical output for a 25-iteration BO run:
+A typical output for a 25-iteration BO run (``--n-init 6 --n-iter 25 --seed 0``)
+(showing the six checks present since the first release; the full pipeline
+also runs ``ConformalCoverage``, ``CRPS``, ``NegativeLogLikelihood``,
+``PITUniformity``, ``IntervalScore``, and ``LyapunovStability`` — see the
+check evolution figure above for those):
 
 .. code-block:: text
 
    ── Audit report ────────────────────────────────────────────────────
-   CalibrationError         PASS  value=0.108  threshold=0.150
-   IntervalCoverage         PASS  value=0.720  threshold=[0.533, 0.833]
-   VarianceAlignment        PASS  value=0.912  threshold=1.0
-   UncertaintyEvolution     PASS  value=0     threshold=0.0
-   UncertaintyAnomalies     PASS  value=0.040  threshold=0.050
-   VarianceErrorCorrelation PASS  value=0.221  threshold=0.100
-   ── Overall: PASS ────────────────────────────────────────────────────
+   CalibrationError         PASS  value=0.140  threshold=0.150
+   IntervalCoverage         FAIL  value=0.480  threshold=[0.533, 0.833]
+   VarianceAlignment        FAIL  value=0.071  threshold=1.0
+   UncertaintyEvolution     FAIL  value=1     threshold=0.0
+   UncertaintyAnomalies     PASS  value=0.000  threshold=0.050
+   VarianceErrorCorrelation PASS  value=0.654  threshold=0.100
+   ── Overall: FAIL (3 checks failed among these six) ─────────────────
 
-SDL-specific interpretation notes:
+Of the full 12-check pipeline, 6 pass: ``CRPS``, ``NegativeLogLikelihood``,
+``IntervalScore``, ``CalibrationError``, ``UncertaintyAnomalies``, and
+``VarianceErrorCorrelation``; the other 6 (``ConformalCoverage``,
+``PITUniformity``, ``IntervalCoverage``, ``VarianceAlignment``,
+``UncertaintyEvolution``, and ``LyapunovStability`` at a 0.16 stable
+fraction) fail.  Scenario-specific interpretation notes:
 
 * **Small history size:** With ``n_iter = 25`` the hook sees at most 25
   steps (fewer if early BO steps have NaN posteriors).  Calibration checks
-  computed on small datasets have high variance; a borderline FAIL is not
-  necessarily actionable.  Increase ``--n-iter`` or decrease ``--n-init``
-  if you need tighter estimates.
+  computed on small datasets have high variance; a FAIL by a small margin
+  is not necessarily actionable.  Increase ``--n-iter`` or decrease
+  ``--n-init`` if you need tighter estimates.
 
-* **CalibrationError FAIL at low step counts:** EI exploration tends to
-  query points where the GP is most uncertain, which means the GP is also
-  least likely to be well-calibrated there.  This is expected behaviour
-  and not a failure of the BO loop — it reflects the exploration-exploitation
-  tension inherent in EI.
+* **CalibrationError PASSing overall despite failing at several of the
+  per-snapshot checkpoints above:** EI exploration tends to query points
+  where the GP is most uncertain, which means the GP is also least likely
+  to be well-calibrated there early on — this is expected behaviour and
+  not a failure of the BO loop, it reflects the exploration-exploitation
+  tension inherent in EI.  ``IntervalCoverage`` FAILing throughout despite
+  this, though, means the GP's intervals are consistently too narrow, not
+  just occasionally miscalibrated during exploration bursts.
 
 * **UncertaintyEvolution FAIL (declining channels > 0):** EI rapidly collapses
   uncertainty near the optimum.  If the slope is too steep, increase
   ``--n-init`` so the Sobol phase builds a broader initial model, or
   increase ``--n-iter`` to give the model more exploration steps.
 
-* **VarianceErrorCorrelation FAIL:** The BoTorch GP occasionally produces
-  near-zero std for points where the Fréchet distance matches the GP mean
-  closely.  A low or negative Spearman correlation is only meaningful if
-  there is sufficient spread in both sigma and absolute error.  Check
-  whether the BO loop has collapsed to a narrow region too early.
+* **VarianceAlignment FAIL, especially a late collapse toward the end of
+  the run:** predicted variance falling to a small fraction of actual
+  squared error late in the run indicates the GP is increasingly
+  overconfident exactly where EI is exploiting most heavily — worth
+  watching for in any run where this check degrades sharply rather than
+  gradually.
+
+* **VarianceErrorCorrelation FAIL** (not observed in the run above, but
+  possible at other seeds/step counts): the BoTorch GP occasionally
+  produces near-zero std for points where the Fréchet distance matches the
+  GP mean closely.  A low or negative Spearman correlation is only
+  meaningful if there is sufficient spread in both sigma and absolute
+  error.  Check whether the BO loop has collapsed to a narrow region too
+  early.
 
 
 References

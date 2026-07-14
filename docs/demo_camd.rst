@@ -239,9 +239,33 @@ Results
 -------
 
 The figures below were produced by ``ta-camd-demo`` with
-``--n-seed 25 --n-iter 100 --n-query 4 --seed 0``, using the sklearn
-``BaggingRegressor`` fallback surrogate on the synthetic 300-sample dataset
-(400 labelled points total: 25 seed + 100 steps × 4 per step).
+``--n-seed 25 --n-iter 100 --n-query 4 --seed 0``, using the real
+``AgentStabilityAdaBoost`` CAMD agent (see the note below on why this
+requires overriding several of ``camd``'s own pinned dependencies) on the
+real OQMD dataset, capped to a 3,000-candidate pool (400 labelled points
+total: 25 seed + 100 steps × 4 per step).
+
+.. note::
+
+   The ``camd`` PyPI package pins several dependencies to exact versions
+   that don't install cleanly on modern Python: ``bokeh==0.12.15`` (via
+   ``qmpy-tri``) has no wheel past Python 3.10 and fails to build from
+   source (its versioneer.py calls a ``configparser`` API removed in
+   3.12); ``GPy==1.10.0`` and ``matplotlib==3.5.3`` likewise have no
+   wheels past Python 3.9/3.10; and ``matminer==0.7.8`` installs but
+   crashes at import time against modern ``pymatgen``. None of ``bokeh``,
+   ``GPy``, or the pinned ``matplotlib`` are actually imported by the
+   ``camd.agent.stability`` → ``camd.analysis``/``camd.utils.data`` →
+   ``qmpy.analysis.thermodynamics.phase``/``space`` import path this demo
+   uses — they're only touched by unrelated ``camd``/``qmpy`` submodules —
+   so this project's ``pyproject.toml`` overrides those dependencies to
+   modern, installable versions (``[tool.uv] override-dependencies``)
+   rather than vendoring a patched build. With that in place,
+   ``pip install "traits-audit[camd]"`` / ``uv sync --extra camd`` installs
+   the real ``camd`` package and this demo uses its
+   ``AgentStabilityAdaBoost`` agent directly; the sklearn ``BaggingRegressor``
+   fallback path described below only activates if ``camd`` genuinely isn't
+   installed.
 
 Committee uncertainty evolution
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -251,12 +275,17 @@ Committee uncertainty evolution
    :align: center
    :alt: Committee standard deviation over 100 active learning steps
 
-Mean committee standard deviation at the queried batch per AL step.
-The series peaks early as maximum-uncertainty acquisition immediately
-targets the highest-disagreement region of feature space, then declines
-with moderate fluctuations as explored regions become well-labelled.
-The monotone decline satisfies the ``UncertaintyEvolution`` check,
-confirming healthy convergence over the 100-step horizon.
+Mean committee standard deviation at the queried batch per AL step. The
+series opens near its peak (≈ 0.93), drops to ≈ 0.55–0.6 by step 9, then
+oscillates in a roughly 0.3–0.9 band for the rest of the run with no
+sustained trend — a brief spike to ≈ 0.86 around step 16, a sharp dip to
+≈ 0.33 at step 27, and continued chatter through step 100 (ending ≈ 0.55).
+This noisy, non-monotonic pattern is exactly why the *final*
+``UncertaintyEvolution`` verdict is PASS (0 declining channels) while the
+per-snapshot check grid below shows brief FAILs early in the run (steps
+4–16 and again at step 28): the check flags a *sustained* declining trend,
+and an oscillating series like this one doesn't keep triggering it once
+enough history accumulates.
 
 Audit check grid
 ~~~~~~~~~~~~~~~~
@@ -272,17 +301,25 @@ distance from the pass/fail threshold: dark green = deeply passing,
 white = at the boundary, dark red = deeply failing.
 
 Reading across a row reveals how a single check evolves over the campaign.
-``VarianceAlignment`` fails persistently (predicted variance exceeds mean
-squared error by a factor of ~2 throughout) — a known property of bagging
-ensembles where bootstrap resampling induces excess variance.
-``VarianceErrorCorrelation`` oscillates near the pass boundary, reflecting
-the maximum-uncertainty policy querying high-uncertainty points that
-subsequently become well-labelled, decoupling committee disagreement from
-prediction error.  ``LyapunovStability`` shows a blank (``—``) at every
-intermediate snapshot and a value only at the final column: its
-precomputed ``lambda_max`` series is built from the *complete* growing-prefix
-DMDc sweep after the AL loop ends, so — unlike the other rows — it has no
-intermediate-snapshot equivalent to report.
+``PITUniformity`` is the dominant persistent FAIL: PASS through step 20
+(KS p-value falling from 0.31 to 0.076), then FAIL from step 24 onward as
+the p-value collapses toward zero — the committee's predictive distribution
+shape becomes systematically wrong as more data accumulates, even though its
+mean and 1σ width (``CalibrationError``, ``IntervalCoverage``) stay healthy
+throughout. ``CalibrationError`` FAILs only at the very first snapshot
+(step 4, 0.188) then PASSes for the rest of the run, steadily improving to
+0.069. ``VarianceAlignment`` FAILs at steps 4 and 8 (1.57, 1.63 — variance
+*over*-estimated relative to true error) before settling into a PASS band
+(1.10–1.28) for the remainder. ``UncertaintyEvolution`` FAILs at four early
+snapshots (steps 4, 8, 12, 16) plus one isolated blip at step 28, PASSing
+everywhere else. ``VarianceErrorCorrelation`` FAILs only at step 8
+(ρ = −0.006) and is a comfortable PASS (0.11–0.36) at every other snapshot.
+``ConformalCoverage``, ``IntervalCoverage``, and ``UncertaintyAnomalies``
+PASS at every single snapshot in this run. ``LyapunovStability`` shows a
+blank (``—``) at every intermediate snapshot and a value only at the final
+column: its precomputed ``lambda_max`` series is built from the *complete*
+growing-prefix DMDc sweep after the AL loop ends, so — unlike the other
+rows — it has no intermediate-snapshot equivalent to report.
 
 Audit checks over AL steps
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -292,12 +329,21 @@ Audit checks over AL steps
    :align: center
    :alt: Eleven audit check values evaluated at snapshot intervals
 
-Green dots are PASS; red dots are FAIL.  ``VarianceAlignment`` is the
-dominant persistent FAIL throughout the run.  ``CalibrationError`` and
-``IntervalCoverage`` both pass at most snapshots, confirming that the
-committee's uncertainty estimates are directionally correct even if their
-magnitude is inflated.  ``UncertaintyAnomalies`` is zero throughout — no
-steps trigger the :math:`|z| > 3` anomaly threshold.
+Green dots are PASS; red dots are FAIL.  ``PITUniformity`` is the dominant
+persistent FAIL, green through step 20 then red at every snapshot from
+step 24 onward as its p-value collapses toward zero.  ``CalibrationError``
+and ``IntervalCoverage`` pass at every snapshot from step 8 onward,
+confirming that the committee's uncertainty estimates are directionally
+correct.  ``VarianceAlignment`` FAILs only at the first two snapshots
+(steps 4 and 8, predicted variance too high relative to true error) before
+settling into a sustained PASS.  ``VarianceErrorCorrelation`` FAILs only at
+step 8, PASSing at every other snapshot.  ``UncertaintyEvolution`` FAILs at
+four early snapshots (steps 4, 8, 12, 16) plus one isolated blip at step 28,
+then stays PASS for the remaining 21 snapshots.  ``ConformalCoverage`` is
+PASS throughout.  ``UncertaintyAnomalies`` is zero at every intermediate
+snapshot — no steps trigger the :math:`|z| > 3` anomaly threshold, though
+the very last evaluation (a 1.0% anomalous fraction) still comfortably
+clears the 5% threshold.
 
 Lyapunov pole diagram
 ~~~~~~~~~~~~~~~~~~~~~
@@ -308,13 +354,16 @@ Lyapunov pole diagram
    :alt: Complex eigenvalue plot (pole diagram) for the DMDc-fitted dynamics matrix
 
 Each point is one eigenvalue of the rank-5 DMDc operator :math:`A_r` fit on
-the complete (whole-trajectory) augmented-state history.  The dashed circle
+the complete (whole-trajectory) augmented-state history:
+:math:`\{0.326,\, -0.214,\, 0.068,\, -0.082 \pm 0.083i\}`.  The dashed circle
 is the unit circle; eigenvalues inside are contractive and those outside are
-expansive.  All five eigenvalues fall close to the real axis and well inside
-the unit circle for this run.  :math:`A_r` is a general (non-symmetric)
-matrix and can in principle produce complex-conjugate pairs — unlike the
-always-real, symmetric gradient-descent Jacobian used in the PyBAMM/SDL
-demos — but the fitted operator here happens to be close to normal.
+expansive.  All five fall comfortably inside it — consistent with the
+near-0.33 final :math:`|\lambda_{\max}|` seen in the evolution plot below.
+:math:`A_r` is a general (non-symmetric) matrix and, unlike the always-real,
+symmetric gradient-descent Jacobian used in the PyBAMM/SDL demos, it
+actually does produce a genuine complex-conjugate pair here (the two
+eigenvalues at :math:`-0.082 \pm 0.083i`, magnitude ≈ 0.116) rather than
+landing on the real axis exactly.
 
 Queried operating points coloured by growing-prefix :math:`|\lambda_{\max}|`, with the final Lyapunov function contour
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -328,13 +377,19 @@ Background contours show :math:`V(x) = x^T P x`, the discrete Lyapunov
 function solved for the final, whole-trajectory :math:`A_r` (the same
 discrete-Lyapunov-equation solver used by the PyBAMM/SDL demos, reused here
 on the DMDc-fitted operator rather than a gradient-descent Jacobian).  Each
-scatter point is one queried
-operating point projected onto the first two principal components, coloured
-by its own **growing-prefix** :math:`|\lambda_{\max}(A_r(t))|` at the step it
-was queried.  Most points are well inside the stability boundary (blue,
-:math:`|\lambda| < 1`); the handful of red/light points are early, small-:math:`t`
-steps whose growing-prefix fit was still volatile (see the evolution plot
-below), not a persistent instability tied to any region of feature space.
+scatter point is one queried operating point projected onto the first two
+principal components, coloured by its own **growing-prefix**
+:math:`|\lambda_{\max}(A_r(t))|` at the step it was queried.  Most points
+cluster tightly in the low-:math:`V(x)` region near the origin, with four
+points further out (around PC1 ≈ −10, PC2 ≈ −1.5; PC1 ≈ −6.5, PC2 ≈ 0.4;
+PC1 ≈ −4.5, PC2 ≈ 1.6; and PC1 ≈ 5, PC2 ≈ 10) — all of which are
+**stable** (blue, :math:`|\lambda_{\max}| < 0.35`), since they correspond
+to later steps once the growing-prefix fit had settled.  The three unstable
+points (:math:`|\lambda_{\max}| = 1.81, 1.39, 1.05`) all sit *inside* the
+dense central cluster rather than at the spatial extremes — they are early,
+small-:math:`t` steps whose growing-prefix fit was still volatile (see the
+evolution plot below), not a persistent instability tied to any particular
+region of feature space.
 
 Growing-prefix :math:`|\lambda_{\max}|` vs surrogate uncertainty
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -345,14 +400,18 @@ Growing-prefix :math:`|\lambda_{\max}|` vs surrogate uncertainty
    :alt: Growing-prefix maximum Lyapunov exponent vs surrogate posterior standard deviation
 
 Each point pairs one AL step's growing-prefix :math:`|\lambda_{\max}(A_r(t))|`
-with that step's mean committee standard deviation.  Unlike the tighter
-co-occurrence sometimes seen with a gradient-descent-Jacobian approach, the
-few unstable points here (above the dashed stability boundary) occur at
-moderate — not extreme — committee std, and several of the highest-std
-points are comfortably stable.  This is expected: DMDc stability reflects how
-*predictable the trajectory's own dynamics* are as a linear system, which is
-a different question from how uncertain the committee is at any one queried
-point; the two remain complementary, largely independent diagnostics.
+with that step's mean committee standard deviation.  The three unstable
+points sit at moderate, not extreme, committee std (≈ 0.58, 0.62, and 0.78
+for :math:`|\lambda_{\max}| = 1.81, 1.39,` and :math:`1.05` respectively);
+the single highest-std point in the whole run (≈ 0.92) is comfortably stable
+(:math:`|\lambda_{\max}| \approx 0.33`).  So there is no tight, one-to-one
+co-occurrence between the two — if anything the relationship runs the
+opposite way from what one might expect, with the least stable points at
+middling rather than peak uncertainty: DMDc stability reflects how
+*predictable the trajectory's own dynamics* are as a linear system, which
+is a different question from how uncertain the committee is at any one
+queried point; the two remain complementary, largely independent
+diagnostics.
 
 Lyapunov evolution over the campaign
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -366,12 +425,16 @@ Dual y-axis: orange = growing-prefix :math:`|\lambda_{\max}(A_r(t))|` (left),
 blue = committee std (right).  :func:`traits_audit.dmdc.stability_convergence`
 refits :math:`A_r` on the augmented-state trajectory up to step :math:`t` at
 every step; the earliest refits are naturally volatile (few points feeding a
-rank-5 fit), producing large early swings up to :math:`|\lambda_{\max}|
-\approx 4`.  As the trajectory lengthens the growing-prefix fit becomes
-better-determined and :math:`|\lambda_{\max}|` settles below the stability
-boundary (dashed) within about 20 steps, ending near 0.19 for this run.  The
-committee-std curve stays volatile throughout and is largely decoupled from
-:math:`|\lambda_{\max}|` — DMDc stability and committee uncertainty remain
+rank-5 fit) — :math:`|\lambda_{\max}|` opens near 1.85, briefly dips toward
+1.0 around step 5, then spikes back up to its run maximum (≈ 1.85) around
+step 8–9.  As the trajectory lengthens the growing-prefix fit becomes
+better-determined: :math:`|\lambda_{\max}|` drops below the stability
+boundary (dashed) by about step 12 and settles into a 0.3–0.5 band for the
+rest of the run (a small bump to ≈ 0.55 around step 45), ending near 0.33.
+The committee-std curve stays volatile throughout — repeated peaks in the
+0.7–1.7 range around steps 2, 7, 16, 50, 67, and 90, with no sustained
+decline — largely decoupled from :math:`|\lambda_{\max}|` once the latter
+has converged: DMDc stability and committee uncertainty remain
 complementary, non-redundant diagnostics.
 
 Pareto frontier: committee std vs mean absolute error
@@ -382,12 +445,16 @@ Pareto frontier: committee std vs mean absolute error
    :align: center
    :alt: Pareto frontier of committee uncertainty vs prediction error
 
-Points are coloured by AL step (dark purple = early, yellow = late).
-The Pareto-optimal set (orange circles) forms an L-shaped frontier.
-Early batches (purple, upper-right) have high committee std and high MAE;
-mid-run batches (teal) achieve low error and low spread simultaneously;
-late batches can drift back rightward as acquisition exhausts the
-highest-priority candidates and moves into the remaining pool.
+Points are coloured by AL step (yellow = early, dark purple = late).  Four
+points are Pareto-optimal (orange circles), forming a genuine L-shaped
+frontier: from (std ≈ 0.32, MAE ≈ 0.37) down to (std ≈ 0.32, MAE ≈ 0.15),
+across to (std ≈ 0.63, MAE ≈ 0.13), and out to (std ≈ 0.78, MAE ≈ 0.08) —
+each successive point trades a little more committee std for a lower error.
+The bulk of dominated points scatter between std ≈ 0.4–0.9 and MAE ≈ 0.15–1.0,
+with a handful of high-error outliers above MAE ≈ 1.0 (up to ≈ 1.25) at
+moderate-to-high std.  There is no strong early/late colour pattern among
+the dominated points — yellow (early), teal (mid-run), and dark-purple
+(late) points are all interspersed across the scatter.
 
 Materials exploration campaign
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -401,17 +468,24 @@ Materials exploration campaign
 electronegativity (EN) space (real OQMD data) or a PCA projection
 (synthetic fallback).  Blue diamonds are the 25 initial seed materials;
 coloured circles are the queried batches (plasma colourmap, dark purple =
-early, bright yellow = late).  The concentration of queries in the
-electropositive EN 0.8–2.0 range reflects LCB targeting the most
-predicted-stable region.
+early, bright yellow = late).  For this run, queries concentrate at the
+*electronegative* end of the space — rows of points at EN ≈ 2.0, 2.2, 2.6,
+3.0, 3.2, 3.5, and 4.0 — rather than the electropositive 0.8–2.0 range,
+which is instead where most of the 25 seed diamonds sit; only a handful of
+queried points fall below EN ≈ 1.5.
 
 **Right panel** — grid-based exploration metrics over a 12 × 12 bin grid
 on the 2-D EN/PCA space.  **Coverage** (blue line): cumulative fraction of
 non-empty pool grid cells visited.  **Batch novelty** (orange bars):
 fraction of each batch landing in cells not yet visited.  Novelty is high
-early and declines as grid cells fill up; coverage grows but never saturates,
-consistent with a greedy policy concentrating queries on predicted-stable
-compositions rather than spreading uniformly.
+early (spiking to 100% around step 5, with a second burst to ≈ 75% shortly
+after) and mostly declines thereafter, with occasional later bursts back up
+to 25–50% (around step 35 and again near step 85) as acquisition
+occasionally revisits sparser cells.  Coverage climbs steadily from ≈ 26%
+to ≈ 80% by step 85, then plateaus for the remaining ~15 steps — saturating
+well below full coverage rather than continuing to grow, consistent with a
+greedy policy that keeps concentrating queries on a predicted-stable
+subregion rather than spreading uniformly.
 
 Discovery rate vs random baseline
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -436,9 +510,14 @@ distribution.
 
 **Right panel** — enrichment factor :math:`N_\text{AL}(k) / \mu_\text{rand}(k)`.
 Values above 1× mean the agent is finding stable materials faster than
-random selection; the annotation reports the terminal enrichment.
-Montoya et al. found 383 new stable or nearly-stable materials across 16
-campaigns using this identical acquisition strategy, significantly
+random selection; the annotation reports the terminal enrichment.  For this
+run the enrichment factor swings widely early on (peaking near 1.25× around
+query 15, dipping to ≈ 0.75× around query 50) before settling into a modest
+1.1–1.3× band and ending at 1.1× — a real but much smaller edge over random
+selection than the toy 25th-percentile threshold and 3,000-candidate pool
+used here might suggest.  Montoya et al. found 383 new stable or
+nearly-stable materials across 16 campaigns using this identical
+acquisition strategy on the full ~1,600–2,000-candidate pool, significantly
 outperforming random selection.
 
 Running best :math:`\Delta E` vs cumulative AL queries
@@ -450,27 +529,41 @@ Running best :math:`\Delta E` vs cumulative AL queries
    :alt: Running best stability score vs cumulative queries for the CAMD demo
 
 The running minimum :math:`\Delta E` found across all queries.  The dashed
-horizontal line is the best value among the 25 seed observations.  The curve
-typically drops rapidly in the first 10–20 queries as LCB targets the most
-predicted-stable candidates, then plateaus as the committee concentrates on
-regions of high uncertainty that are not necessarily the true global minimum.
+horizontal line is the best value among the 25 seed observations
+(≈ −0.06 eV/atom).  For this run the curve improves in three discrete steps:
+to ≈ −0.44 eV/atom around query 15, to ≈ −0.71 eV/atom around query 65, and
+to the run's best value, ≈ −1.25 eV/atom, around query 140 — then stays
+completely flat for the remaining ~260 queries.  This step-function pattern
+means the committee makes real, if infrequent, improvements over the seed
+baseline rather than plateauing immediately; it is a useful complement to
+the discovery-rate figure above, which shows the campaign continuing to
+find *many* materials at or below the pool's 25th-percentile threshold long
+after this single best-known value stopped improving.
 
 
 Discussion
 ----------
 
-A typical run with ``--n-iter 100`` produces an audit report similar to:
+A typical run with ``--n-iter 100`` produces an audit report similar to
+(showing the six checks present since the first release; the full pipeline
+also runs ``ConformalCoverage``, ``CRPS``, ``NegativeLogLikelihood``,
+``PITUniformity``, ``IntervalScore``, and ``LyapunovStability`` — see the
+check grid and per-step figures above for those):
 
 .. code-block:: text
 
    ── Audit report ───────────────────────────────────────────────────
-   CalibrationError         PASS  value=0.085  threshold=0.150
-   IntervalCoverage         PASS  value=0.700  threshold=[0.533, 0.833]
-   VarianceAlignment        FAIL  value=1.928  threshold=1.0
+   CalibrationError         PASS  value=0.069  threshold=0.150
+   IntervalCoverage         PASS  value=0.765  threshold=[0.533, 0.833]
+   VarianceAlignment        PASS  value=1.242  threshold=1.0
    UncertaintyEvolution     PASS  value=0     threshold=0.0
-   UncertaintyAnomalies     PASS  value=0.000  threshold=0.050
-   VarianceErrorCorrelation FAIL  value=-0.031 threshold=0.100
-   ── Overall: FAIL (2 checks failed) ────────────────────────────────
+   UncertaintyAnomalies     PASS  value=0.010  threshold=0.050
+   VarianceErrorCorrelation PASS  value=0.310  threshold=0.100
+   ── Overall: PASS (0 checks failed among these six) ─────────────────
+
+Of the full 12-check pipeline, only ``PITUniformity`` fails on this run
+(KS statistic ≈ 0.10, p ≈ 0.001 — see the check grid above); all eleven
+others pass, including ``LyapunovStability`` at a 0.968 stable fraction.
 
 .. list-table:: Check interpretation guide
    :header-rows: 1
@@ -487,7 +580,7 @@ A typical run with ``--n-iter 100`` produces an audit report similar to:
      - ±1σ committee intervals cover too few or too many true values
    * - VarianceAlignment
      - 0.5–1.5
-     - Mean predicted variance is not commensurate with mean squared error; ratios > 1.5 are typical for BaggingRegressor and should be interpreted as relative indicators rather than absolute failures
+     - Mean predicted variance is not commensurate with mean squared error; ratios > 1.5 are more common with the sklearn ``BaggingRegressor`` fallback (bootstrap resampling induces excess inter-tree variance) than with the real AdaBoost agent, and should be interpreted as relative indicators rather than absolute failures
    * - UncertaintyEvolution
      - slope ≥ −0.05
      - Uncertainty is collapsing faster than data collection justifies
@@ -497,27 +590,38 @@ A typical run with ``--n-iter 100`` produces an audit report similar to:
    * - VarianceErrorCorrelation
      - Spearman ρ ≥ 0.1
      - Committee disagreement does not track where the model errs; common in max-uncertainty QBC as high-uncertainty regions become well-labelled over time
+   * - PITUniformity
+     - KS p-value ≥ 0.05
+     - The committee's predictive distribution has the wrong *shape* even when its mean and spread are individually reasonable — e.g. too peaked, skewed, or heavy-tailed relative to a Gaussian
 
-* **VarianceAlignment (persistent FAIL):** A ratio of ≈ 1.9 means the
-  committee assigns variance roughly twice the observed MSE.  This is a
-  known property of bagging ensembles: bootstrap resampling induces
-  inter-tree variance that exceeds the true aleatoric noise.  Monitor
-  for *growth* in this ratio over the campaign — a ratio that increases
-  from 1.5 to 3.0 over 100 steps signals progressive overestimation that
-  warrants investigation.
+* **PITUniformity (persistent FAIL from step 24 onward):** PASSes through
+  step 20 (p-value 0.31 → 0.076) then collapses to p ≈ 0 from step 24 on —
+  the AdaBoost committee's predictive distribution shape becomes
+  systematically wrong as more data accumulates, even though
+  ``CalibrationError`` and ``IntervalCoverage`` (which only check the mean
+  and 1σ width) both pass throughout.  This is a real, distinct failure
+  mode: passing interval coverage checks does not guarantee a well-shaped
+  predictive distribution.
 
-* **VarianceErrorCorrelation (often FAIL):** Spearman ρ near zero or
-  negative indicates that committee disagreement does not reliably predict
-  where the mean prediction errs most.  For maximum-uncertainty QBC, this
-  arises because the policy deliberately queries high-uncertainty points,
-  which become well-labelled; the residual uncertainty then migrates away
-  from the current error frontier.
+* **VarianceAlignment (transient FAIL at steps 4 and 8) and
+  VarianceErrorCorrelation (transient FAIL at step 8 only):** Both fail
+  early, when only 25–45 points have been observed — too little data to
+  estimate either ratio reliably — then recover to a sustained PASS for the
+  rest of the run (VarianceAlignment settling near 1.24, well inside the
+  [0.5, 1.5] band; VarianceErrorCorrelation near 0.31).  Watch for the
+  opposite pattern in other runs: a ratio or correlation that *starts*
+  healthy and drifts toward failure as the campaign progresses is the more
+  concerning trajectory, since it would indicate the committee's
+  uncertainty estimates degrading with more data
+  rather than an expected early-data artifact.
 
-* **Lyapunov stability** [Strogatz2018]_: Operating points with
-  :math:`|\lambda_{\max}| < 1` are contractive — the gradient-descent map
-  converges locally.  Unstable points (:math:`|\lambda| > 1`) mark
-  data-sparse, high-curvature regions of feature space — exactly the
-  candidates a well-calibrated acquisition policy should approach cautiously.
+* **Lyapunov stability** [Strogatz2018]_: Growing-prefix steps with
+  :math:`|\lambda_{\max}(A_r(t))| < 1` mean the DMDc-fitted operator up to
+  that step is contractive; steps with :math:`|\lambda| > 1` mean it is
+  expansive.  As seen above, unstable steps in this demo tend to be early
+  in the run, when too few points feed the growing-prefix fit for it to be
+  well-determined, rather than tied to any particular region of feature
+  space — a *temporal*, not spatial, instability signal.
 
 
 References

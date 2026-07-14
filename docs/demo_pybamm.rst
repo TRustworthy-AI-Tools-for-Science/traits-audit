@@ -162,6 +162,14 @@ At each step the GPR posterior at the queried point is recorded *before*
 incorporating the new observation, so the audit receives a genuine
 out-of-sample prediction rather than a retroactive fit.
 
+The GPR is constructed with ``n_restarts_optimizer=3`` and
+``random_state=seed``, so its hyperparameter-optimizer restarts are
+reproducible given ``--seed``; without an explicit ``random_state``,
+sklearn falls back to the unseeded global NumPy random state for those
+restarts, making the fitted kernel hyperparameters — and everything
+downstream of them, including the Lyapunov figures below — vary from run
+to run even with the same ``--seed``.
+
 
 Lyapunov stability framework
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -235,15 +243,16 @@ GPR posterior uncertainty evolution
 
 
 GPR posterior standard deviation (in Ah) at the queried point per UCB
-step.  The series opens at ≈ 0.0033 Ah, dips sharply to ≈ 0.0019 Ah at
-step 4 — corresponding to a query near one of the 8 seed observations —
-then rises as UCB drives exploration into unsampled (C-rate, T) pairs.
-The oscillating plateau from step 11 onward (0.0038–0.0044 Ah) reflects
-the search frontier: UCB is querying near-equally uncertain candidates
-in the outer corners of the grid, where the GPR has the least training
-signal.  The upward trend in the second half is a direct readout of
-the acquisition function's exploration pressure; it is not a sign of
-deterioration.
+step.  The series opens at ≈ 0.0029 Ah and drifts down to ≈ 0.0017–0.0019 Ah
+by steps 6–8 as the GPR is conditioned on nearby observations, then spikes
+sharply to ≈ 0.0056 Ah at step 9 when UCB jumps to a less-explored corner
+of the grid.  It settles back to ≈ 0.0017–0.0019 Ah for steps 10–14, then
+produces the largest spike of the run — ≈ 0.0159 Ah, roughly 8× the
+resting level — at step 15, before settling back to ≈ 0.0018–0.0024 Ah for
+the remainder.  These are isolated single-step spikes rather than a sustained
+upward trend: each corresponds to UCB briefly probing an unexplored (C-rate,
+T) pair before the GPR is conditioned on it and the posterior std there
+collapses again on the next step.
 
 Audit checks over AL steps
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -254,25 +263,29 @@ Audit checks over AL steps
    :alt: Eleven audit check values at snapshot intervals for the PyBAMM demo
 
 
-``CalibrationError`` starts at 0.22 (FAIL, 8 seed observations too few
-to calibrate a 2-D GPR) and drops to ≈ 0.10 by step 10, stabilising
-as a PASS for the remainder of the run.
-
-``IntervalCoverage`` remains at ≈ 0.500 throughout (all FAIL): only
-50 % of observations fall inside the GPR's 1-σ intervals, versus the
-target 68.3 %.  The GPR with ``normalize_y=True`` consistently
-over-tightens its posterior near queried points, producing intervals
-that are too narrow in absolute terms.
-
-``VarianceAlignment`` oscillates 0.4–0.7 (all FAIL): predicted variance
-is 40–70 % of mean squared error, confirming the coverage deficit.
-
-``UncertaintyEvolution`` passes at +0.01 to +0.02 — positive slope,
-meaning uncertainty is *rising* as UCB explores.  This is healthy and
-expected; it means the audit correctly distinguishes exploration-phase
-growth from the pathological uncertainty collapse that triggers a FAIL.
-
-``UncertaintyAnomalies`` and ``VarianceErrorCorrelation`` pass.
+Reading across a row (snapshots at steps 5, 10, 15, 20, plus a final
+column): ``CalibrationError`` starts PASS (0.135 at step 5) and
+*degrades* over the run — 0.139, 0.147, and finally FAIL at 0.157 by
+step 20 — the opposite trend from a GPR that calibrates better with more
+data.  ``ConformalCoverage`` is unavailable at step 5 (too few points to
+form a calibration set) then FAILs at every subsequent snapshot, with a
+q-ratio ≈ 9.98 against a target ≤ 1.5 — a large, persistent miscalibration.
+``IntervalCoverage`` starts PASS (0.80 at step 5, comfortably inside the
+[0.533, 0.833] band) then FAILs for the rest of the run, falling to 0.50,
+0.467, and 0.45 — the GPR's 1σ intervals cover fewer and fewer of the true
+values as the campaign progresses.  ``VarianceAlignment`` FAILs at every
+snapshot (0.017 → 0.029 → 0.036 → 0.128), always far *below* the
+[0.5, 1.5] band — the GPR's predicted variance persistently understates
+the true squared error, a more severe version of the same under-coverage
+problem.  ``UncertaintyEvolution`` and ``UncertaintyAnomalies`` PASS at
+steps 5 and 10, both FAIL at step 15, then ``UncertaintyEvolution``
+recovers to PASS while ``UncertaintyAnomalies`` stays FAIL through step 20 —
+consistent with the single large uncertainty spike at step 15 seen in the
+uncertainty-evolution figure above.  ``VarianceErrorCorrelation`` starts
+strongly PASS (ρ = 0.60) and steadily weakens — 0.26, 0.14 — before
+flipping to FAIL (ρ = −0.048) by the final snapshot: committee disagreement
+tracks prediction error well early on but that relationship erodes as the
+run progresses.
 
 Lyapunov pole diagram
 ~~~~~~~~~~~~~~~~~~~~~
@@ -280,20 +293,26 @@ Lyapunov pole diagram
 .. figure:: _static/demo_pybamm/fig1_poles.png
    :width: 65%
    :align: center
-   :alt: Complex eigenvalue pole diagram for the PyBAMM sklearn GPR
+   :alt: Real eigenvalue pole diagram (1-D strip) for the PyBAMM sklearn GPR
 
-The annotation "19 pole(s) outside view,
-:math:`|\lambda| \in [9.99 \times 10^{-1},\, 4.51 \times 10^1]`" reveals
-that nearly all eigenvalues of the gradient-descent Jacobian on the GPR
-capacity surface are outside the unit circle.  Of the two visible poles,
-one sits just outside the left boundary of the unit circle (Re ≈ −1.3),
-indicating mild instability, and one is on the positive real axis at
-Re ≈ 1.0 (marginally stable).  The large range of off-screen poles
-(up to :math:`|\lambda|` ≈ 45) means the GPR landscape has steep gradients over much
-of the (C-rate, T) domain — gradient descent on the surrogate would
-diverge rather than converge except near the capacity maximum.  This
-is physically interpretable: capacity varies strongly at the corners
-of the C-rate/temperature space.
+All 40 eigenvalues (2 per operating point × 20 queried points, since the
+gradient-descent Jacobian is a 2×2 matrix in the normalised (C-rate, T)
+space) are real (:math:`\mathrm{Im}(\lambda) \equiv 0` exactly — the
+Jacobian :math:`J = I - \alpha H_f` is symmetric because the Hessian of any
+twice-differentiable scalar function is symmetric, so this demo will never
+show complex eigenvalues or a unit-circle diagram, unlike CAMD's
+DMDc-fitted operator).  They cluster tightly around Re ≈ 1.0, ranging from
+≈ 0.997 to ≈ 1.007 — right at the marginal-stability boundary (the dashed
+lines at :math:`\pm 1`) rather than spread across a wide range.  31 of the
+40 fall just inside the boundary (stable) and 9 just outside (unstable);
+no eigenvalues fall outside the plotted range.  This tight clustering near
+:math:`|\lambda| = 1` means the
+GPR capacity surface is close to *flat* in the gradient-descent sense
+around most queried points — consistent with a well-behaved, smoothly
+varying capacity landscape rather than one with sharply diverging
+gradients — and also means the stable/unstable classification is sensitive
+to small numerical differences right at the boundary, which is reflected
+in the roughly 50/50 stable-vs-unstable split.
 
 Queried operating points in PCA space
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -304,16 +323,18 @@ Queried operating points in PCA space
    :alt: Queried points in PCA space coloured by Lyapunov exponent, PyBAMM
 
 
-:math:`|\lambda_{\max}|` (blue = 0, red = 30).  Unlike the CAMD
-AdaBoost case, the sklearn GPR produces a smooth response surface
-and physically meaningful Jacobians.  The colour structure is clear:
-points in the upper-left of the PC plane (high PC2, negative PC1)
-are red/warm (:math:`|\lambda_{\max}|` ≈ 25–30), while points near the centre and
-lower-right are blue (:math:`|\lambda_{\max}|` < 5).  The upper-left region corresponds
-to early UCB iterations where the GP is most uncertain and the landscape
-curvature is highest (steep capacity drop at extreme C-rates or low
-temperatures).  Later iterations (blue, centre) cluster near the
-capacity optimum where the surface is flatter.
+:math:`|\lambda_{\max}|`, colour-scaled from ≈ 0.98 (blue) to ≈ 1.02 (red) —
+a far narrower range than the CAMD demo's DMDc-fitted operator, since here
+:math:`|\lambda_{\max}|` sits right at the marginal-stability boundary
+throughout.  The colour structure is nonetheless visible: the handful of
+points in the upper-left of the PC plane (PC1 ≈ −0.5 to −0.75, PC2 ≈ 0.2–0.7)
+are warm/orange, closer to or above the :math:`|\lambda_{\max}| = 1`
+boundary, while the dense cluster near the centre (PC1 ≈ 0–0.5, PC2 ≈ −0.3
+to 0.3) is cool/blue, comfortably below it.  The upper-left points correspond
+to queries at the extremes of the (C-rate, T) grid, where the capacity
+surface curves more sharply; the central cluster corresponds to later UCB
+iterations converging near the capacity optimum, where the surface is
+flatter.
 
 Lyapunov exponent vs GPR uncertainty
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -323,17 +344,16 @@ Lyapunov exponent vs GPR uncertainty
    :align: center
    :alt: Lyapunov exponent vs GPR posterior std for the PyBAMM demo
 
-The x-axis range is
-extremely compressed (0.0030–0.0038 Ah, an 0.8 mAh spread), while
-:math:`|\lambda_{\max}|` spans 0–45.  No monotonic relationship is visible: the most
-unstable point (:math:`|\lambda_{\max}|` ≈ 45, top-left) is at low uncertainty.
-This disconnect is diagnostically important: **the GPR's own stated
-uncertainty does not predict where the surrogate landscape is
-dynamically most sensitive**.  This occurs because UCB queries
-high-uncertainty locations, which the GPR then conditions on and
-quickly becomes certain about — but the landscape gradient (encoded
-by :math:`|\lambda_{\max}|`) remains large.  Lyapunov analysis therefore adds
-information that calibration metrics alone cannot provide.
+The x-axis range is compressed (≈ 0.0018–0.0026 Ah) and :math:`|\lambda_{\max}|`
+spans only ≈ 0.997–1.007, but a clear positive relationship is visible
+here: points at higher GPR std tend to have higher :math:`|\lambda_{\max}|`,
+rising from ≈ 0.997 at std ≈ 0.0018 Ah up to the single highest point
+(≈ 1.007) at the highest std (≈ 0.0026 Ah).  Unlike the CAMD demo, where
+DMDc stability and committee uncertainty were largely decoupled, here the
+two move together — plausibly because both are driven by the same
+underlying cause: queries at the edges of the (C-rate, T) grid, where the
+GPR has the least training signal *and* the capacity surface curves most
+sharply.
 
 Lyapunov evolution
 ~~~~~~~~~~~~~~~~~~
@@ -346,15 +366,20 @@ Lyapunov evolution
    (orange = :math:`|\lambda_{\max}|`, left axis;
    blue = GPR std, right axis).
 
-:math:`|\lambda_{\max}|` starts at ≈ 6, drops to ≈ 1 at step 4 (the
-same dip visible in the uncertainty curve), then surges to ≈ 45 at
-step 11 before settling at 15–25.  The two signals correlate strongly
-from step 5 onward: as UCB finds higher-uncertainty candidates,
-those candidates also lie on steeper portions of the capacity landscape.
-This co-variation validates the Lyapunov criterion as a physically
-meaningful partner signal to surrogate uncertainty: regions that are
-uncertain *and* dynamically sensitive are the highest-value queries
-for an experiment that cannot be reversed.
+:math:`|\lambda_{\max}|` oscillates in a narrow band throughout (≈ 0.997–1.007),
+with its single highest peak at step 5 and smaller peaks around steps 2,
+7–8, 9, and 14; it never departs far from the marginal-stability boundary.
+The GPR-std curve is much flatter for most of the run, punctuated by two
+sharp, isolated spikes at steps 9 and 15 (the same spikes visible in the
+uncertainty-evolution figure above).  The two series loosely align at step
+9, where both are locally elevated, but not elsewhere — the largest std
+spike (step 15) does not coincide with the largest :math:`|\lambda_{\max}|`
+peak (step 5).  So while the scatter plot above shows a positive overall
+association between std and :math:`|\lambda_{\max}|`, the two signals are
+not tightly locked together step-by-step — consistent with
+:math:`|\lambda_{\max}|` responding to local surface curvature and GPR std
+responding to training-data density, two related but distinct properties
+of the same landscape.
 
 Pareto frontier: GPR posterior std vs discharge capacity
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -365,21 +390,25 @@ Pareto frontier: GPR posterior std vs discharge capacity
    :alt: Pareto frontier of GPR uncertainty vs discharge capacity for the PyBAMM demo
 
    (coloured
-   by UCB step, viridis scale from early = dark to late = light).
+   by UCB step, viridis scale from early = yellow to late = dark purple).
    Each point is one UCB-queried (C-rate, T) pair; the Pareto-optimal
    subset (circled) is the non-dominated set that achieves simultaneously
    low uncertainty *and* high capacity — the most trustworthy operating
    candidates identified by the loop.
 
-The frontier's shape reflects the exploration-exploitation tension.
-Early UCB steps (dark, high :math:`\sigma`) lie on the upper-left:
-they are high-capacity candidates but carry large posterior uncertainty
-because the GPR has not yet been conditioned on those regions.  Later
-steps (light) cluster near the capacity optimum with smaller
-:math:`\sigma`, but occasionally probe low-capacity corners.  Pareto
-points near the upper-right corner (high capacity, low uncertainty) are
-the ideal deployment targets — the GPR is both accurate *and* confident
-there.
+For this run, most points already cluster tightly at low std (≈ 0.0015–
+0.003 Ah) and high capacity (≈ 0.676–0.685 Ah), so the frontier itself is
+compact: three Pareto-optimal points sit right on top of each other at the
+lowest std / highest capacity corner, spanning early-to-mid steps (yellow
+to dark purple).  Three points are clearly dominated: one mid-run point
+(teal, step ≈ 10) at moderate std (≈ 0.0055 Ah) but noticeably lower
+capacity (≈ 0.656 Ah); one early point (yellow-green, step ≈ 6) with the
+lowest capacity in the whole run (≈ 0.628 Ah) despite low std; and the
+step-15 spike point (blue-purple) at by far the highest std (≈ 0.0155 Ah)
+without a compensating capacity gain (≈ 0.675 Ah, no better than the
+Pareto-optimal cluster).  There is no early/late split in this run's
+frontier — the dominated points come from early, middle, and late steps
+alike.
 
 Points that lie off the frontier (no circle) are dominated: another
 queried point achieved better capacity *and* lower uncertainty
@@ -396,13 +425,14 @@ Convergence: running best discharge capacity vs cumulative AL queries
    :alt: Running best discharge capacity vs cumulative AL queries for the PyBAMM demo
 
 The dashed horizontal line marks the best capacity found among the 8 seed
-observations.  The solid curve shows the running maximum as UCB queries
-accumulate.  Early steps (queries 1–6) rarely improve on the seed because
-UCB explores high-uncertainty corners; the capacity jumps as UCB identifies
-the high-capacity region near the optimal (C-rate, T) pair, typically around
-query 10–15.  The plateau in the final third of the run indicates that the
-UCB policy has effectively converged: remaining queries refine the GPR
-posterior rather than finding a better optimum.  A curve that never exceeds
+observations (≈ 0.6702 Ah).  The solid curve shows the running maximum as
+UCB queries accumulate.  For this run there are two step improvements: the
+first at query 2 (to ≈ 0.677 Ah) and a second at query 4 (to ≈ 0.6807 Ah),
+after which the curve is completely flat for the next 9 queries; a final
+jump at query 14 reaches the run's best value (≈ 0.6847 Ah), which then
+holds flat through query 28 — indicating the UCB policy has effectively
+converged: the remaining queries refine the GPR posterior rather than
+finding a better optimum.  A curve that never exceeds
 the seed baseline would indicate that UCB is stuck exploring low-capacity
 corners — a failure mode the ``UncertaintyEvolution`` check would flag as a
 pathologically rising slope.
@@ -411,39 +441,65 @@ pathologically rising slope.
 Discussion
 ----------
 
-A typical output for a 28-point run (8 seed + 20 UCB):
+A run with the documented reproduction command (28 points: 8 seed + 20 UCB)
+produces an audit report similar to (showing the six checks present since
+the first release; the full pipeline also runs ``ConformalCoverage``,
+``CRPS``, ``NegativeLogLikelihood``, ``PITUniformity``, ``IntervalScore``,
+and ``LyapunovStability`` — see the check grid above for those):
 
 .. code-block:: text
 
    ── Audit report ────────────────────────────────────────────────────
-   CalibrationError         PASS  value=0.112  threshold=0.150
-   IntervalCoverage         PASS  value=0.643  threshold=[0.533, 0.833]
-   VarianceAlignment        PASS  value=1.031  threshold=1.0
+   CalibrationError         FAIL  value=0.157  threshold=0.150
+   IntervalCoverage         FAIL  value=0.450  threshold=[0.533, 0.833]
+   VarianceAlignment        FAIL  value=0.128  threshold=1.0
    UncertaintyEvolution     PASS  value=0     threshold=0.0
-   UncertaintyAnomalies     PASS  value=0.000  threshold=0.050
-   VarianceErrorCorrelation PASS  value=0.357  threshold=0.100
-   ── Overall: PASS ────────────────────────────────────────────────────
+   UncertaintyAnomalies     FAIL  value=0.050  threshold=0.050
+   VarianceErrorCorrelation FAIL  value=-0.048 threshold=0.100
+   ── Overall: FAIL (5 checks failed among these six) ──────────────────
 
-Scenario-specific guidance:
+Of the full 12-check pipeline, 6 pass: ``CRPS``, ``NegativeLogLikelihood``,
+``PITUniformity``, ``IntervalScore``, ``UncertaintyEvolution``, and
+``LyapunovStability`` (0.600 stable fraction).  Scenario-specific guidance:
 
-* **CalibrationError FAIL early in the run (< 15 steps):** Expected.  With
-  fewer than ~12 observations the GPR likelihood surface is poorly constrained.
-  If calibration does not recover by step 20, consider increasing
-  ``--n-seed`` or adding a length-scale prior.
+* **CalibrationError FAIL late in the run**, as seen here (0.135 at step 5
+  degrading to 0.157 by step 20): unlike the "too little data yet" failure
+  mode below, a calibration error that *worsens* as more observations
+  accumulate suggests the GPR's noise model itself is a poor fit — check
+  whether ``--noise-std`` matches the oracle's actual noise level, since a
+  mismatched fixed noise floor does not improve with more data the way a
+  data-scarcity problem would.
+
+* **CalibrationError FAIL early in the run (< 15 steps):** Also expected in
+  many runs, for a different reason — with fewer than ~12 observations the
+  GPR likelihood surface is poorly constrained.  If calibration does not
+  recover by step 20, consider increasing ``--n-seed`` or adding a
+  length-scale prior.
 
 * **VarianceAlignment > 1.5:** The GPR is assigning more variance than the
   actual squared errors warrant — often caused by the ``normalize_y`` option
   overestimating the capacity range.  Reduce ``--noise-std`` or fix the
   noise kernel bounds.
 
+* **VarianceAlignment persistently well below 0.5**, as seen here (0.017 →
+  0.128 across the run): the opposite failure mode — the GPR's posterior
+  variance is *too small* relative to true squared error, i.e. the model is
+  overconfident.  This is consistent with the ``IntervalCoverage`` FAILs at
+  0.45–0.50 (under-covering the nominal 68.3% band) seen in the same run:
+  both point to intervals that are too narrow, not too wide.
+
 * **UncertaintyEvolution slope < −0.05:** UCB with a large :math:`\kappa`
   can lock onto a high-capacity region early, rapidly collapsing the
   uncertainty budget.  Reduce ``--kappa`` or increase ``--n-iter``.
 
 * **VarianceErrorCorrelation FAIL:** The GPR is not more uncertain in regions
-  where it is wrong.  This often occurs when the kernel length scale is too
-  long (the model smooths over all variation) or too short (it memorises
-  every point with near-zero residual).
+  where it is wrong.  In this run it starts strongly positive (ρ = 0.60 at
+  step 5) and steadily weakens to FAIL (ρ = −0.048) by the end — worth
+  watching for in other runs too, since a correlation that erodes over the
+  campaign is a different (and arguably more concerning) pattern than one
+  that fails from the start.  This often also occurs when the kernel length
+  scale is too long (the model smooths over all variation) or too short (it
+  memorises every point with near-zero residual).
 
 
 References
