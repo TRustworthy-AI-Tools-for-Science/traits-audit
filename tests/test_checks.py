@@ -468,6 +468,190 @@ def test_lyapunov_callable_unstable():
     assert not result.passed
 
 
+# ── LyapunovStabilityCheck: max_workers concurrency ──────────────────────────
+#
+# The per-point Jacobian loop in _compute_lambda_max is where the check's
+# real cost lives (4n^2 surrogate_fn calls per point) and every point is
+# independent of every other, so it's embarrassingly parallel. These tests
+# call the "private" _compute_lambda_max directly (rather than only through
+# run()) because run() only exposes the aggregated fraction_stable/mean/max —
+# verifying that concurrent execution assigns each result to the *correct*
+# point (not just the correct set of values) requires the per-point array.
+
+def _quartic_distinct_scales():
+    # f(x) = sum(x**4): Hessian = diag(12*x_i**2), so curvature -- and
+    # therefore lambda_max -- grows strictly with |x|. Using points at
+    # clearly increasing scales means each point has a genuinely different
+    # expected lambda_max: a point-to-index mixup under concurrency would
+    # show up as specific entries changing, not just as the same values in
+    # a different order.
+    def f(x):
+        return float(np.sum(x**4))
+
+    op_states = np.array([
+        [0.05, 0.05],
+        [0.5, 0.5],
+        [1.5, 1.5],
+        [3.0, 3.0],
+        [6.0, 6.0],
+    ])
+    return f, op_states
+
+
+def test_lyapunov_concurrent_matches_sequential_and_preserves_point_mapping():
+    f, op_states = _quartic_distinct_scales()
+
+    seq_check = LyapunovStabilityCheck(alpha=0.01)  # max_workers=None default
+    conc_check = LyapunovStabilityCheck(alpha=0.01, max_workers=4)
+
+    lm_seq, info_seq = seq_check._compute_lambda_max(f, op_states)
+    lm_conc, info_conc = conc_check._compute_lambda_max(f, op_states)
+
+    np.testing.assert_array_equal(lm_seq, lm_conc)
+    # All 5 values genuinely distinct (to 6 decimals) -- so the equality
+    # above is confirming results land at the point they belong to, not
+    # trivially passing because every point happens to produce the same value.
+    assert len(set(np.round(lm_seq, 6))) == 5
+    assert info_seq["n_computed"] == info_conc["n_computed"] == 5
+
+
+def test_lyapunov_concurrent_with_more_workers_than_points():
+    # max_workers exceeding the number of points needing computation must not
+    # error or drop points.
+    f, op_states = _quartic_distinct_scales()
+    check = LyapunovStabilityCheck(alpha=0.01, max_workers=32)
+    lm, info = check._compute_lambda_max(f, op_states)
+    assert info["n_computed"] == 5
+    assert len(lm) == 5
+
+
+def test_lyapunov_concurrent_respects_cache_across_calls():
+    f, op_states = _quartic_distinct_scales()
+    cache: dict = {}
+    check = LyapunovStabilityCheck(alpha=0.01, max_workers=4)
+
+    lm1, info1 = check._compute_lambda_max(f, op_states[:3], cache=cache)
+    assert info1["n_computed"] == 3
+    assert info1["n_cached"] == 0
+
+    # Extend the trajectory by two points -- only the new ones should be
+    # (concurrently) computed; the first three must be reused unchanged.
+    lm2, info2 = check._compute_lambda_max(f, op_states, cache=cache)
+    assert info2["n_computed"] == 2
+    assert info2["n_cached"] == 3
+    np.testing.assert_array_equal(lm2[:3], lm1)
+
+
+def test_lyapunov_batched_jacobian_matches_scalar_nested_computation():
+    # _numerical_jacobian_batched must reproduce _numerical_jacobian(
+    # _gd_predictor(f_scalar, alpha), state) exactly (same math, issued as one
+    # batched call instead of 4n^2 scalar ones) -- this is the numerical
+    # contract the whole batching optimization depends on.
+    from traits_audit.checks.lyapunov import (
+        _numerical_jacobian,
+        _numerical_jacobian_batched,
+        _gd_predictor,
+    )
+
+    rng = np.random.default_rng(7)
+    state = rng.standard_normal(6)
+
+    def f_scalar(x):
+        # Deliberately asymmetric / non-quadratic so a wrong index mapping
+        # inside the batched construction would change the result.
+        return float(np.sum(x**3) + 2.0 * x[0] * x[-1])
+
+    def f_batched(X):
+        return np.sum(X**3, axis=1) + 2.0 * X[:, 0] * X[:, -1]
+
+    predictor = _gd_predictor(f_scalar, alpha=0.02)
+    J_seq = _numerical_jacobian(predictor, state)
+    J_batched = _numerical_jacobian_batched(f_batched, state, alpha=0.02)
+
+    np.testing.assert_allclose(J_seq, J_batched, rtol=1e-10, atol=1e-12)
+
+
+def test_lyapunov_surrogate_fn_batched_matches_scalar_path_via_compute_lambda_max():
+    def f_scalar(x):
+        return float(np.sum(x**3) + 2.0 * x[0] * x[-1])
+
+    def f_batched(X):
+        return np.sum(X**3, axis=1) + 2.0 * X[:, 0] * X[:, -1]
+
+    rng = np.random.default_rng(3)
+    op_states = rng.standard_normal((4, 6))
+
+    check = LyapunovStabilityCheck(alpha=0.02)
+    lm_scalar, info_scalar = check._compute_lambda_max(f_scalar, op_states)
+    lm_batched, info_batched = check._compute_lambda_max(
+        f_scalar, op_states, surrogate_fn_batched=f_batched
+    )
+
+    np.testing.assert_allclose(lm_scalar, lm_batched, rtol=1e-10, atol=1e-12)
+    assert info_scalar["n_computed"] == info_batched["n_computed"] == 4
+
+
+def test_lyapunov_surrogate_fn_batched_with_pca_matches_scalar_path():
+    # PCA path: f_use_batched must inverse_transform the whole batch and stay
+    # consistent with the per-point f_use's inverse_transform + surrogate_fn.
+    def f_scalar(x):
+        return float(np.sum(x**2))
+
+    def f_batched(X):
+        return np.sum(X**2, axis=1)
+
+    rng = np.random.default_rng(11)
+    op_states = rng.standard_normal((10, 5))  # m=10 > n_pca=2 -> PCA engages
+
+    check = LyapunovStabilityCheck(alpha=0.01, n_pca=2)
+    lm_scalar, info_scalar = check._compute_lambda_max(f_scalar, op_states)
+    lm_batched, info_batched = check._compute_lambda_max(
+        f_scalar, op_states, surrogate_fn_batched=f_batched
+    )
+
+    assert not info_scalar["pca_skipped"]
+    np.testing.assert_allclose(lm_scalar, lm_batched, rtol=1e-8, atol=1e-10)
+
+
+def test_lyapunov_batched_respects_cache_across_calls():
+    def f_batched(X):
+        return np.sum(X**3, axis=1) + 2.0 * X[:, 0] * X[:, -1]
+
+    rng = np.random.default_rng(5)
+    op_states = rng.standard_normal((3, 4))
+    cache: dict = {}
+    check = LyapunovStabilityCheck(alpha=0.02)
+
+    lm1, info1 = check._compute_lambda_max(
+        lambda x: float(f_batched(x[np.newaxis])[0]), op_states, cache=cache,
+        surrogate_fn_batched=f_batched,
+    )
+    assert info1["n_computed"] == 3
+
+    op_states2 = np.vstack([op_states, rng.standard_normal((1, 4))])
+    lm2, info2 = check._compute_lambda_max(
+        lambda x: float(f_batched(x[np.newaxis])[0]), op_states2, cache=cache,
+        surrogate_fn_batched=f_batched,
+    )
+    assert info2["n_computed"] == 1
+    assert info2["n_cached"] == 3
+    np.testing.assert_array_equal(lm2[:3], lm1)
+
+
+def test_lyapunov_concurrent_via_run_matches_sequential_fraction():
+    # End-to-end through the public run() API, not just _compute_lambda_max.
+    f, op_states = _quartic_distinct_scales()
+    seq = LyapunovStabilityCheck(alpha=0.01, min_stable_fraction=0.5).run(
+        [], surrogate_fn=f, op_states=op_states
+    )
+    conc = LyapunovStabilityCheck(alpha=0.01, min_stable_fraction=0.5, max_workers=4).run(
+        [], surrogate_fn=f, op_states=op_states
+    )
+    assert seq.passed == conc.passed
+    assert seq.value == pytest.approx(conc.value)
+    assert seq.details["lambda_max_mean"] == pytest.approx(conc.details["lambda_max_mean"])
+
+
 # ── MahalanobisOODCheck ──────────────────────────────────────────────────────
 
 def _mahalanobis_data(seed, n_id=40, d=2, window=10, shift=20.0):

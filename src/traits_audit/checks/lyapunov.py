@@ -42,6 +42,62 @@ def _gd_predictor(f_scalar, alpha: float = 0.01, eps: float = 1e-5):
     return predictor
 
 
+def _numerical_jacobian_batched(
+    f_batched,
+    state: np.ndarray,
+    alpha: float,
+    dx: float = 1e-4,
+    eps: float = 1e-5,
+) -> np.ndarray:
+    """Same n×n Jacobian as ``_numerical_jacobian(_gd_predictor(f_scalar, alpha,
+    eps), state, dx)`` for the scalar-callable ``f_scalar`` that ``f_batched``
+    batches — but issued as exactly ONE call to ``f_batched`` covering all
+    4n² perturbed states the nested (Jacobian-of-a-numerically-differentiated-
+    gradient) computation needs, instead of 4n² separate scalar calls.
+
+    For a surrogate whose real cost is per-call dispatch overhead rather than
+    per-row compute (e.g. a JAX-jitted model, where a threaded loop of many
+    small calls empirically gave ~0% speedup — batched execution is the
+    idiomatic fix for that case, not concurrency), this is where the actual
+    win comes from.
+
+    Parameters
+    ----------
+    f_batched : callable
+        ``(M, D) ndarray -> (M,) ndarray``. Must accept an arbitrary batch
+        size M and return one scalar per row — the batched counterpart of
+        the scalar ``f_scalar: (D,) ndarray -> float`` that
+        ``_numerical_jacobian``/``_gd_predictor`` take.
+    state : (D,) ndarray
+    alpha : float
+        Gradient-descent step size (see ``_gd_predictor``).
+    """
+    n = len(state)
+    # Outer perturbations (2n states): outer[2i] = state + dx*e_i, outer[2i+1] = state - dx*e_i.
+    outer = np.tile(state, (2 * n, 1)).astype(np.float64)
+    idx = np.arange(n)
+    outer[2 * idx, idx] += dx
+    outer[2 * idx + 1, idx] -= dx
+
+    # Each of the 2n outer states needs its own 2n-perturbation gradient estimate
+    # -> 2n * 2n = 4n^2 states total, batched into one call.
+    inner = np.repeat(outer, 2 * n, axis=0)  # (4n^2, D)
+    base = (np.arange(2 * n) * 2 * n)[:, None]  # (2n, 1) row offsets into `inner`
+    rows_p = (base + 2 * idx[None, :]).ravel()
+    rows_m = (base + 2 * idx[None, :] + 1).ravel()
+    cols = np.tile(idx, 2 * n)
+    inner[rows_p, cols] += eps
+    inner[rows_m, cols] -= eps
+
+    flat = np.asarray(f_batched(inner), dtype=np.float64).reshape(2 * n, 2 * n)
+    grad = (flat[:, 0::2] - flat[:, 1::2]) / (2.0 * eps)  # (2n, n) == (2n, D)
+    predictor_out = outer - alpha * grad  # (2n, D)
+
+    J = np.zeros((n, n), dtype=np.float64)
+    J[:, idx] = ((predictor_out[2 * idx] - predictor_out[2 * idx + 1]) / (2.0 * dx)).T
+    return J
+
+
 # ── Check ─────────────────────────────────────────────────────────────────────
 
 class LyapunovStabilityCheck(AuditCheck):
@@ -86,6 +142,23 @@ class LyapunovStabilityCheck(AuditCheck):
         fraction — so the signal reflects the current operating region rather
         than the whole diluted history.  ``None`` uses all points (the original
         cumulative behaviour).
+    max_workers : int or None
+        If set (> 1) and ``surrogate_fn_batched`` is *not* used, each *new*
+        (uncached) point's Jacobian is computed concurrently in a
+        ``ThreadPoolExecutor`` with this many workers — every point's
+        Jacobian is independent of every other's, making this embarrassingly
+        parallel in principle.  ``None`` (default) computes sequentially.
+        In practice, for a JAX-jitted ``surrogate_fn`` this delivered close
+        to zero real speedup in testing (JAX's CPU/XLA backend does not give
+        genuine concurrent execution to calls issued from separate Python
+        threads) — see ``surrogate_fn_batched`` below for the fix that
+        actually helps that case. ``max_workers`` is kept for surrogates
+        that genuinely benefit from thread-level concurrency (e.g. ones that
+        release the GIL during their own compute). Requires ``surrogate_fn``
+        to be safe to call concurrently from multiple threads; this class
+        holds no shared mutable state during the parallel section itself, so
+        the check is thread-safe either way — the constraint is entirely on
+        the caller-supplied ``surrogate_fn``.
 
     Required data (at least one route)
     -----------------------------------
@@ -95,6 +168,19 @@ class LyapunovStabilityCheck(AuditCheck):
     dropped before windowing/aggregation, rather than counted as unstable.
     On-demand: ``surrogate_fn`` kwarg (callable) and ``op_states``
     kwarg (ndarray of shape (N, D)).
+
+    Optional batched evaluation (recommended for JAX/vectorized surrogates)
+    ------------------------------------------------------------------------
+    ``surrogate_fn_batched`` kwarg — ``(M, D) ndarray -> (M,) ndarray``, the
+    batched counterpart of ``surrogate_fn``. Each point's Jacobian needs
+    ``4n²`` scalar evaluations (the Jacobian of a numerically-differentiated
+    gradient, nested); when this is given, all ``4n²`` perturbed states for
+    a point are issued as a **single** batched call instead of ``4n²``
+    separate ones — this is where the check's real cost lives, and batching
+    is the fix that actually pays off for surrogates optimized for vectorized
+    execution (unlike ``max_workers`` threading, which does not help a
+    JAX-jitted model — see above). Falls back to the scalar ``surrogate_fn``
+    path (optionally threaded via ``max_workers``) when omitted.
 
     Optional caching
     ----------------
@@ -114,12 +200,14 @@ class LyapunovStabilityCheck(AuditCheck):
         alpha: float = 0.01,
         n_pca: Optional[int] = None,
         window: Optional[int] = None,
+        max_workers: Optional[int] = None,
     ):
         self.stability_threshold = stability_threshold
         self.min_stable_fraction = min_stable_fraction
         self.alpha = alpha
         self.n_pca = n_pca
         self.window = window
+        self.max_workers = max_workers
 
     @property
     def name(self) -> str:
@@ -130,14 +218,17 @@ class LyapunovStabilityCheck(AuditCheck):
         return AuditCategory.EPISTEMIC
 
     def _compute_lambda_max(
-        self, surrogate_fn, op_states: np.ndarray, cache=None
+        self, surrogate_fn, op_states: np.ndarray, cache=None, surrogate_fn_batched=None
     ):
         """Per-point |λ_max| over the (windowed) op_states, plus a diagnostics dict.
 
         Windows to the last ``self.window`` rows (keeping absolute row indices
         for cache keys), skips PCA when it cannot be fit, and reuses any per-row
         value already in ``cache`` (a caller-owned dict) — see class docstring.
-        Returns ``(lm, info)``.
+        When ``surrogate_fn_batched`` is given, each new point's Jacobian is
+        computed via one batched call (see ``_numerical_jacobian_batched``)
+        instead of ``4n²`` scalar ``surrogate_fn`` calls (optionally threaded
+        via ``max_workers``). Returns ``(lm, info)``.
         """
         states_full = np.asarray(op_states, dtype=float)
         n_total = states_full.shape[0]
@@ -177,17 +268,42 @@ class LyapunovStabilityCheck(AuditCheck):
                     x_orig = pca.inverse_transform(x_pca[np.newaxis])[0] + mean
                     return float(surrogate_fn(x_orig))
 
+                def f_use_batched(x_pca_batch: np.ndarray) -> np.ndarray:
+                    x_orig_batch = pca.inverse_transform(x_pca_batch) + mean
+                    return np.asarray(surrogate_fn_batched(x_orig_batch), dtype=np.float64)
+
                 work_states = pca_states
             else:
                 def f_use(x: np.ndarray) -> float:
                     return float(surrogate_fn(x))
 
+                def f_use_batched(x_batch: np.ndarray) -> np.ndarray:
+                    return np.asarray(surrogate_fn_batched(x_batch), dtype=np.float64)
+
                 work_states = states
 
-            predictor = _gd_predictor(f_use, alpha=self.alpha)
-            for i in need:
-                J = _numerical_jacobian(predictor, work_states[i])
-                store[offset + i] = float(_eigenvalues(J).max())
+            if surrogate_fn_batched is not None:
+                # One batched call per point (4n^2 perturbed states at once)
+                # instead of 4n^2 tiny scalar calls -- see class docstring.
+                for i in need:
+                    J = _numerical_jacobian_batched(f_use_batched, work_states[i], alpha=self.alpha)
+                    store[offset + i] = float(_eigenvalues(J).max())
+            else:
+                predictor = _gd_predictor(f_use, alpha=self.alpha)
+
+                def _one_point(i: int):
+                    J = _numerical_jacobian(predictor, work_states[i])
+                    return i, float(_eigenvalues(J).max())
+
+                if self.max_workers and self.max_workers > 1:
+                    from concurrent.futures import ThreadPoolExecutor
+                    with ThreadPoolExecutor(max_workers=self.max_workers) as ex:
+                        for i, lam in ex.map(_one_point, need):
+                            store[offset + i] = lam
+                else:
+                    for i in need:
+                        _, lam = _one_point(i)
+                        store[offset + i] = lam
 
         lm = np.array([store[offset + i] for i in range(m)], dtype=float)
         return lm, info
@@ -214,6 +330,7 @@ class LyapunovStabilityCheck(AuditCheck):
                         kwargs["surrogate_fn"],
                         kwargs["op_states"],
                         cache=kwargs.get("lambda_cache"),
+                        surrogate_fn_batched=kwargs.get("surrogate_fn_batched"),
                     )
                 except Exception as exc:
                     return AuditResult(
