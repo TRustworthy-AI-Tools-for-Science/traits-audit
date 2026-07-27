@@ -171,11 +171,12 @@ class LyapunovStabilityCheck(AuditCheck):
 
     Optional batched evaluation (recommended for JAX/vectorized surrogates)
     ------------------------------------------------------------------------
-    ``surrogate_fn_batched`` kwarg — ``(M, D) ndarray -> (M,) ndarray``, the
-    batched counterpart of ``surrogate_fn``. Each point's Jacobian needs
-    ``4n²`` scalar evaluations (the Jacobian of a numerically-differentiated
-    gradient, nested); when this is given, all ``4n²`` perturbed states for
-    a point are issued as a **single** batched call instead of ``4n²``
+    surrogate_fn_batched kwarg — callable with signature
+    (M, D) ndarray -> (M,) ndarray (the batched counterpart of
+    surrogate_fn). Each point's Jacobian needs 4n² scalar evaluations (the
+    Jacobian of a numerically-differentiated
+    gradient, nested); when this is given, all 4n² perturbed states for
+    a point are issued as a **single** batched call instead of 4n²
     separate ones — this is where the check's real cost lives, and batching
     is the fix that actually pays off for surrogates optimized for vectorized
     execution (unlike ``max_workers`` threading, which does not help a
