@@ -14,9 +14,15 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import numpy as np
-from scipy.linalg import solve_discrete_lyapunov
 
 import matplotlib.pyplot as plt
+
+from .checks.lyapunov import (
+    numerical_jacobian,
+    eigenvalues_and_stability,
+    compute_lyapunov,
+    make_gd_predictor,
+)
 
 # ── Publication rcParams (applied once at import) ───────────────────────────
 
@@ -85,74 +91,12 @@ _CHECK_ABBREV: Dict[str, str] = {
 _STATE_KEYS = ["uncertainty", "pool_sigma_mean", "pool_sigma_max", "abs_error"]
 
 
-# ── Core Lyapunov functions ─────────────────────────────────────────────────
-
-def numerical_jacobian(
-    predictor,
-    state: np.ndarray,
-    action: np.ndarray | None = None,
-    dx: float = 1e-4,
-) -> np.ndarray:
-    """n×n Jacobian of predictor(state, action) → ℝⁿ via central differences."""
-    n = len(state)
-    J = np.zeros((n, n), dtype=np.float64)
-    for i in range(n):
-        s_plus  = state.copy(); s_plus[i]  += dx
-        s_minus = state.copy(); s_minus[i] -= dx
-        col = (predictor(s_plus, action) - predictor(s_minus, action)) / (2.0 * dx)
-        J[:, i] = col
-    return J
-
-
-def eigenvalues_and_stability(J: np.ndarray) -> dict:
-    """Eigenvalue spectrum and discrete-time stability indicators."""
-    eigs = np.linalg.eigvals(J)
-    mags = np.abs(eigs)
-    return {
-        "eigenvalues": eigs,
-        "magnitudes":  mags,
-        "lambda_max":  float(mags.max()),
-        "lambda_min":  float(mags.min()),
-        "is_stable":   bool((mags < 1.0).all()),
-        "n_unstable":  int((mags >= 1.0).sum()),
-    }
-
-
-def compute_lyapunov(A: np.ndarray, rho_max: float = 0.99) -> np.ndarray | None:
-    """Solve discrete Lyapunov equation Aᵀ P A − P = −I.
-
-    If ``A``'s spectral radius is ≥ 1, ``A`` is rescaled to spectral radius
-    *rho_max* before solving — same approach as
-    :func:`traits_audit.dmdc.compute_gramians`. Returns ``None`` only if
-    ``solve_discrete_lyapunov`` itself raises.
-    """
-    rho = float(np.abs(np.linalg.eigvals(A)).max())
-    if rho >= 1.0:
-        A = A * (rho_max / rho)
-    try:
-        return solve_discrete_lyapunov(A.T, np.eye(len(A)))
-    except Exception:
-        return None
-
-
-def make_gd_predictor(f_scalar, alpha: float = 0.01, eps: float = 1e-5):
-    """Discrete gradient-descent step predictor: x_{t+1} = x_t − α ∇f(x_t)."""
-    def predictor(state: np.ndarray, action=None) -> np.ndarray:
-        n = len(state)
-        grad = np.zeros(n)
-        for i in range(n):
-            s_p = state.copy(); s_p[i] += eps
-            s_m = state.copy(); s_m[i] -= eps
-            grad[i] = (f_scalar(s_p) - f_scalar(s_m)) / (2.0 * eps)
-        return state - alpha * grad
-    return predictor
-
-
 # ── Private save helper ─────────────────────────────────────────────────────
 
 def _save(fig, out_dir: Path, stem: str) -> None:
     fig.savefig(out_dir / f"{stem}.png", dpi=300, bbox_inches="tight")
     plt.close(fig)
+    print(f"  Saved {stem}.png")
 
 
 # ── Matplotlib plot functions ───────────────────────────────────────────────
@@ -182,7 +126,7 @@ def plot_poles(
         stable   = np.abs(re) < 1.0
         unstable = ~stable
 
-        fig, ax = plt.subplots(figsize=(3.5, 2.0))
+        fig, ax = plt.subplots(figsize=(3.5, 3.5))
         rng_spread = float(np.abs(re).max()) * 1.15
         lim = max(1.3, rng_spread)
         jitter = np.random.default_rng(0).uniform(-0.08, 0.08, size=len(re))
@@ -257,7 +201,6 @@ def plot_poles(
                    bbox_to_anchor=(1.02, 0.5), loc="center left")
 
     _save(fig, out_dir, "fig1_poles")
-    print("  Saved fig1_poles.png")
 
 
 def plot_stability_contours(
@@ -275,7 +218,7 @@ def plot_stability_contours(
     z = pca.fit_transform(states - states.mean(axis=0))
     z2 = z[:, 1] if z.shape[1] > 1 else np.zeros(len(z))
 
-    fig, ax = plt.subplots(figsize=(5.5, 3.5))
+    fig, ax = plt.subplots(figsize=(3.5, 3.5))
 
     if P is not None and n_comp == 2:
         V = pca.components_.T[:, :2]
@@ -310,7 +253,6 @@ def plot_stability_contours(
     ax.grid(False)
     fig.tight_layout()
     _save(fig, out_dir, "fig2_stability_contours")
-    print("  Saved fig2_stability_contours.png")
 
 
 def plot_stability_vs_uncertainty(
@@ -331,7 +273,6 @@ def plot_stability_vs_uncertainty(
     ax.legend(frameon=False, fontsize=7,
               bbox_to_anchor=(0.5, 1.02), loc="lower center", ncol=1)
     _save(fig, out_dir, "fig3_stability_vs_unc")
-    print("  Saved fig3_stability_vs_unc.png")
 
 
 def plot_pareto_frontier(
@@ -345,11 +286,14 @@ def plot_pareto_frontier(
     minimize_y: bool = True,
     color_vals: np.ndarray | None = None,
     color_label: str = "AL step",
+    true_front_x: np.ndarray | None = None,
+    true_front_y: np.ndarray | None = None,
 ) -> None:
-    """Pareto frontier in 2-D objective space (uncertainty × performance) (fig7).
+    """Pareto frontier in 2-D objective space (fig7).
 
-    Highlights the non-dominated set of queried points: those achieving the
-    best simultaneous trade-off between both objectives.
+    Highlights the non-dominated set of queried points.  Optionally overlays
+    the known true Pareto front as a dashed reference line via ``true_front_x``
+    and ``true_front_y``.
     """
     x = np.asarray(x_vals, dtype=float)
     y = np.asarray(y_vals, dtype=float)
@@ -377,7 +321,7 @@ def plot_pareto_frontier(
     order = np.argsort(x[pareto_idx])
     px, py = x[pareto_idx][order], y[pareto_idx][order]
 
-    fig, ax = plt.subplots(figsize=(3.5, 2.625))
+    fig, ax = plt.subplots(figsize=(3.5, 3.5))
 
     if cv is not None:
         sc = ax.scatter(
@@ -405,6 +349,12 @@ def plot_pareto_frontier(
         ax.plot([px[k + 1], px[k + 1]], [py[k], py[k + 1]],
                 color="C1", lw=1.0, ls="--", alpha=0.8)
 
+    if true_front_x is not None and true_front_y is not None:
+        tfx = np.asarray(true_front_x, dtype=float)
+        tfy = np.asarray(true_front_y, dtype=float)
+        order = np.argsort(tfx)
+        ax.plot(tfx[order], tfy[order], color="k", lw=1.0, ls=":", alpha=0.6, label="True front")
+
     ax.set_xlabel(x_label)
     ax.set_ylabel(y_label)
     ax.legend(frameon=False)
@@ -412,7 +362,146 @@ def plot_pareto_frontier(
     ax.set_title(model_label)
     fig.tight_layout()
     _save(fig, out_dir, "fig7_pareto_frontier")
-    print("  Saved fig7_pareto_frontier.png")
+
+
+def plot_cie_trajectory(
+    lhs_points: np.ndarray,
+    al_points: np.ndarray,
+    y_lhs: np.ndarray,
+    y_al: np.ndarray,
+    out_dir: Path,
+    model_label: str = "",
+) -> None:
+    """CIE 1931 xy chromaticity diagram showing the acquisition trajectory (fig7).
+
+    LED (R, G, B) intensities (normalised to [0, 1]) are converted to CIE XYZ
+    via the sRGB/D65 matrix and projected to (x, y) chromaticity.  LHS initial
+    samples and the active-learning trajectory are overlaid on the standard
+    horse-shoe locus with the sRGB gamut triangle.
+
+    Parameters
+    ----------
+    lhs_points : array (n_init, 3)
+        Normalised (r, g, b) ∈ [0, 1]³ for the initial LHS samples.
+    al_points : array (n_iter, 3)
+        Normalised (r, g, b) for each AL-queried point, in acquisition order.
+    y_lhs : array (n_init,)
+        Fréchet distance at each LHS point (used for colour scale).
+    y_al : array (n_iter,)
+        Fréchet distance at each AL point.
+    out_dir : Path
+        Output directory.
+    model_label : str
+        Figure title.
+    """
+    # ── CIE 1931 spectral locus xy (380–780 nm, 10 nm steps) ─────────────────
+    _locus_x = np.array([
+        0.17411, 0.17396, 0.17383, 0.17367, 0.17343,
+        0.16892, 0.16437, 0.15659, 0.14399, 0.12413,
+        0.09136, 0.04539, 0.00823, 0.01385, 0.07420,
+        0.15464, 0.22952, 0.30162, 0.37291, 0.44420,
+        0.51259, 0.57536, 0.62704, 0.66575, 0.69149,
+        0.70888, 0.72367, 0.73480, 0.74302, 0.74862,
+        0.75138, 0.75368, 0.75518, 0.75636, 0.75718,
+        0.75775, 0.75814, 0.75841, 0.75860, 0.75874,
+        0.75883,
+    ])
+    _locus_y = np.array([
+        0.00496, 0.00494, 0.00481, 0.00476, 0.00482,
+        0.00810, 0.01086, 0.01765, 0.02975, 0.05782,
+        0.13279, 0.29505, 0.53837, 0.75016, 0.83380,
+        0.81604, 0.75430, 0.69232, 0.62488, 0.55093,
+        0.48633, 0.42384, 0.37283, 0.33370, 0.30807,
+        0.29083, 0.27597, 0.26516, 0.25704, 0.25161,
+        0.24899, 0.24682, 0.24531, 0.24413, 0.24327,
+        0.24279, 0.24234, 0.24216, 0.24197, 0.24186,
+        0.24176,
+    ])
+
+    # sRGB gamut primaries + white point (D65)
+    _srgb_r = (0.6400, 0.3300)
+    _srgb_g = (0.3000, 0.6000)
+    _srgb_b = (0.1500, 0.0600)
+    _d65    = (0.3127, 0.3290)
+
+    # sRGB → XYZ (D65) matrix
+    _M = np.array([
+        [0.4124564, 0.3575761, 0.1804375],
+        [0.2126729, 0.7151522, 0.0721750],
+        [0.0193339, 0.1191920, 0.9503041],
+    ])
+
+    def _to_xy(rgb_norm: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Convert (N, 3) normalised RGB to CIE xy chromaticity."""
+        rgb = np.clip(rgb_norm, 0, 1)
+        XYZ = rgb @ _M.T                   # (N, 3)
+        s = XYZ.sum(axis=1, keepdims=True)
+        s = np.where(s < 1e-9, 1.0, s)
+        xy = XYZ[:, :2] / s
+        return xy[:, 0], xy[:, 1]
+
+    lhs = np.asarray(lhs_points, dtype=float)
+    al  = np.asarray(al_points,  dtype=float)
+    xl, yl = _to_xy(lhs)
+    xa, ya = _to_xy(al)
+
+    all_y = np.concatenate([np.asarray(y_lhs), np.asarray(y_al)]).astype(float)
+    vmin, vmax = float(np.nanmin(all_y)), float(np.nanmax(all_y))
+
+    fig, ax = plt.subplots(figsize=(3.5, 3.5))
+
+    # Spectral locus + purple line
+    lx = np.append(_locus_x, _locus_x[0])
+    ly = np.append(_locus_y, _locus_y[0])
+    ax.plot(lx, ly, color="k", lw=0.8, zorder=1)
+    ax.plot([_locus_x[-1], _locus_x[0]], [_locus_y[-1], _locus_y[0]],
+            color="k", lw=0.8, ls="--", zorder=1)
+
+    # sRGB gamut triangle
+    gx = [_srgb_r[0], _srgb_g[0], _srgb_b[0], _srgb_r[0]]
+    gy = [_srgb_r[1], _srgb_g[1], _srgb_b[1], _srgb_r[1]]
+    ax.plot(gx, gy, color="gray", lw=0.8, ls=":", zorder=2, label="sRGB gamut")
+    ax.scatter(*_d65, marker="+", s=60, color="gray", zorder=3)
+
+    cmap = plt.cm.viridis_r
+
+    # Acquisition trajectory (line connecting AL points in order)
+    if len(xa) > 1:
+        ax.plot(xa, ya, color="0.6", lw=0.7, zorder=3)
+
+    # LHS initial samples
+    sc_lhs = ax.scatter(
+        xl, yl, c=np.asarray(y_lhs, dtype=float),
+        cmap=cmap, vmin=vmin, vmax=vmax,
+        marker="s", s=40, linewidths=0.5, edgecolors="k",
+        zorder=4, label="LHS init",
+    )
+
+    # AL-queried points
+    sc_al = ax.scatter(
+        xa, ya, c=np.asarray(y_al, dtype=float),
+        cmap=cmap, vmin=vmin, vmax=vmax,
+        marker="o", s=28, linewidths=0.3, edgecolors="k",
+        zorder=5, label="AL query",
+    )
+
+    # Best found (lowest Fréchet)
+    best_idx = int(np.argmin(y_al))
+    ax.scatter(xa[best_idx], ya[best_idx],
+               marker="*", s=200, color="gold", edgecolors="k",
+               linewidths=0.8, zorder=6, label="Best")
+
+    plt.colorbar(sc_al, ax=ax, label="Fréchet distance", fraction=0.04, pad=0.04)
+
+    ax.set_xlim(0.0, 0.80)
+    ax.set_ylim(0.0, 0.90)
+    ax.set_xlabel("CIE x")
+    ax.set_ylabel("CIE y")
+    ax.set_title(model_label or "CIE 1931 acquisition trajectory")
+    ax.legend(frameon=False, fontsize=8, loc="upper right")
+    ax.grid(False)
+    fig.tight_layout()
+    _save(fig, out_dir, "fig7_cie_trajectory")
 
 
 def plot_uncertainty_evolution(
@@ -421,7 +510,7 @@ def plot_uncertainty_evolution(
     out_dir: Path,
 ) -> None:
     """Per-step surrogate uncertainty over the AL loop (fig4)."""
-    fig, ax = plt.subplots(figsize=(3.5, 2.625))
+    fig, ax = plt.subplots(figsize=(3.5, 3.5))
     ax.plot(np.arange(len(uncertainties)), uncertainties, color="C0")
     ax.set_xlabel("Step")
     ax.set_ylabel("Surrogate std")
@@ -429,7 +518,6 @@ def plot_uncertainty_evolution(
     ax.grid(False)
     fig.tight_layout()
     _save(fig, out_dir, "fig4_uncertainty_evolution")
-    print("  Saved fig4_uncertainty_evolution.png")
 
 
 def plot_lyapunov_evolution(
@@ -442,7 +530,7 @@ def plot_lyapunov_evolution(
     n = len(lambda_max_seq)
     steps = np.arange(n)
 
-    fig, ax1 = plt.subplots(figsize=(3.5, 2.625))
+    fig, ax1 = plt.subplots(figsize=(3.5, 3.5))
     ax2 = ax1.twinx()
 
     lm = np.asarray(lambda_max_seq, dtype=float)
@@ -465,7 +553,6 @@ def plot_lyapunov_evolution(
                bbox_to_anchor=(1.12, 0.5), bbox_transform=fig.transFigure,
                frameon=False, fontsize=_RCPARAMS["legend.fontsize"])
     _save(fig, out_dir, "fig5_lyapunov_evolution")
-    print("  Saved fig5_lyapunov_evolution.png")
 
 
 def plot_audit_evolution(
@@ -573,7 +660,6 @@ def plot_audit_evolution(
                  fontsize=_RCPARAMS["font.size"])
     fig.tight_layout()
     _save(fig, out_dir, "fig6_audit_evolution")
-    print("  Saved fig6_audit_evolution.png")
 
 
 def plot_convergence(
@@ -628,7 +714,7 @@ def plot_convergence(
             stacklevel=2,
         )
 
-    fig, ax = plt.subplots(figsize=(3.5, 2.625))
+    fig, ax = plt.subplots(figsize=(3.5, 3.5))
     ax.plot(query_counts[valid], best_vals[valid], color="C0", label=model_label)
     # Seed baseline: dashed horizontal at the initial best value
     baseline = best_vals[valid][0]
@@ -640,7 +726,6 @@ def plot_convergence(
     ax.legend(frameon=False, fontsize=7,
               bbox_to_anchor=(0.5, 1.02), loc="lower center", ncol=1)
     _save(fig, out_dir, fig_title)
-    print(f"  Saved {fig_title}")
 
 
 # ── Heatmap intensity helper ────────────────────────────────────────────────
@@ -901,10 +986,10 @@ def _fig_check_grid(
 
     fig.update_layout(
         title=dict(
-            text=f"Audit check summary — {run_name}",
+            text=f"",
             font=dict(size=15),
         ),
-        xaxis=dict(title="Pipeline stage", side="top", tickfont=dict(size=13)),
+        xaxis=dict(title="", side="top", tickfont=dict(size=13)),
         yaxis=dict(title="Audit check", tickfont=dict(size=13), autorange="reversed"),
         height=max(260, n_checks * 44 + 100),
         width=max(600, n_stages * 40 + 200),
@@ -1123,7 +1208,7 @@ def _fig_pareto_scenarios(
                 dominated[i] = True
                 break
 
-    fig, ax = plt.subplots(figsize=(3.5, 2.625))
+    fig, ax = plt.subplots(figsize=(3.5, 3.5))
 
     pt_idx = 0
     for sname, pts in pareto_data.items():
@@ -1167,7 +1252,7 @@ def _fig_pareto_scenarios(
     ax.set_box_aspect(1) 
     ax.grid(False)
     ax.legend(handles=handles, frameon=False,
-            fontsize=_RCPARAMS["legend.fontsize"], bbox_to_anchor=(1.05, 0.5), loc='center left')
+            fontsize=_RCPARAMS["legend.fontsize"])
     fig.tight_layout()
     return fig
 
@@ -1226,7 +1311,7 @@ def _fig_calibration_curves_all(
 
     ncols = 2 if len(names) <= 4 else 3
     nrows = (len(names) + ncols - 1) // ncols
-    fig, axes = plt.subplots(nrows, ncols, figsize=(3.5 * ncols, 2.625 * nrows), squeeze=False)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(7, 7), squeeze=False)
     axes_flat = list(axes.flat)
 
     for i, (ax, name) in enumerate(zip(axes_flat, names)):
@@ -1257,7 +1342,7 @@ def _fig_calibration_curves_all(
         ax.set_ylabel("Observed coverage")
         ax.set_xlim(0, 1)
         ax.set_ylim(0, 1)
-        ax.grid(True, alpha=0.3)
+        ax.grid(False)
 
     for ax in axes_flat[len(names):]:
         ax.set_visible(False)
@@ -1312,10 +1397,24 @@ def _fig_metric_correlations(
             else:
                 stage_values[check_name].append(np.nan)
     
-    # Filter to only checks with data across all or most stages
+    # Filter to only checks with enough genuine (non-NaN) values to
+    # correlate. A check that's Skipped at every intermediate stage (e.g. a
+    # final-report-only check like RSE/DUG/AFC, which need kwargs only
+    # available at hook.on_end() -- see check_grid_figures' identical
+    # "trackable vs final-only" split) still appears in every intermediate
+    # report's .results as an AuditResult, just with value=None, so it was
+    # appending np.nan every time rather than being absent. The previous
+    # filter (`len(stage_values[name]) > 0`) is true for ANY such list, NaN
+    # or not, so these checks were silently included as an axis label with
+    # zero real data behind it -- rendered as a blank/zero row rather than
+    # excluded, which looks like "reported but always uncorrelated" instead
+    # of "never had data to correlate in the first place". Requiring >= 3
+    # genuine values matches the >2-valid-points gate the correlation loop
+    # below already needs to compute anything for this check at all.
     available_checks = [
         name for name in check_names
-        if name in stage_values and len(stage_values[name]) > 0
+        if name in stage_values
+        and np.sum(~np.isnan(np.asarray(stage_values[name], dtype=float))) >= 3
     ]
     
     if len(available_checks) < 2:
@@ -1341,12 +1440,19 @@ def _fig_metric_correlations(
                 v1 = np.array(stage_values[check1], dtype=float)
                 v2 = np.array(stage_values[check2], dtype=float)
                 
-                # Only compute if both have sufficient valid data
+                # Only compute if both have sufficient valid data, and
+                # neither is constant over that data -- a check that reports
+                # the same value at every snapshot (e.g. a report-only check,
+                # or a trend check pinned at 0) has an undefined rank
+                # correlation with anything; spearmanr would return NaN for
+                # it anyway (handled below), but only after emitting a
+                # ConstantInputWarning on every such pair, so this is
+                # checked directly rather than relying on that fallback.
                 valid = ~(np.isnan(v1) | np.isnan(v2))
-                if valid.sum() > 2:
+                if valid.sum() > 2 and np.std(v1[valid]) > 0 and np.std(v2[valid]) > 0:
                     try:
                         rho, _ = spearmanr(v1[valid], v2[valid])
-                        corr_matrix[i, j] = float(rho) if not np.isnan(rho) else 0.0
+                        corr_matrix[i, j] = np.abs(float(rho)) if not np.isnan(rho) else 0.0
                     except Exception:
                         corr_matrix[i, j] = 0.0
                 else:
@@ -1355,9 +1461,12 @@ def _fig_metric_correlations(
     # Create figure
     fig_size = min(max(5.0, n_checks * 0.6), 12.0)
     fig, ax = plt.subplots(figsize=(fig_size, fig_size * 0.95))
+
+    mask = np.triu(np.ones_like(corr_matrix, dtype=bool), k=0)
+    masked_data = np.ma.masked_where(mask, corr_matrix)
     
     # Plot heatmap
-    im = ax.imshow(corr_matrix, cmap="RdBu_r", vmin=-1, vmax=1, aspect="auto")
+    im = ax.imshow(masked_data, cmap="Blues", vmin=0, vmax=1, aspect="auto")
     
     # Set ticks and labels
     ax.set_xticks(range(n_checks))
@@ -1656,7 +1765,6 @@ def plot_exploration_campaign(
 
         fig.tight_layout()
         _save(fig, out_dir, "fig9_exploration_campaign")
-        print("  Saved fig9_exploration_campaign.png")
 
 
 def plot_discovery_rate(
@@ -1717,7 +1825,7 @@ def plot_discovery_rate(
     rand_std = np.sqrt(cum_q_arr * stable_frac * (1.0 - stable_frac))
 
     with plt.rc_context(_RCPARAMS):
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7.0, 3.0))
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7.0, 3.5))
 
         # ── Left: absolute count ────────────────────────────────────────────
         ax1.plot(cum_q_arr, cum_found_arr, color="C0", lw=1.5, label=model_label)
@@ -1759,7 +1867,6 @@ def plot_discovery_rate(
 
         fig.tight_layout()
         _save(fig, out_dir, "fig11_discovery_rate")
-        print("  Saved fig11_discovery_rate.png")
 
 
 # ── Convenience runner ──────────────────────────────────────────────────────
@@ -1938,14 +2045,14 @@ def run_dmdc_lyapunov_analysis(
     else:
         print("  Lyapunov solve failed — P omitted from contour plot")
 
-    # Projected states for contour (r-dimensional reduced space)
-    op_states_r = aug_states @ U_r
-
     print(f"  Running DMDc Lyapunov analysis — T={T} steps, "
           f"D={aug_states.shape[1]} → r={A_r.shape[0]} …")
 
     plot_poles(eigs, model_label, out_dir)
-    plot_stability_contours(P, op_states_r, lm_filled, model_label, out_dir)
+    # Use raw aug_states for the scatter so the 2-D PCA reflects the true
+    # trajectory geometry. Pass P=None since P lives in the r-dim DMDc space,
+    # not the original D-dim space, so the contour overlay would be invalid.
+    plot_stability_contours(None, aug_states, lm_filled, model_label, out_dir)
     if gp_std_seq is not None:
         std_arr = np.asarray(gp_std_seq, dtype=float)
         n = min(len(lm_filled), len(std_arr))
