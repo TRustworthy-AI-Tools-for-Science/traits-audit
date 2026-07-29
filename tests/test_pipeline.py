@@ -80,9 +80,25 @@ def test_metadata_stored_in_report():
     assert report.metadata["experiment"] == "smoke"
 
 
-def test_metadata_defaults_to_empty_dict():
+def test_metadata_defaults_to_pairing_warnings_only():
+    # run() always populates metadata["pairing_warnings"] (see
+    # AuditPipeline.validate_config()); with no taxonomy-paired checks
+    # configured, that list is empty.
     report = AuditPipeline([_PassCheck()]).run([])
-    assert report.metadata == {}
+    assert report.metadata == {"pairing_warnings": []}
+
+
+def test_validate_config_flags_unpaired_lyapunov():
+    from traits_audit.checks.lyapunov import LyapunovStabilityCheck
+
+    pipeline = AuditPipeline([LyapunovStabilityCheck()])
+    warnings = pipeline.validate_config()
+    assert any("DMDcSpectralRadius" in w for w in warnings)
+
+
+def test_validate_config_empty_for_unrelated_checks():
+    pipeline = AuditPipeline([_PassCheck(), _FailCheck()])
+    assert pipeline.validate_config() == []
 
 
 # ── save() ───────────────────────────────────────────────────────────────────

@@ -58,7 +58,12 @@ class UncertaintyEvolutionCheck(AuditCheck):
 
     @property
     def category(self) -> AuditCategory:
-        return AuditCategory.EPISTEMIC
+        # Reduction under replication (METRIC_TAXONOMY_AUDIT.md §3 table):
+        # this tests the trend of the *reported* sigma, not the realized
+        # error — the reported-side half of that taxonomy class. See
+        # ReplicationShrinkageExponentCheck / DarkUncertaintyGapCheck in
+        # checks/replication.py for the realized-side complement.
+        return AuditCategory.REDUCTION_UNDER_REPLICATION
 
     def run(self, history: List[Dict[str, Any]], **kwargs) -> AuditResult:
         raw = kwargs.get("uncertainties")
@@ -145,7 +150,8 @@ class UncertaintyAnomalyCheck(AuditCheck):
 
     @property
     def category(self) -> AuditCategory:
-        return AuditCategory.EPISTEMIC
+        # Reduction under replication — same lineage as UncertaintyEvolutionCheck.
+        return AuditCategory.REDUCTION_UNDER_REPLICATION
 
     def run(self, history: List[Dict[str, Any]], **kwargs) -> AuditResult:
         raw_current = kwargs.get("uncertainties")

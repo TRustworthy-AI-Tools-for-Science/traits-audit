@@ -13,6 +13,22 @@ def _require(name: str, history: list, kwargs: dict, history_key: str | None = N
     Pull a named array from kwargs, falling back to extracting from history.
     Returns None if the data is not available — callers must handle this and
     return a Skipped AuditResult rather than raising.
+
+    A history entry may store either a scalar (one value per step) or an
+    array (a whole batch evaluated that step — e.g. an active-learning loop
+    that queries several points per iteration) under ``key``, and batches
+    are not required to be the same length across steps: the final step of
+    a loop is routinely shorter than the rest (a candidate pool that
+    doesn't divide evenly by the batch size, an early-stopped loop, …).
+    Concatenating each entry via ``np.atleast_1d`` + ``np.concatenate``
+    handles scalars, uniform batches, and ragged batches alike. The
+    previous implementation, ``np.asarray(vals).ravel()``, required
+    ``np.asarray`` to first build one rectangular array out of all step
+    entries, which raises ``ValueError`` the moment two steps' array-valued
+    entries differ in length — a real, live crash risk for any loop with a
+    variable batch size, and the reason at least one demo stopped passing
+    per-step batch arrays to ``hook.on_step`` entirely (losing per-step
+    calibration monitoring as a result) rather than working around it here.
     """
     if name in kwargs and kwargs[name] is not None:
         return np.asarray(kwargs[name]).ravel()
@@ -20,7 +36,7 @@ def _require(name: str, history: list, kwargs: dict, history_key: str | None = N
     vals = [h[key] for h in history if key in h]
     if not vals:
         return None
-    return np.asarray(vals).ravel()
+    return np.concatenate([np.atleast_1d(v) for v in vals])
 
 
 class CalibrationErrorCheck(AuditCheck):

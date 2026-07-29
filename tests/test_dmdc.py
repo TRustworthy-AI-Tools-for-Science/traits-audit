@@ -18,6 +18,8 @@ from traits_audit.dmdc import (
     pseudospectrum,
     rank_sensitivity,
     stability_convergence,
+    transition_step,
+    windowed_rho,
 )
 
 
@@ -425,3 +427,66 @@ class TestRankSensitivity:
         out = rank_sensitivity(np.zeros((2, 2)), np.zeros((2, 2)), [5])
         assert 5 in out
         assert isinstance(out[5], np.ndarray)
+
+
+# ── windowed_rho ──────────────────────────────────────────────────────────────
+
+class TestWindowedRho:
+    def test_shapes_match(self, stable_traj):
+        _, _, states, actions = stable_traj
+        centers, rho_t = windowed_rho(states, actions, window=20, stride=5, n_components=2)
+        assert centers.shape == rho_t.shape
+        assert len(centers) > 0
+
+    def test_centers_increasing(self, stable_traj):
+        _, _, states, actions = stable_traj
+        centers, _ = windowed_rho(states, actions, window=20, stride=5, n_components=2)
+        assert np.all(np.diff(centers) > 0)
+
+    def test_values_below_one_for_stable_system(self, stable_traj):
+        _, _, states, actions = stable_traj
+        _, rho_t = windowed_rho(states, actions, window=30, stride=5, n_components=2)
+        finite = rho_t[np.isfinite(rho_t)]
+        assert finite.size > 0
+        # True |lambda| ~ 0.8; local windows on a stable system should mostly
+        # stay below the unit-circle boundary.
+        assert np.median(finite) < 1.0
+
+    def test_values_above_one_for_unstable_system(self, unstable_traj):
+        _, _, states, actions = unstable_traj
+        _, rho_t = windowed_rho(states, actions, window=30, stride=5, n_components=2)
+        finite = rho_t[np.isfinite(rho_t)]
+        assert finite.size > 0
+        assert np.median(finite) > 1.0
+
+    def test_no_windows_when_trajectory_shorter_than_window(self):
+        states = np.zeros((5, 2))
+        actions = np.zeros((5, 2))
+        centers, rho_t = windowed_rho(states, actions, window=20, stride=5)
+        assert len(centers) == 0
+        assert len(rho_t) == 0
+
+
+# ── transition_step ───────────────────────────────────────────────────────────
+
+class TestTransitionStep:
+    def test_finds_persistent_drop_below_threshold(self):
+        centers = np.arange(0, 100, 10)
+        rho_t = np.array([1.5, 1.4, 1.2, 0.9, 0.8, 0.7, 0.6, 0.5, 0.5, 0.5])
+        # First index below 1.0 is index 3 (rho=0.9); persists thereafter.
+        ts = transition_step(centers, rho_t, threshold=1.0, persist=2)
+        assert ts == centers[3]
+
+    def test_ignores_single_window_dip(self):
+        centers = np.arange(0, 60, 10)
+        rho_t = np.array([1.5, 0.5, 1.5, 1.5, 1.5, 1.5])  # single dip at idx 1, not persistent
+        ts = transition_step(centers, rho_t, threshold=1.0, persist=2)
+        assert ts is None
+
+    def test_returns_none_when_never_settles(self):
+        centers = np.arange(0, 50, 10)
+        rho_t = np.array([1.5, 1.4, 1.3, 1.2, 1.1])
+        assert transition_step(centers, rho_t, threshold=1.0, persist=2) is None
+
+    def test_returns_none_on_empty_input(self):
+        assert transition_step(np.array([]), np.array([]), threshold=1.0) is None

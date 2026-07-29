@@ -1,3 +1,8 @@
+from .aleatoric_epistemic import (
+    AleatoricFloorConsistencyCheck,
+    ReducibilityRealisationRatioCheck,
+)
+from .attribution import StageVarianceAttributionCheck
 from .calibration import (
     CalibrationErrorCheck,
     KuleshovCalibrationCheck,
@@ -6,9 +11,28 @@ from .calibration import (
 )
 from .conformal import ConformalCoverageCheck
 from .coverage import IntervalCoverageCheck, VarianceAlignmentCheck
+from .credal import EnvelopeViolationRateCheck, ImprecisionWidthFractionCheck
+from .decision import DecisionFlipRateCheck
+from .ergodic import (
+    DMDcSpectralRadiusCheck,
+    EnsembleIndependenceDeficitCheck,
+    ResidualPersistenceHalfLifeCheck,
+)
 from .lyapunov import LyapunovStabilityCheck
 from .pit import PITUniformityCheck
-from .scoring import CRPSCheck, IntervalScoreCheck, NegativeLogLikelihoodCheck
+from .procedural import (
+    DataVarianceShareCheck,
+    MisspecificationResidualFloorCheck,
+    ProceduralVarianceShareCheck,
+)
+from .provenance import TypeBMassFractionCheck
+from .replication import (
+    DarkUncertaintyGapCheck,
+    ReplicationShrinkageExponentCheck,
+    SignedBiasCheck,
+)
+from .scoring import CRPSCheck, IntervalScoreCheck, NegativeLogLikelihoodCheck, ScoreDecompositionCheck
+from .tail import TailIndexCheck
 from .uncertainty import (
     MahalanobisOODCheck,
     UncertaintyAnomalyCheck,
@@ -33,4 +57,23 @@ __all__ = [
     "VarianceErrorCorrelationCheck",
     "LyapunovStabilityCheck",
     "MahalanobisOODCheck",
+    # Taxonomy-audit additions (METRIC_TAXONOMY_AUDIT.md §4):
+    "SignedBiasCheck",
+    "ReplicationShrinkageExponentCheck",
+    "DarkUncertaintyGapCheck",
+    "TypeBMassFractionCheck",
+    "ReducibilityRealisationRatioCheck",
+    "AleatoricFloorConsistencyCheck",
+    "EnsembleIndependenceDeficitCheck",
+    "DMDcSpectralRadiusCheck",
+    "ResidualPersistenceHalfLifeCheck",
+    "ImprecisionWidthFractionCheck",
+    "EnvelopeViolationRateCheck",
+    "ProceduralVarianceShareCheck",
+    "DataVarianceShareCheck",
+    "MisspecificationResidualFloorCheck",
+    "StageVarianceAttributionCheck",
+    "DecisionFlipRateCheck",
+    "TailIndexCheck",
+    "ScoreDecompositionCheck",
 ]

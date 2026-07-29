@@ -115,4 +115,5 @@ class VarianceAlignmentCheck(AuditCheck):
             value=ratio,
             threshold=1.0,
             message=f"Variance ratio (pred/true) = {ratio:.4f}  (tolerance ±{self.tolerance})",
+            details={"tolerance": self.tolerance},
         )

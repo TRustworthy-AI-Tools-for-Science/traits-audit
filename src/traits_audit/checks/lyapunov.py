@@ -216,7 +216,13 @@ class LyapunovStabilityCheck(AuditCheck):
 
     @property
     def category(self) -> AuditCategory:
-        return AuditCategory.EPISTEMIC
+        # Ergodic/non-ergodic (METRIC_TAXONOMY_AUDIT.md §2.1, §4.4): this
+        # characterises the *local* dynamics of the uncertainty landscape
+        # along the campaign trajectory, not an aleatoric/epistemic split.
+        # Must be paired with DMDcSpectralRadiusCheck (global spectral
+        # radius of the same trajectory) — see checks/ergodic.py and
+        # validation.NAME_PAIRS.
+        return AuditCategory.ERGODIC_NON_ERGODIC
 
     def _compute_lambda_max(
         self, surrogate_fn, op_states: np.ndarray, cache=None, surrogate_fn_batched=None
