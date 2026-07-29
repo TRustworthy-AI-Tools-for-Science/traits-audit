@@ -104,7 +104,7 @@ refit sweeps all cost nothing. The other three demos (ta-camd-demo,
 ta-pybamm-demo, ta-sdl-demo) wire in only the subset their real oracles
 honestly support.
 
-Invoked via the ``ta-demo`` entry point or ``python -m traits_audit._example``.
+Invoked via the ``ta-cal-demo`` entry point or ``python -m traits_audit._cal_demo``.
 """
 from __future__ import annotations
 
@@ -115,21 +115,22 @@ import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 
 from traits_audit._viz import (
-    check_grid_figures,
-    _fig_state_heatmap,
-    _fig_pareto_scenarios,
     _fig_calibration_curves_all,
     _fig_metric_correlations,
+    _fig_pareto_scenarios,
+    _fig_state_heatmap,
+    check_grid_figures,
     plot_convergence,
+)
+from traits_audit.checks.lyapunov import (
+    eigenvalues_and_stability,
     make_gd_predictor,
     numerical_jacobian,
-    eigenvalues_and_stability,
 )
-
 
 # ── Oracle: Forrester (2008), heteroscedastic, shared by all four scenarios ──
 
@@ -151,7 +152,7 @@ def oracle(x: np.ndarray, rng: np.random.Generator) -> np.ndarray:
 # ── Surrogates ────────────────────────────────────────────────────────────
 
 def _make_gp_kernel():
-    from sklearn.gaussian_process.kernels import RBF, WhiteKernel, ConstantKernel
+    from sklearn.gaussian_process.kernels import RBF, ConstantKernel, WhiteKernel
     return (
         ConstantKernel(constant_value=10.0, constant_value_bounds=(1e-3, 1e5))
         * RBF(length_scale=0.15, length_scale_bounds=(1e-2, 10.0))
@@ -177,7 +178,7 @@ class GPSurrogate:
         self.x_train: np.ndarray | None = None
         self.y_train: np.ndarray | None = None
 
-    def fit(self, x: np.ndarray, y: np.ndarray) -> "GPSurrogate":
+    def fit(self, x: np.ndarray, y: np.ndarray) -> GPSurrogate:
         from sklearn.gaussian_process import GaussianProcessRegressor
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=UserWarning, module="sklearn.gaussian_process")
@@ -238,7 +239,7 @@ class BootstrapSurrogate:
     def _phi(self, x: np.ndarray) -> np.ndarray:
         return np.stack([x ** d for d in range(self.degree + 1)], axis=1)
 
-    def fit(self, x: np.ndarray, y: np.ndarray) -> "BootstrapSurrogate":
+    def fit(self, x: np.ndarray, y: np.ndarray) -> BootstrapSurrogate:
         phi = self._phi(x)
         ridge = 1e-3 * np.eye(phi.shape[1])
         n = len(x)
@@ -349,7 +350,7 @@ def _replication_groups(locations, surrogate, seed: int) -> dict:
     groups = {}
     for loc in locations:
         y = oracle(np.full(_REPLICATE_R, loc), rng)
-        mu_loc, sigma_loc = surrogate.predict(np.array([loc]))
+        _mu_loc, sigma_loc = surrogate.predict(np.array([loc]))
         groups[float(loc)] = {
             "y_true": y.tolist(),
             "y_pred_mean": [float(oracle_clean(loc))] * _REPLICATE_R,
@@ -429,16 +430,35 @@ _SIGNED_BIAS_THRESHOLD = 0.25
 def _build_pipeline(check_every: int, logger=None):
     from traits_audit import AuditHook, AuditPipeline
     from traits_audit.checks import (
-        CalibrationErrorCheck, ConformalCoverageCheck, CRPSCheck, NegativeLogLikelihoodCheck,
-        PITUniformityCheck, IntervalScoreCheck, IntervalCoverageCheck, VarianceAlignmentCheck,
-        UncertaintyEvolutionCheck, UncertaintyAnomalyCheck, VarianceErrorCorrelationCheck,
-        SignedBiasCheck, TailIndexCheck, ScoreDecompositionCheck,
-        LyapunovStabilityCheck, DMDcSpectralRadiusCheck,
-        EnsembleIndependenceDeficitCheck, ResidualPersistenceHalfLifeCheck,
-        ImprecisionWidthFractionCheck, EnvelopeViolationRateCheck,
-        ReplicationShrinkageExponentCheck, DarkUncertaintyGapCheck, AleatoricFloorConsistencyCheck,
-        ProceduralVarianceShareCheck, DataVarianceShareCheck, MisspecificationResidualFloorCheck,
-        ReducibilityRealisationRatioCheck, TypeBMassFractionCheck, StageVarianceAttributionCheck,
+        AleatoricFloorConsistencyCheck,
+        CalibrationErrorCheck,
+        ConformalCoverageCheck,
+        CRPSCheck,
+        DarkUncertaintyGapCheck,
+        DataVarianceShareCheck,
+        DMDcSpectralRadiusCheck,
+        EnsembleIndependenceDeficitCheck,
+        EnvelopeViolationRateCheck,
+        ImprecisionWidthFractionCheck,
+        IntervalCoverageCheck,
+        IntervalScoreCheck,
+        LyapunovStabilityCheck,
+        MisspecificationResidualFloorCheck,
+        NegativeLogLikelihoodCheck,
+        PITUniformityCheck,
+        ProceduralVarianceShareCheck,
+        ReducibilityRealisationRatioCheck,
+        ReplicationShrinkageExponentCheck,
+        ResidualPersistenceHalfLifeCheck,
+        ScoreDecompositionCheck,
+        SignedBiasCheck,
+        StageVarianceAttributionCheck,
+        TailIndexCheck,
+        TypeBMassFractionCheck,
+        UncertaintyAnomalyCheck,
+        UncertaintyEvolutionCheck,
+        VarianceAlignmentCheck,
+        VarianceErrorCorrelationCheck,
     )
 
     pipeline = AuditPipeline(
@@ -528,8 +548,8 @@ def _generate_metrics_guide(pipeline) -> str:
     with the check list (the previous version documented 6 of 11 checks
     while claiming to cover "every check")."""
     lines = ["# Uncertainty Audit — Metrics Guide", "",
-             "Auto-generated from the configured pipeline. Open alongside the "
-             "**Metrics** and **Tags** tabs to interpret a run.", "", "---", ""]
+             ("Auto-generated from the configured pipeline. Open alongside the "
+             "**Metrics** and **Tags** tabs to interpret a run."), "", "---", ""]
     for check in pipeline.checks:
         doc = (type(check).__doc__ or "").strip()
         summary = doc.split("\n\n")[0].strip() if doc else "(no description)"
@@ -576,19 +596,20 @@ def _run_scenario(
     historical_uncertainties: list | None = None,
 ) -> object:
     import mlflow
-    from traits_audit import AuditPipeline
+
+    from traits_audit import AuditPipeline, refit
     from traits_audit import dmdc as dm
     from traits_audit.checks import DecisionFlipRateCheck
-    from traits_audit.credal import CredalSet  # noqa: F401  (documents the representation used below)
-    from traits_audit.provenance import TypeBLedger
+    from traits_audit.credal import (
+        CredalSet,  # noqa: F401  (documents the representation used below)
+    )
     from traits_audit.pipeline_attribution import StageUncertainty
-    from traits_audit import refit
+    from traits_audit.provenance import TypeBLedger
 
     oracle_rng = np.random.default_rng(seed)
     surrogate_rng = np.random.default_rng(seed + 2**31)
 
     hook = _build_pipeline(check_every, logger=None)
-    pipeline: AuditPipeline = hook._pipeline
 
     if config.surrogate_kind == "gp":
         surrogate = GPSurrogate(std_scale=config.std_scale, seed=int(seed))
@@ -722,7 +743,7 @@ def _run_scenario(
         # ── Type-B provenance ledger (GP scenarios only) ────────────────
         ledger_kwargs = {}
         if config.surrogate_kind == "gp":
-            mu_rep, sig_rep = surrogate.predict(np.array([0.5]))
+            _mu_rep, sig_rep = surrogate.predict(np.array([0.5]))
             noise_level = surrogate.gpr.kernel_.k2.noise_level * config.std_scale ** 2
             v_full = float(sig_rep[0] ** 2)
 
@@ -903,7 +924,7 @@ def _run_scenario(
     noise_std = true_sigma(x_plot)
     mu_plot, sigma_plot = surrogate.predict(x_plot)
 
-    oracle_plot = dict(x_test=x_plot, y_clean=y_clean, noise_std=noise_std, mu_test=mu_plot, sigma_test=sigma_plot)
+    oracle_plot = {"x_test": x_plot, "y_clean": y_clean, "noise_std": noise_std, "mu_test": mu_plot, "sigma_test": sigma_plot}
 
     if len(history) >= 2:
         plot_convergence(
@@ -915,6 +936,9 @@ def _run_scenario(
             maximise=False,
             fig_title=f"convergence_{stem}",
         )
+
+    history_path = hook.save_history(fig_dir / f"history_{stem}.json")
+    print(f"  Saved history → {history_path}")
 
     uncertainty_series = [h["uncertainty"] for h in hook.history if "uncertainty" in h]
     return report, pareto_pts, test_calib_result, oracle_plot, uncertainty_series
@@ -1040,14 +1064,14 @@ def main() -> None:
             for w in warns:
                 print(f"    - {w}")
 
-    print(f"\nDashboard tips:")
+    print("\nDashboard tips:")
     print(f"  1. Open the '{experiment_name}' experiment in the MLflow UI.")
-    print(f"  2. Select all runs → Compare → chart audit/step/pool_sigma_mean")
-    print(f"     to see how uncertainty evolves differently across scenarios.")
-    print(f"  3. Open any run → Description tab to read scenario context.")
-    print(f"  4. Open any run → Tags tab to see audit_verdict/* at a glance.")
-    print(f"  5. Open any run → Artifacts → audit/METRICS_GUIDE.md")
-    print(f"     for a full explanation of every check.\n")
+    print("  2. Select all runs → Compare → chart audit/step/pool_sigma_mean")
+    print("     to see how uncertainty evolves differently across scenarios.")
+    print("  3. Open any run → Description tab to read scenario context.")
+    print("  4. Open any run → Tags tab to see audit_verdict/* at a glance.")
+    print("  5. Open any run → Artifacts → audit/METRICS_GUIDE.md")
+    print("     for a full explanation of every check.\n")
 
     # ── Standalone replication-scheme demonstration (RSE) ───────────────
     # Not part of any scenario's pipeline: illustrates that beta is a
@@ -1075,7 +1099,7 @@ def main() -> None:
         plt.close(fig_pareto)
         print(f"Saved cross-scenario Pareto frontier → {pareto_png}")
 
-        fig_conv, ax_conv = plt.subplots(figsize=(3.5, 2.625))
+        fig_conv, ax_conv = plt.subplots(figsize=(3.5, 3.5))
         for sname, pts in pareto_data.items():
             style = _SCENARIO_STYLE.get(sname, {"color": "C4", "marker": "x", "label": sname})
             stage_ece = [(p[2], p[0]) for p in pts]
@@ -1090,7 +1114,7 @@ def main() -> None:
                          markersize=4, label=style["label"])
         ax_conv.set_xlabel("AL step")
         ax_conv.set_ylabel("Calibration Error (ECE)")
-        ax_conv.legend(frameon=False, bbox_to_anchor=(1.05, 0.5), loc='center left')
+        ax_conv.legend(frameon=False)
         ax_conv.grid(False)
         ax_conv.set_box_aspect(1)
         fig_conv.tight_layout()
@@ -1123,8 +1147,8 @@ def main() -> None:
         if oracle_data:
             from matplotlib.lines import Line2D
             from matplotlib.patches import Patch
-            fig_oracle, axes = plt.subplots(2, 2, figsize=(7, 5.25), sharex=True, sharey=True)
-            for ax, sname in zip(axes.flat, _scenario_order):
+            fig_oracle, axes = plt.subplots(2, 2, figsize=(7, 7), sharex=True, sharey=True)
+            for ax, sname in zip(axes.flat, _scenario_order, strict=False):
                 if sname not in oracle_data:
                     ax.set_visible(False)
                     continue
@@ -1157,9 +1181,10 @@ def main() -> None:
             print(f"Saved oracle uncertainty panel → {oracle_png}\n")
 
     if args.ui:
-        print(f"Launching MLflow UI — open http://127.0.0.1:5000\n")
+        print("Launching MLflow UI — open http://127.0.0.1:5000\n")
         subprocess.run(
             [sys.executable, "-m", "mlflow", "ui", "--backend-store-uri", args.mlflow_uri],
+            check=False,
         )
 
 

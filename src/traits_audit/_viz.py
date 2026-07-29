@@ -1453,8 +1453,8 @@ def _fig_metric_correlations(
                     corr_matrix[i, j] = 0.0
 
     # Create figure
-    fig_size = min(max(5.0, n_checks * 0.6), 12.0)
-    fig, ax = plt.subplots(figsize=(fig_size, fig_size * 0.95))
+   
+    fig, ax = plt.subplots(figsize=(3.5, 3.5))
 
     mask = np.triu(np.ones_like(corr_matrix, dtype=bool), k=0)
     masked_data = np.ma.masked_where(mask, corr_matrix)
@@ -1477,7 +1477,7 @@ def _fig_metric_correlations(
     # Add grid
     ax.set_xticks(np.arange(n_checks) - 0.5, minor=True)
     ax.set_yticks(np.arange(n_checks) - 0.5, minor=True)
-    ax.grid(which="minor", color="gray", linestyle="-", linewidth=0.8, alpha=0.4)
+    ax.grid(False)
 
     ax.set_title(
         f"Audit check correlations — {run_name}\n"

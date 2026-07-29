@@ -28,7 +28,6 @@ from pathlib import Path
 
 import numpy as np
 
-
 # ── Shared audit pipeline ──────────────────────────────────────────────────────
 
 def _make_pipeline(check_every: int, logger=None):
@@ -37,19 +36,19 @@ def _make_pipeline(check_every: int, logger=None):
         CalibrationErrorCheck,
         ConformalCoverageCheck,
         CRPSCheck,
+        DMDcSpectralRadiusCheck,
+        IntervalCoverageCheck,
+        IntervalScoreCheck,
+        LyapunovStabilityCheck,
         NegativeLogLikelihoodCheck,
         PITUniformityCheck,
-        IntervalScoreCheck,
-        IntervalCoverageCheck,
-        VarianceAlignmentCheck,
-        UncertaintyEvolutionCheck,
-        UncertaintyAnomalyCheck,
-        VarianceErrorCorrelationCheck,
-        LyapunovStabilityCheck,
-        DMDcSpectralRadiusCheck,
+        ScoreDecompositionCheck,
         SignedBiasCheck,
         TailIndexCheck,
-        ScoreDecompositionCheck,
+        UncertaintyAnomalyCheck,
+        UncertaintyEvolutionCheck,
+        VarianceAlignmentCheck,
+        VarianceErrorCorrelationCheck,
     )
     pipeline = AuditPipeline(
         checks=[
@@ -98,9 +97,9 @@ def _make_ensemble_pipeline():
     from traits_audit import AuditPipeline
     from traits_audit.checks import (
         EnsembleIndependenceDeficitCheck,
-        ResidualPersistenceHalfLifeCheck,
-        ImprecisionWidthFractionCheck,
         EnvelopeViolationRateCheck,
+        ImprecisionWidthFractionCheck,
+        ResidualPersistenceHalfLifeCheck,
     )
     return AuditPipeline(checks=[
         EnsembleIndependenceDeficitCheck(),
@@ -131,7 +130,8 @@ def _load_data():
             urllib.request.urlretrieve(url, cache_file)
         # Shim for pickles created with pandas <2.0: Int64Index etc. were
         # merged into Index in pandas 2.0 and the submodule was removed.
-        import sys, types
+        import sys
+        import types
         if "pandas.core.indexes.numeric" not in sys.modules:
             _m = types.ModuleType("pandas.core.indexes.numeric")
             _m.Int64Index = pd.Index
@@ -170,15 +170,19 @@ def _feature_cols(df) -> list[str]:
 try:
     import json as _json
     import os as _os
+
     import pandas as _pd
-    from sklearn.ensemble import AdaBoostRegressor as _AdaBoostRegressor
-    from sklearn.preprocessing import StandardScaler as _StandardScaler
-    from sklearn.model_selection import cross_val_score as _cvs, KFold as _KFold
-    from sklearn.pipeline import Pipeline as _Pipeline
     from camd.agent.stability import (
         AgentStabilityAdaBoost as _AgentBase,
+    )
+    from camd.agent.stability import (
         diverse_quant as _diverse_quant,
     )
+    from sklearn.ensemble import AdaBoostRegressor as _AdaBoostRegressor
+    from sklearn.model_selection import KFold as _KFold
+    from sklearn.model_selection import cross_val_score as _cvs
+    from sklearn.pipeline import Pipeline as _Pipeline
+    from sklearn.preprocessing import StandardScaler as _StandardScaler
 
     class _ExposedAdaBoost(_AgentBase):
         """AgentStabilityAdaBoost that stores its fitted AdaBoost and scaler.
@@ -190,9 +194,9 @@ try:
 
         def __init__(self, *args, random_state=None, **kwargs):
             super().__init__(*args, **kwargs)
-            self._adaboost:    "_AdaBoostRegressor | None" = None
-            self._scaler:      "_StandardScaler | None"   = None
-            self._random_state: "int | None"              = random_state
+            self._adaboost:    _AdaBoostRegressor | None = None
+            self._scaler:      _StandardScaler | None   = None
+            self._random_state: int | None              = random_state
 
         def get_hypotheses(self, candidate_data, seed_data=None):
             X_cand, X_seed, y_seed = self.update_data(candidate_data, seed_data)
@@ -226,7 +230,7 @@ try:
             expected  = self._adaboost.predict(X_cand_sc)
             if self.uncertainty:
                 if self.dynamic_alpha and _os.path.exists("iteration.json"):
-                    with open("iteration.json") as f:
+                    with open("iteration.json", encoding="utf-8") as f:
                         _iter = _json.load(f)
                     expected -= (
                         min(0.1 * _iter, self.alpha)
@@ -324,7 +328,7 @@ def _committee_predict(agent, X: np.ndarray):
     return np.zeros(len(X)), np.zeros(len(X))
 
 
-def _committee_ensemble(agent, X: np.ndarray) -> "np.ndarray | None":
+def _committee_ensemble(agent, X: np.ndarray) -> np.ndarray | None:
     """Return (n_members, n_pts) raw per-estimator predictions, when available.
 
     This is one line from being free: ``_committee_predict``'s generic
@@ -460,6 +464,7 @@ def run(
     _use_mlflow = mlflow_uri is not None
     if _use_mlflow:
         import mlflow as _mlflow
+
         from traits_audit.mlflow_logger import MLflowLogger
         _mlflow.set_tracking_uri(mlflow_uri)
         _mlflow.set_experiment("traits_audit_platforms")
@@ -486,7 +491,7 @@ def run(
 
     _camd_available = True
     try:
-        from camd.agent.stability import AgentStabilityAdaBoost
+        from camd.agent.stability import AgentStabilityAdaBoost  # noqa: F401
     except ImportError:
         _camd_available = False
         print("  camd not installed — using sklearn BaggingRegressor fallback")
@@ -651,7 +656,7 @@ def run(
             cand_data = cand_data.drop(cand_data.index[query_loc]).reset_index(drop=True)
 
         # Collect batch for exploration map
-        _qcols = [c for c in ["Composition", target] + feat if c in hypotheses.columns]
+        _qcols = [c for c in ["Composition", target, *feat] if c in hypotheses.columns]
         queried_batches.append(hypotheses[_qcols].copy())
 
         mean_std = float(std_hyp.mean())
@@ -721,11 +726,11 @@ def run(
     from traits_audit._mechanism_check import print_mechanism_check
 
     if mechanism_null:
-        _unc_vectors = [np.array([ep, ep2]) for ep, ep2 in zip(uncertainties, unc_second)]
+        _unc_vectors = [np.array([ep, ep2]) for ep, ep2 in zip(uncertainties, unc_second, strict=False)]
         _aleatoric_idx = None
         _mech_label = "two-epistemic null (--mechanism-null)"
     else:
-        _unc_vectors = [np.array([ep, al]) for ep, al in zip(uncertainties, unc_second)]
+        _unc_vectors = [np.array([ep, al]) for ep, al in zip(uncertainties, unc_second, strict=False)]
         _aleatoric_idx = [1]
         _mech_label = "real split (committee spread + heteroscedastic held-out floor)"
 
@@ -744,18 +749,18 @@ def run(
     # Computed before hook.on_end() so LyapunovStabilityCheck (in the pipeline
     # above) can be given the real lambda_max series via the precomputed route.
     print("\n[2/3] Lyapunov stability analysis …")
+    from traits_audit import dmdc as dm
     from traits_audit._viz import (
         check_grid_figures,
-        run_dmdc_lyapunov_analysis,
-        plot_uncertainty_evolution,
-        plot_lyapunov_evolution,
         plot_audit_evolution,
-        plot_pareto_frontier,
         plot_convergence,
-        plot_exploration_campaign,
         plot_discovery_rate,
+        plot_exploration_campaign,
+        plot_lyapunov_evolution,
+        plot_pareto_frontier,
+        plot_uncertainty_evolution,
+        run_dmdc_lyapunov_analysis,
     )
-    from traits_audit import dmdc as dm
 
     # Build augmented state trajectory and compute per-step lambda_max via
     # growing-prefix DMDc fits (analogous to battery-forecast's stability_convergence).
@@ -853,7 +858,7 @@ def run(
 
     # DecisionFlipRate needs y_pred_mean/y_pred_std for the CANDIDATE POOL
     # decision surface -- a different array than the calibration data above
-    # -- so it runs as a second, small pipeline (same pattern as ta-demo /
+    # -- so it runs as a second, small pipeline (same pattern as ta-cal-demo /
     # ta-pybamm-demo) rather than overloading hook.on_end's kwargs.
     if _use_camd_agent and len(cand_data) > 0:
         _X_final_cand = cand_data[_feat_pca].values.astype(float)
@@ -877,9 +882,11 @@ def run(
             print(f"    - {w}")
 
     report_path = out_dir / "audit_report.json"
-    with open(report_path, "w") as fh:
+    with open(report_path, "w", encoding="utf-8") as fh:
         json.dump(report.to_dict(), fh, indent=2, default=str)
     print(f"Saved audit report → {report_path}")
+    history_path = hook.save_history(out_dir / "history.json")
+    print(f"Saved history      → {history_path}")
 
     if _use_mlflow:
         for r in report.results:
@@ -949,7 +956,7 @@ def run(
             except Exception:
                 _grid_html = fig_dir / "fig10_check_grid.html"
                 fig_grid.write_html(str(_grid_html))
-                print(f"  Saved fig10_check_grid.html (install kaleido for PNG export)")
+                print("  Saved fig10_check_grid.html (install kaleido for PNG export)")
         if fig_grid_final is not None:
             _grid_final_png = fig_dir / "fig10b_check_grid_final_only.png"
             try:
@@ -964,6 +971,20 @@ def run(
                 _grid_final_html = fig_dir / "fig10b_check_grid_final_only.html"
                 fig_grid_final.write_html(str(_grid_final_html))
                 print("  Saved fig10b_check_grid_final_only.html (install kaleido for PNG export)")
+
+        # Pairwise Spearman correlations between check values across
+        # snapshots (same figure as ta-cal-demo's metric_correlations_*.png).
+        import matplotlib.pyplot as _plt_corr
+
+        from traits_audit._viz import _fig_metric_correlations
+        fig_corr = _fig_metric_correlations(hook.intermediate_reports, _model_label)
+        if fig_corr is not None:
+            try:
+                fig_corr.savefig(str(fig_dir / "metric_correlations_camd.png"), dpi=300, bbox_inches="tight")
+                _plt_corr.close(fig_corr)
+                print("  Saved metric_correlations_camd.png")
+            except Exception:
+                pass
 
     abs_errors_al = [h.get("abs_error", float("nan")) for h in hook.history]
     plot_pareto_frontier(
