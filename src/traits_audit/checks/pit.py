@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 import numpy as np
+from scipy.stats import kstest as _kstest, norm as _norm
 
 from ..base import AuditCategory, AuditCheck, AuditResult
 from .calibration import _require
@@ -59,8 +60,6 @@ class PITUniformityCheck(AuditCheck):
         return AuditCategory.ALEATORIC_MODEL
 
     def run(self, history: List[Dict[str, Any]], **kwargs) -> AuditResult:
-        from scipy.stats import kstest, norm
-
         y_true = _require("y_true", history, kwargs)
         mu     = _require("y_pred_mean", history, kwargs)
         sigma  = _require("y_pred_std", history, kwargs)
@@ -79,9 +78,9 @@ class PITUniformityCheck(AuditCheck):
             )
 
         sigma_safe = np.maximum(sigma, 1e-12)
-        pit = norm.cdf((y_true - mu) / sigma_safe)
+        pit = _norm.cdf((y_true - mu) / sigma_safe)
 
-        ks_stat, p_value = kstest(pit, "uniform")
+        ks_stat, p_value = _kstest(pit, "uniform")
         ks_stat = float(ks_stat)
         p_value = float(p_value)
         passed = p_value >= self.alpha

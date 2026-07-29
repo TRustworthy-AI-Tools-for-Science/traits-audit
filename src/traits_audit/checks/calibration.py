@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 import numpy as np
+from scipy import stats as _stats
 
 from ..base import AuditCategory, AuditCheck, AuditResult
 
@@ -72,8 +73,6 @@ class CalibrationErrorCheck(AuditCheck):
         return AuditCategory.ALEATORIC_MODEL
 
     def run(self, history: List[Dict[str, Any]], **kwargs) -> AuditResult:
-        from scipy import stats
-
         y_true = _require("y_true", history, kwargs)
         mu     = _require("y_pred_mean", history, kwargs)
         sigma  = _require("y_pred_std", history, kwargs)
@@ -86,7 +85,7 @@ class CalibrationErrorCheck(AuditCheck):
 
         levels = np.linspace(0.0, 1.0, self.n_bins + 2)[1:-1]
         observed = [
-            float((np.abs(y_true - mu) <= stats.norm.ppf((1 + p) / 2) * sigma).mean())
+            float((np.abs(y_true - mu) <= _stats.norm.ppf((1 + p) / 2) * sigma).mean())
             for p in levels
         ]
         ce = float(np.mean(np.abs(np.array(observed) - levels)))
@@ -109,8 +108,6 @@ def _calibration_stats(y_true, mu, sigma, n_bins: int = 10):
     metric as its own pipeline row while computing the full set once. Returns
     ``None`` when there are no valid (finite, positive-sigma) points.
     """
-    from scipy import stats as _st
-
     r = np.asarray(y_true, float).ravel() - np.asarray(mu, float).ravel()
     s = np.asarray(sigma, float).ravel()
     valid = np.isfinite(r) & np.isfinite(s) & (s > 0)
@@ -120,7 +117,7 @@ def _calibration_stats(y_true, mu, sigma, n_bins: int = 10):
 
     # Kuleshov (2018) calibration error: |observed - expected| coverage, averaged.
     levels = np.linspace(0.0, 1.0, n_bins + 2)[1:-1]
-    observed = np.array([float((np.abs(r) <= _st.norm.ppf((1 + p) / 2) * s).mean())
+    observed = np.array([float((np.abs(r) <= _stats.norm.ppf((1 + p) / 2) * s).mean())
                          for p in levels])
     ce = float(np.mean(np.abs(observed - levels)))
     _trapz = getattr(np, "trapezoid", None) or getattr(np, "trapz", None)  # np.trapz removed in NumPy 2.x

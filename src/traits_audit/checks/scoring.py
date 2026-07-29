@@ -5,9 +5,23 @@ import math
 from typing import Any, Dict, List, Optional
 
 import numpy as np
+from scipy.stats import norm as _norm
 
 from ..base import AuditCategory, AuditCheck, AuditResult
 from .calibration import _require
+
+
+def _report_only(threshold: Optional[float], value: float) -> "tuple[bool, str]":
+    """Return (passed, threshold_str) for checks that are report-only when threshold=None."""
+    if threshold is None:
+        return True, "none (reporting only)"
+    return value <= threshold, f"{threshold:.4f}"
+
+
+def _gaussian_nll(residual: np.ndarray, sigma: np.ndarray) -> np.ndarray:
+    """Per-sample Gaussian NLL: 0.5*log(2π) + log(σ) + 0.5*(r/σ)²."""
+    sigma_safe = np.maximum(sigma, 1e-12)
+    return 0.5 * math.log(2.0 * math.pi) + np.log(sigma_safe) + 0.5 * (residual / sigma_safe) ** 2
 
 
 class CRPSCheck(AuditCheck):
@@ -62,8 +76,6 @@ class CRPSCheck(AuditCheck):
         return AuditCategory.ALEATORIC_MODEL
 
     def run(self, history: List[Dict[str, Any]], **kwargs) -> AuditResult:
-        from scipy.stats import norm
-
         y_true = _require("y_true", history, kwargs)
         mu     = _require("y_pred_mean", history, kwargs)
         sigma  = _require("y_pred_std", history, kwargs)
@@ -83,16 +95,10 @@ class CRPSCheck(AuditCheck):
 
         sigma_safe = np.maximum(sigma, 1e-12)
         z = (y_true - mu) / sigma_safe
-        crps = sigma_safe * (2.0 * norm.pdf(z) + z * (2.0 * norm.cdf(z) - 1.0) - 1.0 / math.sqrt(math.pi))
+        crps = sigma_safe * (2.0 * _norm.pdf(z) + z * (2.0 * _norm.cdf(z) - 1.0) - 1.0 / math.sqrt(math.pi))
         mean_crps = float(np.mean(crps))
         crps_reference = float(np.mean(sigma_safe)) / math.sqrt(math.pi)
-
-        if self.threshold is None:
-            passed = True
-            thr_str = "none (reporting only)"
-        else:
-            passed = mean_crps <= self.threshold
-            thr_str = f"{self.threshold:.4f}"
+        passed, thr_str = _report_only(self.threshold, mean_crps)
 
         return AuditResult(
             name=self.name,
@@ -178,17 +184,10 @@ class NegativeLogLikelihoodCheck(AuditCheck):
             )
 
         sigma_safe = np.maximum(sigma, 1e-12)
-        z = (y_true - mu) / sigma_safe
-        nll_per_sample = 0.5 * math.log(2.0 * math.pi) + np.log(sigma_safe) + 0.5 * z ** 2
+        nll_per_sample = _gaussian_nll(y_true - mu, sigma_safe)
         mean_nll = float(np.mean(nll_per_sample))
         nll_reference = 0.5 * math.log(2.0 * math.pi) + float(np.mean(np.log(sigma_safe))) + 0.5
-
-        if self.threshold is None:
-            passed = True
-            thr_str = "none (reporting only)"
-        else:
-            passed = mean_nll <= self.threshold
-            thr_str = f"{self.threshold:.4f}"
+        passed, thr_str = _report_only(self.threshold, mean_nll)
 
         return AuditResult(
             name=self.name,
@@ -282,8 +281,6 @@ class IntervalScoreCheck(AuditCheck):
         return AuditCategory.ALEATORIC_MODEL
 
     def run(self, history: List[Dict[str, Any]], **kwargs) -> AuditResult:
-        from scipy.stats import norm
-
         y_true = _require("y_true", history, kwargs)
         mu     = _require("y_pred_mean", history, kwargs)
         sigma  = _require("y_pred_std", history, kwargs)
@@ -302,7 +299,7 @@ class IntervalScoreCheck(AuditCheck):
             )
 
         sigma_safe = np.maximum(sigma, 1e-12)
-        z_crit = float(norm.ppf(1.0 - self.alpha / 2.0))
+        z_crit = float(_norm.ppf(1.0 - self.alpha / 2.0))
         lo = mu - z_crit * sigma_safe
         hi = mu + z_crit * sigma_safe
 
@@ -313,13 +310,8 @@ class IntervalScoreCheck(AuditCheck):
         mean_is = float(np.mean(is_per_sample))
 
         mean_sigma = float(np.mean(sigma_safe))
-        is_reference = mean_sigma * (2.0 * z_crit + 2.0 * float(norm.pdf(z_crit)) / self.alpha)
-        if self.threshold is None:
-            passed = True
-            thr_str = "none (reporting only)"
-        else:
-            passed = mean_is <= self.threshold
-            thr_str = f"{self.threshold:.4f}"
+        is_reference = mean_sigma * (2.0 * z_crit + 2.0 * float(_norm.pdf(z_crit)) / self.alpha)
+        passed, thr_str = _report_only(self.threshold, mean_is)
 
         return AuditResult(
             name=self.name,
@@ -406,11 +398,6 @@ class ScoreDecompositionCheck(AuditCheck):
     def category(self) -> AuditCategory:
         return AuditCategory.ALEATORIC_MODEL
 
-    @staticmethod
-    def _nll(residual: np.ndarray, sigma: np.ndarray) -> np.ndarray:
-        sigma_safe = np.maximum(sigma, 1e-12)
-        return 0.5 * math.log(2.0 * math.pi) + np.log(sigma_safe) + 0.5 * (residual / sigma_safe) ** 2
-
     def run(self, history: List[Dict[str, Any]], **kwargs) -> AuditResult:
         y_true = _require("y_true", history, kwargs)
         mu = _require("y_pred_mean", history, kwargs)
@@ -436,10 +423,10 @@ class ScoreDecompositionCheck(AuditCheck):
                 message="Skipped — y_true has zero variance; climatological forecast undefined.",
             )
         mu_c = float(np.mean(y_true))
-        unc = float(np.mean(self._nll(y_true - mu_c, np.full(n, sigma_c))))
+        unc = float(np.mean(_gaussian_nll(y_true - mu_c, np.full(n, sigma_c))))
 
         residual = y_true - mu
-        nll_original = self._nll(residual, sigma)
+        nll_original = _gaussian_nll(residual, sigma)
         overall_nll_original = float(np.mean(nll_original))
 
         order = np.argsort(sigma)
@@ -453,7 +440,7 @@ class ScoreDecompositionCheck(AuditCheck):
                 bin_std = 1e-12
             recal_r = bin_r - np.mean(bin_r)
             nll_orig_bin = float(np.mean(nll_original[chunk]))
-            nll_recal_bin = float(np.mean(self._nll(recal_r, np.full(chunk.size, bin_std))))
+            nll_recal_bin = float(np.mean(_gaussian_nll(recal_r, np.full(chunk.size, bin_std))))
             weighted_orig += nll_orig_bin * chunk.size
             weighted_recal += nll_recal_bin * chunk.size
             total += chunk.size
