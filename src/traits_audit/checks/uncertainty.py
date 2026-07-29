@@ -66,17 +66,12 @@ class UncertaintyEvolutionCheck(AuditCheck):
         return AuditCategory.REDUCTION_UNDER_REPLICATION
 
     def run(self, history: List[Dict[str, Any]], **kwargs) -> AuditResult:
-        raw = kwargs.get("uncertainties")
-        if raw is not None:
-            u = np.asarray(raw, dtype=float)
-        else:
-            vals = [h["uncertainty"] for h in history if "uncertainty" in h]
-            if not vals:
-                return AuditResult(
-                    name=self.name, passed=True, category=self.category,
-                    message="Skipped — uncertainty series not available.",
-                )
-            u = np.asarray(vals, dtype=float)
+        u = _uncertainties(history, kwargs)
+        if u is None:
+            return AuditResult(
+                name=self.name, passed=True, category=self.category,
+                message="Skipped — uncertainty series not available.",
+            )
 
         if u.ndim == 1:
             u = u[:, np.newaxis]
