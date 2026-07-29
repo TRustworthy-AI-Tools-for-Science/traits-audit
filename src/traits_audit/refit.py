@@ -17,7 +17,7 @@ it scores held-out residual variance directly.
 """
 from __future__ import annotations
 
-from typing import Callable, Sequence, Tuple
+from collections.abc import Callable, Sequence
 
 import numpy as np
 
@@ -78,7 +78,7 @@ def nested_subset_curve(
     subset_fracs: Sequence[float],
     reps: int = 3,
     seed: int = 0,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """For each fraction ``f`` in ``subset_fracs``, draw ``reps`` random
     subsets of size ``round(f * N)`` (a distinct seed per rep), fit, and
     score held-out performance on ``(X_eval, y_eval)``.

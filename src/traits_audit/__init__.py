@@ -19,9 +19,17 @@ Quick import
 ...     LyapunovStabilityCheck,
 ... )
 """
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 
-from . import bootstrap, credal, dmdc, pipeline_attribution, provenance, refit, validation
+from . import (
+    bootstrap,
+    credal,
+    dmdc,
+    pipeline_attribution,
+    provenance,
+    refit,
+    validation,
+)
 from .base import AuditCategory, AuditCheck, AuditReport, AuditResult
 from .checks.lyapunov import LyapunovStabilityCheck
 from .detrend import DetrendResult, RegimeDetrender
@@ -30,21 +38,21 @@ from .mlflow_logger import MLflowLogger
 from .pipeline import AuditPipeline
 
 __all__ = [
+    "AuditCategory",
+    "AuditCheck",
     "AuditHook",
     "AuditPipeline",
-    "AuditCheck",
-    "AuditResult",
     "AuditReport",
-    "AuditCategory",
-    "MLflowLogger",
-    "LyapunovStabilityCheck",
+    "AuditResult",
     "DetrendResult",
+    "LyapunovStabilityCheck",
+    "MLflowLogger",
     "RegimeDetrender",
-    "dmdc",
-    "refit",
-    "credal",
-    "provenance",
-    "pipeline_attribution",
     "bootstrap",
+    "credal",
+    "dmdc",
+    "pipeline_attribution",
+    "provenance",
+    "refit",
     "validation",
 ]

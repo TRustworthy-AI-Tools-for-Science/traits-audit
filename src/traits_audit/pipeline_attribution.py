@@ -28,8 +28,9 @@ reproduces the exact failure this metric exists to detect.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable, List
+from typing import Any
 
 import numpy as np
 
@@ -49,14 +50,14 @@ class StageUncertainty:
 
 @dataclass
 class SVAResult:
-    stage_names: List[str]
+    stage_names: list[str]
     first_order: np.ndarray
     total_effect: np.ndarray
     interaction_gap: np.ndarray
     n_mc: int
 
 
-def _draw_matrix(stages: List[StageUncertainty], n_mc: int, rng: np.random.Generator) -> np.ndarray:
+def _draw_matrix(stages: list[StageUncertainty], n_mc: int, rng: np.random.Generator) -> np.ndarray:
     """(n_mc, n_stages) object array of independently drawn stage values."""
     k = len(stages)
     M = np.empty((n_mc, k), dtype=object)
@@ -66,17 +67,17 @@ def _draw_matrix(stages: List[StageUncertainty], n_mc: int, rng: np.random.Gener
     return M
 
 
-def _evaluate(chain_fn: Callable[..., float], stages: List[StageUncertainty], M: np.ndarray) -> np.ndarray:
+def _evaluate(chain_fn: Callable[..., float], stages: list[StageUncertainty], M: np.ndarray) -> np.ndarray:
     names = [s.name for s in stages]
     out = np.empty(M.shape[0], dtype=float)
     for i in range(M.shape[0]):
-        out[i] = chain_fn(**dict(zip(names, M[i])))
+        out[i] = chain_fn(**dict(zip(names, M[i], strict=False)))
     return out
 
 
 def run_stage_variance_attribution(
     chain_fn: Callable[..., float],
-    stages: List[StageUncertainty],
+    stages: list[StageUncertainty],
     n_mc: int = 1024,
     seed: int = 0,
 ) -> SVAResult:

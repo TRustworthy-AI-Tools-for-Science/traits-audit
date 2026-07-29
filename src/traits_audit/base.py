@@ -10,7 +10,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 class AuditCategory(str, Enum):
@@ -48,17 +48,17 @@ class AuditResult:
     name:      str
     passed:    bool
     category:  AuditCategory
-    value:     Optional[float]       = None
-    threshold: Optional[Any]         = None
+    value:     float | None       = None
+    threshold: Any | None         = None
     message:   str                   = ""
-    details:   Dict[str, Any]        = field(default_factory=dict)
+    details:   dict[str, Any]        = field(default_factory=dict)
 
 
 @dataclass
 class AuditReport:
     """Aggregated results from one pipeline run."""
-    results:  List[AuditResult]  = field(default_factory=list)
-    metadata: Dict[str, Any]     = field(default_factory=dict)
+    results:  list[AuditResult]  = field(default_factory=list)
+    metadata: dict[str, Any]     = field(default_factory=dict)
 
     @property
     def passed(self) -> bool:
@@ -80,7 +80,7 @@ class AuditReport:
             lines.append(f"  [{tag}] {r.name}{val}: {r.message}")
         return "\n".join(lines)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "passed":   self.passed,
             "n_passed": self.n_passed,
@@ -136,4 +136,4 @@ class AuditCheck(ABC):
     def category(self) -> AuditCategory: ...
 
     @abstractmethod
-    def run(self, history: List[Dict[str, Any]], **kwargs) -> AuditResult: ...
+    def run(self, history: list[dict[str, Any]], **kwargs) -> AuditResult: ...

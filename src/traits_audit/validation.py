@@ -1,18 +1,15 @@
 """
 Pairing validation for a configured audit pipeline.
 
-METRIC_TAXONOMY_AUDIT.md repeatedly stresses that several of the proposed
-metrics are uninterpretable in isolation — they are only meaningful when
-reported alongside a specific "contextualizing twin":
+Several of the proposed metrics are uninterpretable in isolation.
+They are only meaningful when reported with a contextualizing twin:
 
-- Lyapunov lambda_max (local) must be paired with DMDc rho(A) (global) — §4.4:
-  "neither alone separates a locally rough landscape from a globally
-  divergent one."
-- EnsembleIndependenceDeficit paired with ResidualPersistenceHalfLife — §4.4.
-- ReplicationShrinkageExponent paired with DarkUncertaintyGap — §4.1.
-- ReducibilityRealisationRatio paired with AleatoricFloorConsistency — §4.3.
-- ImprecisionWidthFraction paired with EnvelopeViolationRate — §4.5.
-- ProceduralVarianceShare paired with DataVarianceShare — §4.6 (their ratio
+- Lyapunov lambda_max (local) must be paired with DMDc rho(A) (global)
+- EnsembleIndependenceDeficit paired with ResidualPersistenceHalfLife
+- ReplicationShrinkageExponent paired with DarkUncertaintyGap
+- ReducibilityRealisationRatio paired with AleatoricFloorConsistency
+- ImprecisionWidthFraction paired with EnvelopeViolationRate
+- ProceduralVarianceShare paired with DataVarianceShare; their ratio
   is the point).
 - TypeBMassFraction should be reported alongside any aleatoric/epistemic
   split check — §4.2 ("makes the non-mapping visible in the numbers").
@@ -24,12 +21,12 @@ existing "a failed check never aborts the run" philosophy.
 """
 from __future__ import annotations
 
-from typing import Dict, FrozenSet, List, Sequence
+from collections.abc import Sequence
 
 from .base import AuditCategory, AuditCheck
 
 # 1:1 name-based twins: at least one name in the frozenset must also be configured.
-NAME_PAIRS: Dict[str, FrozenSet[str]] = {
+NAME_PAIRS: dict[str, frozenset[str]] = {
     "LyapunovStability":              frozenset({"DMDcSpectralRadius"}),
     "DMDcSpectralRadius":             frozenset({"LyapunovStability"}),
     "ReplicationShrinkageExponent":   frozenset({"DarkUncertaintyGap"}),
@@ -53,7 +50,7 @@ _ALEATORIC_EPISTEMIC_FAMILY = frozenset({
 })
 
 
-def find_unpaired_checks(checks: Sequence[AuditCheck]) -> List[str]:
+def find_unpaired_checks(checks: Sequence[AuditCheck]) -> list[str]:
     """Given the AuditChecks configured in a pipeline, return one
     human-readable warning per check whose contextualizing twin (per
     METRIC_TAXONOMY_AUDIT.md's explicit pairing requirements) is absent.
@@ -62,7 +59,7 @@ def find_unpaired_checks(checks: Sequence[AuditCheck]) -> List[str]:
     """
     names = {c.name for c in checks}
     categories_present = {c.category for c in checks}
-    warnings: List[str] = []
+    warnings: list[str] = []
 
     for name, twins in NAME_PAIRS.items():
         if name in names and not (twins & names):

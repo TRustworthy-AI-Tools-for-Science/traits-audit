@@ -12,8 +12,7 @@ ablation via a caller-supplied ``variance_fn``.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Dict, Set
+from dataclasses import dataclass
 
 
 @dataclass
@@ -25,8 +24,8 @@ class TypeBLedger:
     ``TypeBMassFractionCheck`` computes its value from ``variance_fn``, not
     from these numeric fields directly.
     """
-    components: Dict[str, float]
-    type_b_keys: Set[str]
+    components: dict[str, float]
+    type_b_keys: set[str]
 
-    def type_a_keys(self) -> Set[str]:
+    def type_a_keys(self) -> set[str]:
         return set(self.components) - self.type_b_keys

@@ -58,19 +58,19 @@ from scipy.linalg import solve_discrete_lyapunov
 from .detrend import RegimeDetrender
 
 __all__ = [
+    "bootstrap_eig_ci",
+    "compute_gramians",
+    "dmdc_r2",
+    "equilibrium_state",
     "fit_dmdc",
     "fit_dmdc_pairs",
-    "dmdc_r2",
-    "stability_convergence",
+    "modal_decomposition",
     "perturbation_response",
     "pseudospectrum",
-    "equilibrium_state",
-    "compute_gramians",
-    "bootstrap_eig_ci",
-    "modal_decomposition",
     "rank_sensitivity",
-    "windowed_rho",
+    "stability_convergence",
     "transition_step",
+    "windowed_rho",
 ]
 
 
@@ -319,11 +319,11 @@ def pseudospectrum(A_r: np.ndarray, grid_n: int = 60, eps_levels=None):
     im = np.linspace(-1.5, 1.5, grid_n)
     RE, IM = np.meshgrid(re, im)
     sigma_min = np.zeros_like(RE)
-    I = np.eye(r)
+    eye_r = np.eye(r)
     for i in range(grid_n):
         for j in range(grid_n):
             z = RE[i, j] + 1j * IM[i, j]
-            sigma_min[i, j] = np.linalg.svd(z * I - A_r, compute_uv=False)[-1]
+            sigma_min[i, j] = np.linalg.svd(z * eye_r - A_r, compute_uv=False)[-1]
     return RE, IM, sigma_min
 
 

@@ -368,7 +368,7 @@ class ReplicationShrinkageExponentCheck(AuditCheck):
             message=f"beta_hat = {beta_hat:.4f} (CI={beta_ci}) — 0.5=random, 0=systematic; both legitimate.",
             details={
                 "beta_ci": beta_ci,
-                "u_obs_by_r": dict(zip(rs_used, u_obs)),
+                "u_obs_by_r": dict(zip(rs_used, u_obs, strict=False)),
                 "r_values_used": rs_used,
                 "n_groups": len(groups),
                 "taxonomy_note": "Also a reduction-under-replication metric (dual-listed); pair with DarkUncertaintyGap.",

@@ -11,7 +11,7 @@ machinery without touching the DMDc-specific implementation.
 """
 from __future__ import annotations
 
-from typing import Callable, Optional, Tuple
+from collections.abc import Callable
 
 import numpy as np
 
@@ -22,7 +22,7 @@ def moving_block_bootstrap_ci(
     block_len: int = 8,
     n_boot: int = 200,
     seed: int = 42,
-) -> Optional[Tuple[float, float]]:
+) -> tuple[float, float] | None:
     """95% CI for ``stat_fn(values)`` via moving-block bootstrap, which
     respects the series' autocorrelation (unlike i.i.d. resampling).
     Returns ``None`` if ``len(values) <= block_len``."""

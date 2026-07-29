@@ -26,13 +26,12 @@ Design decisions (see paper1_outline.md §2, §3):
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Sequence
 
 import numpy as np
 
 from . import dmdc as _dmdc
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Per-step observation and the accumulated record
@@ -97,7 +96,7 @@ class TrajectoryRecord:
     def add(self, state, uncertainty, action, is_warmup: bool = False) -> None:
         self.steps.append(StepObservation(state, uncertainty, action, is_warmup))
 
-    def finalize(self) -> "TrajectoryRecord":
+    def finalize(self) -> TrajectoryRecord:
         if not self.steps:
             raise ValueError("TrajectoryRecord has no steps.")
         # Enforce consistent per-step dimensions.
@@ -149,7 +148,7 @@ def detrend_states(
     labels = km.predict(actions)
 
     detrended = np.empty_like(states, dtype=np.float64)
-    ema = {g: None for g in range(n_groups)}
+    ema = dict.fromkeys(range(n_groups))
     for t in range(T):
         g = int(labels[t])
         prev = ema[g]

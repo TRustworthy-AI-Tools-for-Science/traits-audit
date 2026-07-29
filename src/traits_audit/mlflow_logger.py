@@ -72,13 +72,14 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from typing import Any, Callable, Dict, Optional, TYPE_CHECKING
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .base import AuditReport, AuditResult
 
 
-FigureFactory = Callable[["AuditResult"], Optional[Any]]  # returns plt.Figure | None
+FigureFactory = Callable[["AuditResult"], Any | None]  # returns plt.Figure | None
 
 
 class MLflowLogger:
@@ -102,10 +103,10 @@ class MLflowLogger:
         If ``run_id`` is ``None`` and no MLflow run is currently active.
     """
 
-    def __init__(self, run_id: Optional[str] = None, prefix: str = "audit"):
+    def __init__(self, run_id: str | None = None, prefix: str = "audit"):
         self._explicit_run_id = run_id
         self.prefix = prefix
-        self._figure_factories: Dict[str, FigureFactory] = {
+        self._figure_factories: dict[str, FigureFactory] = {
             "CalibrationError": self._fig_calibration_curve,
         }
 
@@ -137,7 +138,7 @@ class MLflowLogger:
 
     def log_report(
         self,
-        report: "AuditReport",
+        report: AuditReport,
         step: int,
         tag: str = "final",
     ) -> None:
@@ -157,7 +158,7 @@ class MLflowLogger:
             (``"intermediate"`` or ``"final"``).
         """
         # ── metrics ──────────────────────────────────────────────────────
-        metrics: Dict[str, float] = {}
+        metrics: dict[str, float] = {}
         for r in report.results:
             if r.value is not None:
                 metrics[f"{self.prefix}/{tag}/{r.name}"] = float(r.value)
@@ -194,7 +195,7 @@ class MLflowLogger:
     # Figure factory helpers
     # ------------------------------------------------------------------
 
-    def _match_factory(self, name: str) -> Optional[FigureFactory]:
+    def _match_factory(self, name: str) -> FigureFactory | None:
         """Three-level factory lookup: exact → strip-suffix prefix → startswith."""
         # 1. Exact match
         f = self._figure_factories.get(name)
@@ -210,7 +211,7 @@ class MLflowLogger:
         return f
 
     @staticmethod
-    def _fig_calibration_curve(result: "AuditResult") -> Optional[Any]:
+    def _fig_calibration_curve(result: AuditResult) -> Any | None:
         """Calibration reliability diagram for ``CalibrationErrorCheck`` results."""
         from traits_audit._viz import _fig_calibration_curve as _viz_cal_curve
         return _viz_cal_curve(result)
@@ -231,7 +232,7 @@ class MLflowLogger:
             )
         return active.info.run_id
 
-    def _log_metrics(self, metrics: Dict[str, float], step: int) -> None:
+    def _log_metrics(self, metrics: dict[str, float], step: int) -> None:
         """Log a dict of metrics via MlflowClient.log_metric (universally supported)."""
         import mlflow
         client = mlflow.MlflowClient()

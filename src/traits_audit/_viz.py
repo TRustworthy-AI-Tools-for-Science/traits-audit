@@ -11,22 +11,20 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Dict, Optional
-
-import numpy as np
+from typing import Any
 
 import matplotlib.pyplot as plt
+import numpy as np
 
 from .checks.lyapunov import (
-    numerical_jacobian,
-    eigenvalues_and_stability,
     compute_lyapunov,
-    make_gd_predictor,
+    eigenvalues_and_stability,
+    numerical_jacobian,
 )
 
 # ── Publication rcParams (applied once at import) ───────────────────────────
 
-_RCPARAMS: Dict[str, Any] = {
+_RCPARAMS: dict[str, Any] = {
     "font.family":     "serif",
     "font.size":       10,
     "axes.titlesize":  11,
@@ -48,7 +46,7 @@ plt.rcParams.update(_RCPARAMS)
 #: package should have an entry here — a missing one falls back to the full
 #: name (check grid) or a hard 12-char truncation (correlation matrix), both
 #: of which get visually cramped or ambiguous fast.
-_CHECK_ABBREV: Dict[str, str] = {
+_CHECK_ABBREV: dict[str, str] = {
     # Total-predictive-distribution checks (pre-existing).
     "CalibrationError":            "CE",
     "KuleshovCalibrationError":    "KCE",
@@ -74,7 +72,7 @@ _CHECK_ABBREV: Dict[str, str] = {
     "ReducibilityRealisationRatio": "RRR",
     "AleatoricFloorConsistency":   "AFC",
     "EnsembleIndependenceDeficit": "EID",
-    "DMDcSpectralRadius":          "DMDcRho",
+    "DMDcSpectralRadius":          "Rho",
     "ResidualPersistenceHalfLife": "RHL",
     "ImprecisionWidthFraction":    "IWF",
     "EnvelopeViolationRate":       "EV",
@@ -470,7 +468,7 @@ def plot_cie_trajectory(
         ax.plot(xa, ya, color="0.6", lw=0.7, zorder=3)
 
     # LHS initial samples
-    sc_lhs = ax.scatter(
+    ax.scatter(
         xl, yl, c=np.asarray(y_lhs, dtype=float),
         cmap=cmap, vmin=vmin, vmax=vmax,
         marker="s", s=40, linewidths=0.5, edgecolors="k",
@@ -730,7 +728,7 @@ def plot_convergence(
 
 # ── Heatmap intensity helper ────────────────────────────────────────────────
 
-def _result_status(result: Any) -> "tuple[float, str]":
+def _result_status(result: Any) -> tuple[float, str]:
     """Map an AuditResult to a (intensity, status) pair.
 
     ``status`` is one of four values, not two — this is the load-bearing
@@ -766,10 +764,7 @@ def _result_status(result: Any) -> "tuple[float, str]":
 
     name = result.name
     details = result.details or {}
-    if name == "CalibrationError":
-        # Lower is better; PASS if v ≤ t
-        signed = (t - v) / max(abs(t), 1e-6)
-    elif name == "UncertaintyAnomalies":
+    if name == "CalibrationError" or name == "UncertaintyAnomalies":
         # Lower is better; PASS if v ≤ t
         signed = (t - v) / max(abs(t), 1e-6)
     elif name == "UncertaintyEvolution":
@@ -811,7 +806,7 @@ def _result_status(result: Any) -> "tuple[float, str]":
 # ── Plotly interactive figures ──────────────────────────────────────────────
 
 def _fig_check_grid(
-    stage_reports: "list[tuple[str, Any]]",
+    stage_reports: list[tuple[str, Any]],
     run_name: str,
 ) -> Any:
     """Plotly heatmap: rows = audit checks, cols = pipeline stages.
@@ -937,7 +932,7 @@ def _fig_check_grid(
         text=text,
         customdata=hover,
         texttemplate="<b>%{text}</b>",
-        textfont=dict(size=11),
+        textfont={"size": 11},
         colorscale=[
             [0.00, "#7b0000"],
             [0.25, "#c0392b"],
@@ -976,33 +971,33 @@ def _fig_check_grid(
         if xs:
             fig.add_trace(go.Scatter(
                 x=xs, y=ys, mode="markers+text",
-                marker=dict(symbol=symbol, size=32, color=color, line=dict(width=2, color=color)),
+                marker={"symbol": symbol, "size": 32, "color": color, "line": {"width": 2, "color": color}},
                 text=vals,
-                textfont=dict(size=11, color=color),
+                textfont={"size": 11, "color": color},
                 name=legend_name,
                 showlegend=True,
                 hoverinfo="skip",
             ))
 
     fig.update_layout(
-        title=dict(
-            text=f"",
-            font=dict(size=15),
-        ),
-        xaxis=dict(title="", side="top", tickfont=dict(size=13)),
-        yaxis=dict(title="Audit check", tickfont=dict(size=13), autorange="reversed"),
+        title={
+            "text": "",
+            "font": {"size": 15},
+        },
+        xaxis={"title": "", "side": "top", "tickfont": {"size": 13}},
+        yaxis={"title": "Audit check", "tickfont": {"size": 13}, "autorange": "reversed"},
         height=max(260, n_checks * 44 + 100),
         width=max(600, n_stages * 40 + 200),
-        margin=dict(l=150, r=20, t=90, b=20),
+        margin={"l": 150, "r": 20, "t": 90, "b": 20},
         plot_bgcolor="#dcdcdc",
-        legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="left", x=0),
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.0, "xanchor": "left", "x": 0},
     )
     return fig
 
 
 def _split_stage_reports_by_trackability(
-    stage_reports: "list[tuple[str, Any]]",
-) -> "tuple[list, list]":
+    stage_reports: list[tuple[str, Any]],
+) -> tuple[list, list]:
     """Partition check names into step-trackable vs final-report-only.
 
     A check is "final-only" if it is skipped (or absent — see
@@ -1039,7 +1034,7 @@ def _split_stage_reports_by_trackability(
     return trackable_names, final_only_names
 
 
-def _filter_stage_reports(stage_reports: "list[tuple[str, Any]]", names: "list") -> "list":
+def _filter_stage_reports(stage_reports: list[tuple[str, Any]], names: list) -> list:
     """Copy of ``stage_reports`` with each report's ``.results`` filtered to
     ``names`` (preserving ``names``' order). A stage missing a name entirely
     (e.g. an intermediate report from a pipeline that doesn't yet know about
@@ -1059,9 +1054,9 @@ def _filter_stage_reports(stage_reports: "list[tuple[str, Any]]", names: "list")
 
 
 def check_grid_figures(
-    stage_reports: "list[tuple[str, Any]]",
+    stage_reports: list[tuple[str, Any]],
     run_name: str,
-) -> "tuple[Any, Any]":
+) -> tuple[Any, Any]:
     """Build the check-grid figure(s) for a run, splitting step-trackable
     checks from final-report-only ones (see
     :func:`_split_stage_reports_by_trackability`) so neither drowns the
@@ -1099,7 +1094,7 @@ def check_grid_figures(
 
 
 def _fig_state_heatmap(
-    history: "list[dict]",
+    history: list[dict],
     run_name: str,
 ) -> Any:
     """Plotly heatmap: x = state-vector components, y = AL step.
@@ -1146,37 +1141,37 @@ def _fig_state_heatmap(
         colorscale="Viridis",
         zmin=0, zmax=1,
         hovertemplate="%{customdata}<extra></extra>",
-        colorbar=dict(
-            title=dict(text="Normalised<br>value", side="right"),
-            thickness=14,
-        ),
+        colorbar={
+            "title": {"text": "Normalised<br>value", "side": "right"},
+            "thickness": 14,
+        },
         xgap=1,
         ygap=0,
     ))
 
     fig.update_layout(
-        title=dict(
-            text=(
+        title={
+            "text": (
                 f"Uncertainty state vector — {run_name}<br>"
                 f"<sup>Columns independently normalised · hover for raw values</sup>"
             ),
-            font=dict(size=14),
-        ),
-        xaxis=dict(title="Uncertainty state component", tickfont=dict(size=12)),
-        yaxis=dict(
-            title="Active learning step",
-            autorange="reversed",
-            tickfont=dict(size=10),
-        ),
+            "font": {"size": 14},
+        },
+        xaxis={"title": "Uncertainty state component", "tickfont": {"size": 12}},
+        yaxis={
+            "title": "Active learning step",
+            "autorange": "reversed",
+            "tickfont": {"size": 10},
+        },
         height=max(420, n_steps * 14 + 140),
-        margin=dict(l=70, r=80, t=100, b=60),
+        margin={"l": 70, "r": 80, "t": 100, "b": 60},
     )
     return fig
 
 
 def _fig_pareto_scenarios(
-    pareto_data: "dict[str, list[tuple[float, float, str]]]",
-    scenario_styles: "dict[str, dict] | None" = None,
+    pareto_data: dict[str, list[tuple[float, float, str]]],
+    scenario_styles: dict[str, dict] | None = None,
 ) -> Any:
     """Pareto frontier of (CalibrationError, MAE) across all scenarios and stages.
 
@@ -1249,7 +1244,7 @@ def _fig_pareto_scenarios(
 
     ax.set_xlabel("Calibration Error (ECE)")
     ax.set_ylabel("Mean absolute error (MAE)")
-    ax.set_box_aspect(1) 
+    ax.set_box_aspect(1)
     ax.grid(False)
     ax.legend(handles=handles, frameon=False,
             fontsize=_RCPARAMS["legend.fontsize"])
@@ -1257,7 +1252,7 @@ def _fig_pareto_scenarios(
     return fig
 
 
-def _fig_calibration_curve(result: Any) -> Optional[Any]:
+def _fig_calibration_curve(result: Any) -> Any | None:
     """Calibration reliability diagram for ``CalibrationErrorCheck`` results.
 
     Reads ``confidence_levels`` and ``observed_fractions`` from
@@ -1284,7 +1279,7 @@ def _fig_calibration_curve(result: Any) -> Optional[Any]:
         ax.text(
             0.05, 0.95, f"CE = {ce:.4f}",
             transform=ax.transAxes, va="top",
-            bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.5),
+            bbox={"boxstyle": "round", "facecolor": "wheat", "alpha": 0.5},
             fontsize=_RCPARAMS["legend.fontsize"],
         )
     ax.set_xlabel("Expected coverage")
@@ -1296,9 +1291,9 @@ def _fig_calibration_curve(result: Any) -> Optional[Any]:
 
 
 def _fig_calibration_curves_all(
-    scenario_results: Dict[str, Any],
-    scenario_styles: Dict[str, Any],
-) -> Optional[Any]:
+    scenario_results: dict[str, Any],
+    scenario_styles: dict[str, Any],
+) -> Any | None:
     """Reliability-diagram grid — one panel per calibration scenario.
 
     Grid size is adaptive (not fixed 2×2): a hardcoded 2×2 grid silently
@@ -1314,7 +1309,7 @@ def _fig_calibration_curves_all(
     fig, axes = plt.subplots(nrows, ncols, figsize=(7, 7), squeeze=False)
     axes_flat = list(axes.flat)
 
-    for i, (ax, name) in enumerate(zip(axes_flat, names)):
+    for _i, (ax, name) in enumerate(zip(axes_flat, names, strict=False)):
         result = scenario_results[name]
         d = result.details or {}
         expected = d.get("confidence_levels")
@@ -1335,7 +1330,7 @@ def _fig_calibration_curves_all(
             ax.text(
                 0.05, 0.95, f"CE = {ce:.4f}",
                 transform=ax.transAxes, va="top", fontsize=8,
-                bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.5),
+                bbox={"boxstyle": "round", "facecolor": "wheat", "alpha": 0.5},
             )
         ax.set_title(style["label"], fontsize=_RCPARAMS["axes.titlesize"])
         ax.set_xlabel("Expected coverage")
@@ -1352,7 +1347,7 @@ def _fig_calibration_curves_all(
 
 
 def _fig_metric_correlations(
-    intermediate_reports: "list[Any]",
+    intermediate_reports: list[Any],
     run_name: str,
 ) -> Any:
     """Matplotlib figure: pairwise correlations of audit check metrics over time.
@@ -1380,7 +1375,7 @@ def _fig_metric_correlations(
     # Extract all check names and their values across stages
     check_names = []
     stage_values: dict[str, list[float]] = {}
-    
+
     for report in intermediate_reports:
         if not hasattr(report, 'results'):
             continue
@@ -1390,13 +1385,13 @@ def _fig_metric_correlations(
                 check_names.append(check_name)
             if check_name not in stage_values:
                 stage_values[check_name] = []
-            
+
             # Use the result value if available, otherwise skip
             if result.value is not None:
                 stage_values[check_name].append(float(result.value))
             else:
                 stage_values[check_name].append(np.nan)
-    
+
     # Filter to only checks with enough genuine (non-NaN) values to
     # correlate. A check that's Skipped at every intermediate stage (e.g. a
     # final-report-only check like RSE/DUG/AFC, which need kwargs only
@@ -1416,7 +1411,7 @@ def _fig_metric_correlations(
         if name in stage_values
         and np.sum(~np.isnan(np.asarray(stage_values[name], dtype=float))) >= 3
     ]
-    
+
     if len(available_checks) < 2:
         return None
 
@@ -1431,7 +1426,7 @@ def _fig_metric_correlations(
     # Compute the correlation matrix between all checks
     n_checks = len(available_checks)
     corr_matrix = np.zeros((n_checks, n_checks))
-    
+
     for i, check1 in enumerate(available_checks):
         for j, check2 in enumerate(available_checks):
             if i == j:
@@ -1439,7 +1434,7 @@ def _fig_metric_correlations(
             else:
                 v1 = np.array(stage_values[check1], dtype=float)
                 v2 = np.array(stage_values[check2], dtype=float)
-                
+
                 # Only compute if both have sufficient valid data, and
                 # neither is constant over that data -- a check that reports
                 # the same value at every snapshot (e.g. a report-only check,
@@ -1464,14 +1459,14 @@ def _fig_metric_correlations(
 
     mask = np.triu(np.ones_like(corr_matrix, dtype=bool), k=0)
     masked_data = np.ma.masked_where(mask, corr_matrix)
-    
+
     # Plot heatmap
     im = ax.imshow(masked_data, cmap="Blues", vmin=0, vmax=1, aspect="auto")
-    
+
     # Set ticks and labels
     ax.set_xticks(range(n_checks))
     ax.set_yticks(range(n_checks))
-    
+
     # Abbreviate check names for display. Same fallback as _fig_check_grid
     # (the bare name) rather than a hard truncation — _CHECK_ABBREV now
     # covers every shipped check, so this only matters for a future
@@ -1479,12 +1474,12 @@ def _fig_metric_correlations(
     check_abbrevs = [_CHECK_ABBREV.get(name, name) for name in available_checks]
     ax.set_xticklabels(check_abbrevs, rotation=45, ha="right", fontsize=10)
     ax.set_yticklabels(check_abbrevs, fontsize=10)
-    
+
     # Add grid
     ax.set_xticks(np.arange(n_checks) - 0.5, minor=True)
     ax.set_yticks(np.arange(n_checks) - 0.5, minor=True)
     ax.grid(which="minor", color="gray", linestyle="-", linewidth=0.8, alpha=0.4)
-    
+
     ax.set_title(
         f"Audit check correlations — {run_name}\n"
         f"(Spearman ρ across {n_stages} pipeline stages)",
@@ -1492,13 +1487,13 @@ def _fig_metric_correlations(
     )
     ax.set_xlabel("Audit check", fontsize=11, weight="bold")
     ax.set_ylabel("Audit check", fontsize=11, weight="bold")
-    
+
     # Add colorbar
     cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
     cbar.set_label("Spearman ρ", rotation=270, labelpad=18, fontsize=10, weight="bold")
-    
+
     fig.tight_layout()
-    
+
     return fig
 
 
@@ -1507,7 +1502,7 @@ def _fig_metric_correlations(
 # ── Composition-space exploration figure ────────────────────────────────────
 
 #: Pauling electronegativities used to encode binary-compound composition space.
-_EN: Dict[str, float] = {
+_EN: dict[str, float] = {
     "H": 2.20, "Li": 0.98, "Be": 1.57, "B": 2.04, "C": 2.55, "N": 3.04,
     "O": 3.44, "F": 3.98, "Na": 0.93, "Mg": 1.31, "Al": 1.61, "Si": 1.90,
     "P": 2.19, "S": 2.58, "Cl": 3.16, "K": 0.82, "Ca": 1.00, "Sc": 1.36,
@@ -1602,7 +1597,6 @@ def plot_exploration_campaign(
 
         xlabel = "Pauling EN  (electropositive)"
         ylabel = "Pauling EN  (electronegative)"
-        panel_title = "Composition space"
 
     else:
         from sklearn.decomposition import PCA
@@ -1638,7 +1632,6 @@ def plot_exploration_campaign(
 
         xlabel = "PC 1"
         ylabel = "PC 2"
-        panel_title = "Feature space  (PCA)"
 
     xs_q = np.array(xs_q, dtype=float)
     ys_q = np.array(ys_q, dtype=float)
@@ -1677,7 +1670,7 @@ def plot_exploration_campaign(
                          0, _N_BINS - 1)
             yi = np.clip(np.searchsorted(_y_edges, xy[:, 1], side="right") - 1,
                          0, _N_BINS - 1)
-            return set(zip(xi.tolist(), yi.tolist()))
+            return set(zip(xi.tolist(), yi.tolist(), strict=False))
 
         _pool_cells = _cells(coords_all_2d)
         n_pool_cells = max(len(_pool_cells), 1)
@@ -1769,7 +1762,7 @@ def plot_exploration_campaign(
 
 def plot_discovery_rate(
     y_true_per_batch: list,
-    df_all_target: "np.ndarray",
+    df_all_target: np.ndarray,
     stability_threshold: float,
     model_label: str,
     out_dir: Path,
@@ -1797,7 +1790,6 @@ def plot_discovery_rate(
     model_label, out_dir :
         Forwarded to title and ``_save``.
     """
-    import matplotlib.ticker as mticker
 
     n_pool = len(df_all_target)
     n_stable_total = int((np.asarray(df_all_target) <= stability_threshold).sum())
@@ -2013,6 +2005,7 @@ def run_dmdc_lyapunov_analysis(
     ``P``, ``A_r``, ``B_r``, ``U_r``, ``csv_path``.
     """
     import csv as _csv
+
     from traits_audit import dmdc as dm
 
     aug_states = np.asarray(aug_states, dtype=np.float64)

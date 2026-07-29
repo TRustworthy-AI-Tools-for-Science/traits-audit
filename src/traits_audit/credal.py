@@ -11,7 +11,6 @@ predictive distributions whose envelope defines the bounding interval.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Tuple
 
 import numpy as np
 
@@ -37,10 +36,10 @@ class CredalSet:
     special case with zero width.
     """
 
-    lower: Optional[np.ndarray] = None
-    upper: Optional[np.ndarray] = None
-    y_pred_ensemble: Optional[np.ndarray] = None
-    y_pred_std_ensemble: Optional[np.ndarray] = None
+    lower: np.ndarray | None = None
+    upper: np.ndarray | None = None
+    y_pred_ensemble: np.ndarray | None = None
+    y_pred_std_ensemble: np.ndarray | None = None
 
     def __post_init__(self):
         if self.lower is not None:
@@ -52,7 +51,7 @@ class CredalSet:
         if self.y_pred_std_ensemble is not None:
             self.y_pred_std_ensemble = np.asarray(self.y_pred_std_ensemble, dtype=float)
 
-    def bounding_interval(self) -> Tuple[np.ndarray, np.ndarray]:
+    def bounding_interval(self) -> tuple[np.ndarray, np.ndarray]:
         """Returns ``(lower, upper)``, ``(n_points,)`` each, regardless of
         which representation was supplied."""
         if self.lower is not None and self.upper is not None:
@@ -69,7 +68,7 @@ class CredalSet:
 
     def reference_probabilities(
         self, ref_lower: np.ndarray, ref_upper: np.ndarray
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray]:
         """Per-point ``(P_upper, P_lower)`` of the event
         ``{y in [ref_lower, ref_upper]}``."""
         ref_lower = np.asarray(ref_lower, dtype=float).ravel()
