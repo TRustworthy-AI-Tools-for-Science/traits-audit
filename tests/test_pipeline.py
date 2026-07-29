@@ -145,4 +145,5 @@ def test_save_accepts_string_path(tmp_path):
     pipeline = AuditPipeline([_PassCheck()])
     out = str(tmp_path / "report.json")
     pipeline.save(pipeline.run([]), out, merge=False)
-    assert json.loads(open(out).read())["passed"] is True
+    with open(out) as fh:
+        assert json.loads(fh.read())["passed"] is True

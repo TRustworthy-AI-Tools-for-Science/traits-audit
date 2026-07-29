@@ -63,7 +63,7 @@ def test_reads_from_history():
     y_true = mu + sigma * rng.standard_normal(n)
     history = [
         {"y_true": yt, "y_pred_mean": m, "y_pred_std": s}
-        for yt, m, s in zip(y_true, mu, sigma)
+        for yt, m, s in zip(y_true, mu, sigma, strict=False)
     ]
     result = ScoreDecompositionCheck().run(history)
     assert result.value is not None

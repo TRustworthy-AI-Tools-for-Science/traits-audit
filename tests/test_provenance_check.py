@@ -32,7 +32,8 @@ def test_tbmf_partial_type_b_contribution():
 
 def test_tbmf_zero_when_ablation_changes_nothing():
     ledger = TypeBLedger(components={"a": 1.0}, type_b_keys={"a"})
-    variance_fn = lambda ablate: 1.0  # ablation has no effect
+    def variance_fn(ablate):
+        return 1.0  # ablation has no effect
     result = TypeBMassFractionCheck().run([], ledger=ledger, variance_fn=variance_fn)
     assert result.value == pytest.approx(0.0)
 
@@ -60,13 +61,15 @@ def test_tbmf_skips_without_ledger_or_variance_fn():
 
 def test_tbmf_report_only_by_default():
     ledger = TypeBLedger(components={"a": 1.0}, type_b_keys={"a"})
-    variance_fn = lambda ablate: 0.0 if "a" in ablate else 1.0
+    def variance_fn(ablate):
+        return 0.0 if "a" in ablate else 1.0
     result = TypeBMassFractionCheck().run([], ledger=ledger, variance_fn=variance_fn)
     assert result.passed  # max_tbmf=None -> always pass, even at TBMF=1
 
 
 def test_tbmf_opt_in_threshold_can_fail():
     ledger = TypeBLedger(components={"a": 1.0}, type_b_keys={"a"})
-    variance_fn = lambda ablate: 0.0 if "a" in ablate else 1.0
+    def variance_fn(ablate):
+        return 0.0 if "a" in ablate else 1.0
     result = TypeBMassFractionCheck(max_tbmf=0.5).run([], ledger=ledger, variance_fn=variance_fn)
     assert not result.passed
