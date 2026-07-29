@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import numpy as np
 from scipy.stats import norm as _norm
@@ -11,7 +11,7 @@ from ..base import AuditCategory, AuditCheck, AuditResult
 from .calibration import _require
 
 
-def _report_only(threshold: Optional[float], value: float) -> "tuple[bool, str]":
+def _report_only(threshold: float | None, value: float) -> tuple[bool, str]:
     """Return (passed, threshold_str) for checks that are report-only when threshold=None."""
     if threshold is None:
         return True, "none (reporting only)"
@@ -64,7 +64,7 @@ class CRPSCheck(AuditCheck):
     ``y_true``, ``y_pred_mean``, ``y_pred_std``
     """
 
-    def __init__(self, threshold: Optional[float] = None):
+    def __init__(self, threshold: float | None = None):
         self.threshold = threshold
 
     @property
@@ -75,7 +75,7 @@ class CRPSCheck(AuditCheck):
     def category(self) -> AuditCategory:
         return AuditCategory.ALEATORIC_MODEL
 
-    def run(self, history: List[Dict[str, Any]], **kwargs) -> AuditResult:
+    def run(self, history: list[dict[str, Any]], **kwargs) -> AuditResult:
         y_true = _require("y_true", history, kwargs)
         mu     = _require("y_pred_mean", history, kwargs)
         sigma  = _require("y_pred_std", history, kwargs)
@@ -154,7 +154,7 @@ class NegativeLogLikelihoodCheck(AuditCheck):
     ``y_true``, ``y_pred_mean``, ``y_pred_std``
     """
 
-    def __init__(self, threshold: Optional[float] = None):
+    def __init__(self, threshold: float | None = None):
         self.threshold = threshold
 
     @property
@@ -165,7 +165,7 @@ class NegativeLogLikelihoodCheck(AuditCheck):
     def category(self) -> AuditCategory:
         return AuditCategory.ALEATORIC_MODEL
 
-    def run(self, history: List[Dict[str, Any]], **kwargs) -> AuditResult:
+    def run(self, history: list[dict[str, Any]], **kwargs) -> AuditResult:
         y_true = _require("y_true", history, kwargs)
         mu     = _require("y_pred_mean", history, kwargs)
         sigma  = _require("y_pred_std", history, kwargs)
@@ -268,7 +268,7 @@ class IntervalScoreCheck(AuditCheck):
     ``y_true``, ``y_pred_mean``, ``y_pred_std``
     """
 
-    def __init__(self, alpha: float = 0.1, threshold: Optional[float] = None):
+    def __init__(self, alpha: float = 0.1, threshold: float | None = None):
         self.alpha = alpha
         self.threshold = threshold
 
@@ -280,7 +280,7 @@ class IntervalScoreCheck(AuditCheck):
     def category(self) -> AuditCategory:
         return AuditCategory.ALEATORIC_MODEL
 
-    def run(self, history: List[Dict[str, Any]], **kwargs) -> AuditResult:
+    def run(self, history: list[dict[str, Any]], **kwargs) -> AuditResult:
         y_true = _require("y_true", history, kwargs)
         mu     = _require("y_pred_mean", history, kwargs)
         sigma  = _require("y_pred_std", history, kwargs)
@@ -386,7 +386,7 @@ class ScoreDecompositionCheck(AuditCheck):
     ``y_true``, ``y_pred_mean``, ``y_pred_std``
     """
 
-    def __init__(self, n_bins: int = 10, cal_threshold: Optional[float] = None):
+    def __init__(self, n_bins: int = 10, cal_threshold: float | None = None):
         self.n_bins = n_bins
         self.cal_threshold = cal_threshold
 
@@ -398,7 +398,7 @@ class ScoreDecompositionCheck(AuditCheck):
     def category(self) -> AuditCategory:
         return AuditCategory.ALEATORIC_MODEL
 
-    def run(self, history: List[Dict[str, Any]], **kwargs) -> AuditResult:
+    def run(self, history: list[dict[str, Any]], **kwargs) -> AuditResult:
         y_true = _require("y_true", history, kwargs)
         mu = _require("y_pred_mean", history, kwargs)
         sigma = _require("y_pred_std", history, kwargs)

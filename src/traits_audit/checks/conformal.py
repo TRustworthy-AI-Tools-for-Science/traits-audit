@@ -1,7 +1,7 @@
 """Conformal prediction coverage validity check."""
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any
 
 import numpy as np
 from scipy.stats import norm as _norm
@@ -78,7 +78,7 @@ class ConformalCoverageCheck(AuditCheck):
     def category(self) -> AuditCategory:
         return AuditCategory.ALEATORIC_MODEL
 
-    def run(self, history: List[Dict[str, Any]], **kwargs) -> AuditResult:
+    def run(self, history: list[dict[str, Any]], **kwargs) -> AuditResult:
         y_true = _require("y_true", history, kwargs)
         mu     = _require("y_pred_mean", history, kwargs)
         sigma  = _require("y_pred_std", history, kwargs)

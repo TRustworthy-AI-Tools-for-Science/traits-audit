@@ -4,10 +4,10 @@ from .aleatoric_epistemic import (
 )
 from .attribution import StageVarianceAttributionCheck
 from .calibration import (
-    CalibrationErrorCheck,
-    KuleshovCalibrationCheck,
-    ENCECheck,
     CalibrationError1StdCheck,
+    CalibrationErrorCheck,
+    ENCECheck,
+    KuleshovCalibrationCheck,
 )
 from .conformal import ConformalCoverageCheck
 from .coverage import IntervalCoverageCheck, VarianceAlignmentCheck
@@ -31,7 +31,12 @@ from .replication import (
     ReplicationShrinkageExponentCheck,
     SignedBiasCheck,
 )
-from .scoring import CRPSCheck, IntervalScoreCheck, NegativeLogLikelihoodCheck, ScoreDecompositionCheck
+from .scoring import (
+    CRPSCheck,
+    IntervalScoreCheck,
+    NegativeLogLikelihoodCheck,
+    ScoreDecompositionCheck,
+)
 from .tail import TailIndexCheck
 from .uncertainty import (
     MahalanobisOODCheck,

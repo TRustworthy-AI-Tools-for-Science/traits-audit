@@ -7,7 +7,8 @@ it in the analysis pipeline.
 """
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional
+from collections.abc import Callable
+from typing import Any
 
 import numpy as np
 
@@ -51,7 +52,7 @@ class DecisionFlipRateCheck(AuditCheck):
     ``surrogate_fn`` kwarg.
     """
 
-    def __init__(self, n_resamples: int = 200, seed: int = 0, max_flip_rate: Optional[float] = None):
+    def __init__(self, n_resamples: int = 200, seed: int = 0, max_flip_rate: float | None = None):
         self.n_resamples = n_resamples
         self.seed = seed
         self.max_flip_rate = max_flip_rate
@@ -64,8 +65,8 @@ class DecisionFlipRateCheck(AuditCheck):
     def category(self) -> AuditCategory:
         return AuditCategory.LOCUS_IN_CHAIN
 
-    def run(self, history: List[Dict[str, Any]], **kwargs) -> AuditResult:
-        decision_fn: Optional[Callable] = kwargs.get("decision_fn")
+    def run(self, history: list[dict[str, Any]], **kwargs) -> AuditResult:
+        decision_fn: Callable | None = kwargs.get("decision_fn")
         mu = kwargs.get("y_pred_mean")
         if decision_fn is None or mu is None:
             return AuditResult(

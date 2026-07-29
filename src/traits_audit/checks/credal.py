@@ -9,7 +9,7 @@ taxonomy class demands.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import numpy as np
 
@@ -18,7 +18,7 @@ from ..credal import CredalSet
 from .calibration import _require
 
 
-def _build_credal_set(kwargs) -> Optional[CredalSet]:
+def _build_credal_set(kwargs) -> CredalSet | None:
     if kwargs.get("credal_lower") is not None and kwargs.get("credal_upper") is not None:
         return CredalSet(lower=kwargs["credal_lower"], upper=kwargs["credal_upper"])
     if kwargs.get("y_pred_ensemble") is not None:
@@ -74,7 +74,7 @@ class ImprecisionWidthFractionCheck(AuditCheck):
     (``+ y_pred_std_ensemble`` optional).
     """
 
-    def __init__(self, ref_z: float = 1.0, iwf_threshold: Optional[float] = None):
+    def __init__(self, ref_z: float = 1.0, iwf_threshold: float | None = None):
         self.ref_z = ref_z
         self.iwf_threshold = iwf_threshold
 
@@ -86,7 +86,7 @@ class ImprecisionWidthFractionCheck(AuditCheck):
     def category(self) -> AuditCategory:
         return AuditCategory.VARIABILITY_IGNORANCE
 
-    def run(self, history: List[Dict[str, Any]], **kwargs) -> AuditResult:
+    def run(self, history: list[dict[str, Any]], **kwargs) -> AuditResult:
         credal_set = _build_credal_set(kwargs)
         mu = kwargs.get("y_pred_mean")
         sigma = kwargs.get("y_pred_std")
@@ -165,7 +165,7 @@ class EnvelopeViolationRateCheck(AuditCheck):
     def category(self) -> AuditCategory:
         return AuditCategory.VARIABILITY_IGNORANCE
 
-    def run(self, history: List[Dict[str, Any]], **kwargs) -> AuditResult:
+    def run(self, history: list[dict[str, Any]], **kwargs) -> AuditResult:
         y_true = _require("y_true", history, kwargs)
         credal_set = _build_credal_set(kwargs)
 

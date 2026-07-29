@@ -9,7 +9,7 @@ pipeline/report integration.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from ..base import AuditCategory, AuditCheck, AuditResult
 from ..pipeline_attribution import run_stage_variance_attribution
@@ -59,7 +59,7 @@ class StageVarianceAttributionCheck(AuditCheck):
     history) — only the resulting numeric vectors go into ``details``.
     """
 
-    def __init__(self, n_mc: int = 1024, seed: int = 0, max_interaction_gap: Optional[float] = None):
+    def __init__(self, n_mc: int = 1024, seed: int = 0, max_interaction_gap: float | None = None):
         self.n_mc = n_mc
         self.seed = seed
         self.max_interaction_gap = max_interaction_gap
@@ -72,7 +72,7 @@ class StageVarianceAttributionCheck(AuditCheck):
     def category(self) -> AuditCategory:
         return AuditCategory.LOCUS_IN_CHAIN
 
-    def run(self, history: List[Dict[str, Any]], **kwargs) -> AuditResult:
+    def run(self, history: list[dict[str, Any]], **kwargs) -> AuditResult:
         chain_fn = kwargs.get("chain_fn")
         stages = kwargs.get("stages")
 

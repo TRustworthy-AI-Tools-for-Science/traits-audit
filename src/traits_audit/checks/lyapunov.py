@@ -1,13 +1,12 @@
 """Lyapunov stability check and associated computation for surrogate models."""
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import numpy as np
 from scipy.linalg import solve_discrete_lyapunov
 
 from ..base import AuditCategory, AuditCheck, AuditResult
-
 
 # ── Lyapunov computation (numpy/scipy only, no matplotlib) ───────────────────
 
@@ -236,9 +235,9 @@ class LyapunovStabilityCheck(AuditCheck):
         stability_threshold: float = 1.0,
         min_stable_fraction: float = 0.5,
         alpha: float = 0.01,
-        n_pca: Optional[int] = None,
-        window: Optional[int] = None,
-        max_workers: Optional[int] = None,
+        n_pca: int | None = None,
+        window: int | None = None,
+        max_workers: int | None = None,
     ):
         self.stability_threshold = stability_threshold
         self.min_stable_fraction = min_stable_fraction
@@ -352,8 +351,8 @@ class LyapunovStabilityCheck(AuditCheck):
         lm = np.array([store[offset + i] for i in range(m)], dtype=float)
         return lm, info
 
-    def run(self, history: List[Dict[str, Any]], **kwargs) -> AuditResult:
-        info: Dict[str, Any] = {}
+    def run(self, history: list[dict[str, Any]], **kwargs) -> AuditResult:
+        info: dict[str, Any] = {}
         # Route 1: precomputed lambda_max array (honour the window at aggregation)
         if "lambda_max" in kwargs and kwargs["lambda_max"] is not None:
             lm = np.asarray(kwargs["lambda_max"], dtype=float).ravel()
@@ -423,7 +422,7 @@ class LyapunovStabilityCheck(AuditCheck):
         if notes:
             message += "  [" + "; ".join(notes) + "]"
 
-        details: Dict[str, Any] = {
+        details: dict[str, Any] = {
             "lambda_max_mean": float(lm.mean()),
             "lambda_max_max": float(lm.max()),
             "lambda_max_min": float(lm.min()),

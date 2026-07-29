@@ -8,12 +8,12 @@ tests whether more data would actually close a misspecification gap.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import numpy as np
 
 from ..base import AuditCategory, AuditCheck, AuditResult
-from ..refit import refit_sweep_bootstrap, refit_sweep_seed, nested_subset_curve
+from ..refit import nested_subset_curve, refit_sweep_bootstrap, refit_sweep_seed
 
 
 def _mean_pointwise_variance(matrix: np.ndarray) -> float:
@@ -67,7 +67,7 @@ class ProceduralVarianceShareCheck(AuditCheck):
     Route 2: ``fit_fn``, ``X_train``, ``y_train``, ``X_eval``, ``y_pred_ensemble``.
     """
 
-    def __init__(self, k_refits: int = 20, base_seed: int = 0, pvs_tolerance: Optional[float] = None):
+    def __init__(self, k_refits: int = 20, base_seed: int = 0, pvs_tolerance: float | None = None):
         self.k_refits = k_refits
         self.base_seed = base_seed
         self.pvs_tolerance = pvs_tolerance
@@ -80,7 +80,7 @@ class ProceduralVarianceShareCheck(AuditCheck):
     def category(self) -> AuditCategory:
         return AuditCategory.MODEL_PROCEDURAL
 
-    def _get_procedural_matrix(self, kwargs) -> Optional[np.ndarray]:
+    def _get_procedural_matrix(self, kwargs) -> np.ndarray | None:
         if kwargs.get("y_pred_procedural") is not None:
             return np.asarray(kwargs["y_pred_procedural"], dtype=float)
         required = ("fit_fn", "X_train", "y_train", "X_eval")
@@ -91,7 +91,7 @@ class ProceduralVarianceShareCheck(AuditCheck):
             )
         return None
 
-    def run(self, history: List[Dict[str, Any]], **kwargs) -> AuditResult:
+    def run(self, history: list[dict[str, Any]], **kwargs) -> AuditResult:
         ensemble = kwargs.get("y_pred_ensemble")
         procedural = self._get_procedural_matrix(kwargs)
 
@@ -162,7 +162,7 @@ class DataVarianceShareCheck(AuditCheck):
     Route 2: ``fit_fn``, ``X_train``, ``y_train``, ``X_eval``, ``y_pred_ensemble``.
     """
 
-    def __init__(self, k_refits: int = 20, fixed_seed: int = 0, dvs_tolerance: Optional[float] = None):
+    def __init__(self, k_refits: int = 20, fixed_seed: int = 0, dvs_tolerance: float | None = None):
         self.k_refits = k_refits
         self.fixed_seed = fixed_seed
         self.dvs_tolerance = dvs_tolerance
@@ -175,7 +175,7 @@ class DataVarianceShareCheck(AuditCheck):
     def category(self) -> AuditCategory:
         return AuditCategory.MODEL_PROCEDURAL
 
-    def _get_data_matrix(self, kwargs) -> Optional[np.ndarray]:
+    def _get_data_matrix(self, kwargs) -> np.ndarray | None:
         if kwargs.get("y_pred_data") is not None:
             return np.asarray(kwargs["y_pred_data"], dtype=float)
         required = ("fit_fn", "X_train", "y_train", "X_eval")
@@ -186,7 +186,7 @@ class DataVarianceShareCheck(AuditCheck):
             )
         return None
 
-    def run(self, history: List[Dict[str, Any]], **kwargs) -> AuditResult:
+    def run(self, history: list[dict[str, Any]], **kwargs) -> AuditResult:
         ensemble = kwargs.get("y_pred_ensemble")
         data_matrix = self._get_data_matrix(kwargs)
 
@@ -265,7 +265,7 @@ class MisspecificationResidualFloorCheck(AuditCheck):
         subset_fracs=(0.1, 0.2, 0.4, 0.6, 0.8, 1.0),
         reps: int = 3,
         seed: int = 0,
-        mrf_threshold: Optional[float] = None,
+        mrf_threshold: float | None = None,
     ):
         self.subset_fracs = tuple(subset_fracs)
         self.reps = reps
@@ -312,7 +312,7 @@ class MisspecificationResidualFloorCheck(AuditCheck):
         popt, _ = curve_fit(model, Ns, values, p0=p0, bounds=bounds, maxfev=10000)
         return popt  # a, gamma, c
 
-    def run(self, history: List[Dict[str, Any]], **kwargs) -> AuditResult:
+    def run(self, history: list[dict[str, Any]], **kwargs) -> AuditResult:
         Ns, curve, matrix = self._get_curve(kwargs)
         if Ns is None or len(Ns) < 4:
             return AuditResult(

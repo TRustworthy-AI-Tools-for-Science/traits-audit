@@ -8,7 +8,7 @@ each side of that split directly.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any
 
 import numpy as np
 
@@ -73,7 +73,7 @@ class ReducibilityRealisationRatioCheck(AuditCheck):
     def category(self) -> AuditCategory:
         return AuditCategory.EPISTEMIC
 
-    def run(self, history: List[Dict[str, Any]], **kwargs) -> AuditResult:
+    def run(self, history: list[dict[str, Any]], **kwargs) -> AuditResult:
         claimed = _require("claimed_epistemic_variance", history, kwargs)
         before = _require("realized_total_variance_before", history, kwargs)
         after = _require("realized_total_variance_after", history, kwargs)
@@ -158,7 +158,7 @@ class AleatoricFloorConsistencyCheck(AuditCheck):
     def category(self) -> AuditCategory:
         return AuditCategory.ALEATORIC_MODEL
 
-    def run(self, history: List[Dict[str, Any]], **kwargs) -> AuditResult:
+    def run(self, history: list[dict[str, Any]], **kwargs) -> AuditResult:
         groups = build_replicate_groups(history, kwargs)
         groups = [g for g in groups if g.y_pred_std is not None]
         if not groups:

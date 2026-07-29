@@ -6,7 +6,7 @@ via a :class:`traits_audit.provenance.TypeBLedger`, not estimated.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from ..base import AuditCategory, AuditCheck, AuditResult
 from ..provenance import TypeBLedger
@@ -57,7 +57,7 @@ class TypeBMassFractionCheck(AuditCheck):
     non-informative limit).
     """
 
-    def __init__(self, max_tbmf: Optional[float] = None):
+    def __init__(self, max_tbmf: float | None = None):
         self.max_tbmf = max_tbmf
 
     @property
@@ -68,8 +68,8 @@ class TypeBMassFractionCheck(AuditCheck):
     def category(self) -> AuditCategory:
         return AuditCategory.TYPE_A_TYPE_B
 
-    def run(self, history: List[Dict[str, Any]], **kwargs) -> AuditResult:
-        ledger: Optional[TypeBLedger] = kwargs.get("ledger")
+    def run(self, history: list[dict[str, Any]], **kwargs) -> AuditResult:
+        ledger: TypeBLedger | None = kwargs.get("ledger")
         variance_fn = kwargs.get("variance_fn")
 
         if ledger is None or variance_fn is None:

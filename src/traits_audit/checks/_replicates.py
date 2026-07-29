@@ -8,8 +8,8 @@ This module extracts that shape once so the three checks share one contract.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 
@@ -19,8 +19,8 @@ class ReplicateGroup:
     """One nominal input's repeated measurements."""
     key: Any
     y_true: np.ndarray
-    y_pred_mean: Optional[np.ndarray] = None
-    y_pred_std: Optional[np.ndarray] = None
+    y_pred_mean: np.ndarray | None = None
+    y_pred_std: np.ndarray | None = None
 
     @property
     def r(self) -> int:
@@ -28,7 +28,7 @@ class ReplicateGroup:
         return len(self.y_true)
 
 
-def _coerce_group(key: Any, raw: Any) -> Optional[ReplicateGroup]:
+def _coerce_group(key: Any, raw: Any) -> ReplicateGroup | None:
     if isinstance(raw, dict):
         if "y_true" not in raw or raw["y_true"] is None:
             return None
@@ -50,7 +50,7 @@ def _coerce_group(key: Any, raw: Any) -> Optional[ReplicateGroup]:
     return ReplicateGroup(key=key, y_true=y_true, y_pred_mean=y_pred_mean, y_pred_std=y_pred_std)
 
 
-def build_replicate_groups(history: List[Dict[str, Any]], kwargs: dict) -> List[ReplicateGroup]:
+def build_replicate_groups(history: list[dict[str, Any]], kwargs: dict) -> list[ReplicateGroup]:
     """
     Pull repeated-measurement groups from kwargs, falling back to history.
 
@@ -120,10 +120,10 @@ def build_replicate_groups(history: List[Dict[str, Any]], kwargs: dict) -> List[
 def _group_by_id(
     rid: np.ndarray,
     y_true: np.ndarray,
-    y_pred_mean: Optional[np.ndarray],
-    y_pred_std: Optional[np.ndarray],
-) -> List[ReplicateGroup]:
-    groups: List[ReplicateGroup] = []
+    y_pred_mean: np.ndarray | None,
+    y_pred_std: np.ndarray | None,
+) -> list[ReplicateGroup]:
+    groups: list[ReplicateGroup] = []
     for key in np.unique(rid):
         mask = rid == key
         if mask.sum() < 2:

@@ -6,7 +6,7 @@ via ``build_replicate_groups`` (``checks/_replicates.py``) except
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import numpy as np
 
@@ -69,9 +69,9 @@ class SignedBiasCheck(AuditCheck):
 
     def __init__(
         self,
-        threshold: Optional[float] = None,
-        se_multiplier: Optional[float] = None,
-        rel_std_frac: Optional[float] = None,
+        threshold: float | None = None,
+        se_multiplier: float | None = None,
+        rel_std_frac: float | None = None,
     ):
         self.threshold = threshold
         self.se_multiplier = se_multiplier
@@ -85,7 +85,7 @@ class SignedBiasCheck(AuditCheck):
     def category(self) -> AuditCategory:
         return AuditCategory.RANDOM_SYSTEMATIC
 
-    def run(self, history: List[Dict[str, Any]], **kwargs) -> AuditResult:
+    def run(self, history: list[dict[str, Any]], **kwargs) -> AuditResult:
         y_true = _require("y_true", history, kwargs)
         mu = _require("y_pred_mean", history, kwargs)
         if any(v is None for v in (y_true, mu)):
@@ -259,7 +259,7 @@ class ReplicationShrinkageExponentCheck(AuditCheck):
         self,
         r_values=(2, 4, 8, 16),
         n_subsample: int = 50,
-        beta_tolerance: Optional[float] = None,
+        beta_tolerance: float | None = None,
         seed: int = 0,
     ):
         self.r_values = tuple(r_values)
@@ -281,7 +281,7 @@ class ReplicationShrinkageExponentCheck(AuditCheck):
             return g.y_true - g.y_pred_mean
         return g.y_true
 
-    def _window_mean_draws(self, groups, rng: np.random.Generator) -> Dict[int, Dict[Any, np.ndarray]]:
+    def _window_mean_draws(self, groups, rng: np.random.Generator) -> dict[int, dict[Any, np.ndarray]]:
         """Precompute, once, each group's r-window sample means at every r.
 
         For each r and group with >= r replicates, draws ``n_subsample``
@@ -292,9 +292,9 @@ class ReplicationShrinkageExponentCheck(AuditCheck):
         the window-drawing procedure itself, so each group's draws can be
         reused across all bootstrap resamples.
         """
-        out: Dict[int, Dict[Any, np.ndarray]] = {}
+        out: dict[int, dict[Any, np.ndarray]] = {}
         for r in self.r_values:
-            per_group: Dict[Any, np.ndarray] = {}
+            per_group: dict[Any, np.ndarray] = {}
             for g in groups:
                 if g.r < r:
                     continue
@@ -305,7 +305,7 @@ class ReplicationShrinkageExponentCheck(AuditCheck):
             out[r] = per_group
         return out
 
-    def _fit_beta(self, group_keys, draws: Dict[int, Dict[Any, np.ndarray]]):
+    def _fit_beta(self, group_keys, draws: dict[int, dict[Any, np.ndarray]]):
         rs_used, u_obs = [], []
         for r in self.r_values:
             per_group = draws.get(r, {})
@@ -323,7 +323,7 @@ class ReplicationShrinkageExponentCheck(AuditCheck):
         slope, _ = np.polyfit(np.log(rs_used), np.log(u_obs), 1)
         return float(-slope), rs_used, u_obs
 
-    def run(self, history: List[Dict[str, Any]], **kwargs) -> AuditResult:
+    def run(self, history: list[dict[str, Any]], **kwargs) -> AuditResult:
         groups = build_replicate_groups(history, kwargs)
         if not groups:
             return AuditResult(
@@ -427,7 +427,7 @@ class DarkUncertaintyGapCheck(AuditCheck):
     def category(self) -> AuditCategory:
         return AuditCategory.RANDOM_SYSTEMATIC
 
-    def run(self, history: List[Dict[str, Any]], **kwargs) -> AuditResult:
+    def run(self, history: list[dict[str, Any]], **kwargs) -> AuditResult:
         groups = build_replicate_groups(history, kwargs)
         groups = [g for g in groups if g.y_pred_std is not None]
         if not groups:

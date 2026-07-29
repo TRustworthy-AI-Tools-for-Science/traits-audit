@@ -9,7 +9,7 @@ autocorrelation-persistence sides of the same question.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import numpy as np
 
@@ -68,7 +68,7 @@ class EnsembleIndependenceDeficitCheck(AuditCheck):
     def category(self) -> AuditCategory:
         return AuditCategory.ERGODIC_NON_ERGODIC
 
-    def run(self, history: List[Dict[str, Any]], **kwargs) -> AuditResult:
+    def run(self, history: list[dict[str, Any]], **kwargs) -> AuditResult:
         y_true = _require("y_true", history, kwargs)
         ensemble = kwargs.get("y_pred_ensemble")
 
@@ -154,7 +154,7 @@ class DMDcSpectralRadiusCheck(AuditCheck):
     def category(self) -> AuditCategory:
         return AuditCategory.ERGODIC_NON_ERGODIC
 
-    def run(self, history: List[Dict[str, Any]], **kwargs) -> AuditResult:
+    def run(self, history: list[dict[str, Any]], **kwargs) -> AuditResult:
         rho_A = kwargs.get("rho_A")
         if rho_A is None:
             return AuditResult(
@@ -214,7 +214,7 @@ class ResidualPersistenceHalfLifeCheck(AuditCheck):
 
     def __init__(
         self,
-        max_lag: Optional[int] = None,
+        max_lag: int | None = None,
         block_len: int = 8,
         n_boot: int = 200,
         seed: int = 42,
@@ -273,7 +273,7 @@ class ResidualPersistenceHalfLifeCheck(AuditCheck):
         frac = (a_hi - threshold) / (a_hi - a_lo)
         return float(k) + frac  # lag k-1 is index k-1 -> "lag k" in 1-indexed terms
 
-    def run(self, history: List[Dict[str, Any]], **kwargs) -> AuditResult:
+    def run(self, history: list[dict[str, Any]], **kwargs) -> AuditResult:
         series = kwargs.get("residuals_at_fixed_x")
         if series is None:
             vals = [h["residuals_at_fixed_x"] for h in history if "residuals_at_fixed_x" in h]
