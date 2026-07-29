@@ -1,6 +1,6 @@
 import numpy as np
 
-from traits_audit.checks._replicates import ReplicateGroup, build_replicate_groups
+from traits_audit.checks._replicates import build_replicate_groups
 
 
 def test_build_from_replicate_groups_dict_of_arrays():

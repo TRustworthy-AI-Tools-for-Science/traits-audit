@@ -2,9 +2,9 @@ import numpy as np
 import pytest
 
 from traits_audit.checks.procedural import (
-    ProceduralVarianceShareCheck,
     DataVarianceShareCheck,
     MisspecificationResidualFloorCheck,
+    ProceduralVarianceShareCheck,
 )
 
 

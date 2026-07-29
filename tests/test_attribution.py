@@ -1,8 +1,11 @@
 import numpy as np
 import pytest
 
-from traits_audit.pipeline_attribution import StageUncertainty, run_stage_variance_attribution
 from traits_audit.checks.attribution import StageVarianceAttributionCheck
+from traits_audit.pipeline_attribution import (
+    StageUncertainty,
+    run_stage_variance_attribution,
+)
 
 
 def _uniform01(rng):

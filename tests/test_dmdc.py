@@ -22,7 +22,6 @@ from traits_audit.dmdc import (
     windowed_rho,
 )
 
-
 # ── Synthetic trajectory builders ────────────────────────────────────────────
 
 def _simulate(A, B, n_steps=60, n_action=2, seed=0):
@@ -97,7 +96,7 @@ class TestFitDmdc:
     def test_rank_clipped_to_t_fit(self, stable_traj):
         _, _, states, actions = stable_traj
         # Ask for a rank far larger than n or T-1; should clip without error.
-        A_r, B_r, U_r = fit_dmdc(states[:4], actions[:4], n_components=50)
+        A_r, _B_r, _U_r = fit_dmdc(states[:4], actions[:4], n_components=50)
         assert A_r.shape[0] <= 3  # min(n=2, T_fit=3)
 
     def test_unstable_system_has_eigenvalue_above_one(self, unstable_traj):
@@ -116,8 +115,8 @@ class TestFitDmdcPairs:
         # isolates the core SVD/lstsq equivalence the two entry points share.
         _, _, states, actions = stable_traj
         T = len(states) - 1
-        A_r1, B_r1, U_r1 = fit_dmdc(states, actions, n_components=2, detrend=False)
-        A_r2, B_r2, U_r2 = fit_dmdc_pairs(states[:T], states[1:T + 1], actions[:T],
+        A_r1, _B_r1, U_r1 = fit_dmdc(states, actions, n_components=2, detrend=False)
+        A_r2, _B_r2, U_r2 = fit_dmdc_pairs(states[:T], states[1:T + 1], actions[:T],
                                            n_components=2, detrend=False)
         # Subspaces may differ in sign but A_full should match closely.
         A_full1 = U_r1 @ A_r1 @ U_r1.T
@@ -326,6 +325,7 @@ class TestComputeGramians:
         # ρ(A_r) > 1 → would normally trigger LinAlgWarning from scipy.
         # The stabilisation rescale must suppress it entirely.
         import warnings
+
         from scipy.linalg import LinAlgWarning
         A_r = np.array([[1.5, 0.2], [-0.2, 1.3]])   # spectral radius > 1
         B_r = np.ones((2, 1))

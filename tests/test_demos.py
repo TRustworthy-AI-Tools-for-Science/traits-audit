@@ -133,9 +133,9 @@ def test_camd_demo_smoke(tmp_path, monkeypatch, mlflow_stub):
 # ── ta-sdl-demo (self-driving lab) ────────────────────────────────────────────
 
 def test_sdl_demo_smoke(tmp_path, monkeypatch, mlflow_stub):
-    from traits_audit._sdl_demo import _ensure_self_driving_lab_demo_importable
+    from traits_audit._sdl_demo import _ensure_sdl_importable
     try:
-        _ensure_self_driving_lab_demo_importable()
+        _ensure_sdl_importable()
     except ImportError:
         pass  # let importorskip below report the real skip reason, if any
     pytest.importorskip("self_driving_lab_demo", exc_type=(ModuleNotFoundError, ImportError))

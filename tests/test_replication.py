@@ -2,11 +2,10 @@ import numpy as np
 import pytest
 
 from traits_audit.checks.replication import (
-    SignedBiasCheck,
-    ReplicationShrinkageExponentCheck,
     DarkUncertaintyGapCheck,
+    ReplicationShrinkageExponentCheck,
+    SignedBiasCheck,
 )
-
 
 # ── SignedBiasCheck ──────────────────────────────────────────────────────────
 
@@ -39,6 +38,78 @@ def test_signed_bias_skips_when_no_data():
     result = SignedBiasCheck().run([])
     assert result.passed
     assert "Skipped" in result.message
+
+
+def test_signed_bias_se_multiplier_passes_within_noise():
+    # Small, genuinely zero-mean offset relative to a large SE at n=10 ->
+    # well within a 2xSE band.
+    rng = np.random.default_rng(1)
+    y_true = rng.standard_normal(10) * 5.0
+    mu = y_true + rng.standard_normal(10) * 5.0  # noisy, unbiased residual
+    result = SignedBiasCheck(se_multiplier=2.0).run([], y_true=y_true, y_pred_mean=mu)
+    assert result.threshold == pytest.approx(2.0 * result.details["bias_std_error"])
+    assert result.passed == (abs(result.value) <= result.threshold)
+
+
+def test_signed_bias_se_multiplier_fails_for_large_persistent_offset():
+    rng = np.random.default_rng(0)
+    y_true = rng.standard_normal(300)
+    mu = y_true + 0.5  # constant offset, tiny SE at n=300 -> easily distinguishable from 0
+    result = SignedBiasCheck(se_multiplier=2.0).run([], y_true=y_true, y_pred_mean=mu)
+    assert not result.passed
+    assert result.threshold == pytest.approx(2.0 * result.details["bias_std_error"])
+    assert result.threshold < 0.5
+
+
+def test_signed_bias_se_multiplier_skipped_for_single_point():
+    result = SignedBiasCheck(se_multiplier=2.0).run(
+        [], y_true=np.array([1.0]), y_pred_mean=np.array([1.5])
+    )
+    assert result.passed
+    assert "Skipped" in result.message
+
+
+def test_signed_bias_rel_std_frac_passes_within_fraction_of_sigma():
+    y_true = np.zeros(50)
+    mu = np.full(50, 0.05)  # bias = 0.05
+    sigma = np.full(50, 1.0)  # mean(y_pred_std) = 1.0
+    result = SignedBiasCheck(rel_std_frac=0.1).run(
+        [], y_true=y_true, y_pred_mean=mu, y_pred_std=sigma
+    )
+    assert result.threshold == pytest.approx(0.1)
+    assert result.passed
+
+
+def test_signed_bias_rel_std_frac_fails_outside_fraction_of_sigma():
+    y_true = np.zeros(50)
+    mu = np.full(50, 0.5)  # bias = 0.5
+    sigma = np.full(50, 1.0)
+    result = SignedBiasCheck(rel_std_frac=0.1).run(
+        [], y_true=y_true, y_pred_mean=mu, y_pred_std=sigma
+    )
+    assert result.threshold == pytest.approx(0.1)
+    assert not result.passed
+
+
+def test_signed_bias_rel_std_frac_skipped_without_y_pred_std():
+    result = SignedBiasCheck(rel_std_frac=0.1).run(
+        [], y_true=np.zeros(10), y_pred_mean=np.full(10, 0.05)
+    )
+    assert result.passed
+    assert "Skipped" in result.message
+
+
+def test_signed_bias_absolute_threshold_takes_priority():
+    # threshold set alongside se_multiplier/rel_std_frac -> absolute wins.
+    y_true = np.zeros(50)
+    mu = np.full(50, 0.5)
+    sigma = np.full(50, 1.0)
+    result = SignedBiasCheck(threshold=1.0, se_multiplier=2.0, rel_std_frac=0.1).run(
+        [], y_true=y_true, y_pred_mean=mu, y_pred_std=sigma
+    )
+    assert result.threshold == pytest.approx(1.0)
+    assert result.details["threshold_kind"] == "absolute"
+    assert result.passed
 
 
 # ── ReplicationShrinkageExponentCheck ───────────────────────────────────────

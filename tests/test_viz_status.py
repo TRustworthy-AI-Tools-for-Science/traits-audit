@@ -10,14 +10,14 @@ passing" green as an evaluated, healthy result.
 import numpy as np
 import pytest
 
-from traits_audit.base import AuditCategory, AuditResult
-from traits_audit._viz import _result_status, _fig_check_grid, _CHECK_ABBREV
-from traits_audit.checks import __all__ as ALL_CHECK_NAMES
 import traits_audit.checks as checks_module
+from traits_audit._viz import _CHECK_ABBREV, _fig_check_grid, _result_status
+from traits_audit.base import AuditCategory, AuditResult
+from traits_audit.checks import __all__ as ALL_CHECK_NAMES
 
 
 def _result(**kwargs):
-    defaults = dict(name="X", passed=True, category=AuditCategory.UNKNOWN)
+    defaults = {"name": "X", "passed": True, "category": AuditCategory.UNKNOWN}
     defaults.update(kwargs)
     return AuditResult(**defaults)
 
@@ -26,13 +26,13 @@ def _result(**kwargs):
 
 def test_report_only_when_threshold_is_none():
     r = _result(value=13.47, threshold=None, passed=True)
-    intensity, status = _result_status(r)
+    _intensity, status = _result_status(r)
     assert status == "report_only"
 
 
 def test_skipped_when_message_starts_with_skipped():
     r = _result(value=None, threshold=None, passed=True, message="Skipped — no data.")
-    intensity, status = _result_status(r)
+    _intensity, status = _result_status(r)
     assert status == "skipped"
 
 

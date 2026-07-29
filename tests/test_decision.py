@@ -1,5 +1,4 @@
 import numpy as np
-import pytest
 
 from traits_audit.checks.decision import DecisionFlipRateCheck
 

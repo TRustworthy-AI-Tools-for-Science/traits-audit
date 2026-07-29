@@ -6,7 +6,6 @@ the paper's headline mechanism statistic — not ``rho_A_joint``) and the
 ``rho_A_joint`` bootstrap.
 """
 import numpy as np
-import pytest
 
 from traits_audit.trajectory import TrajectoryRecord, analyze_trajectory
 

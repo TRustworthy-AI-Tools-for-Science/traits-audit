@@ -1,8 +1,9 @@
 import numpy as np
-import pytest
 
-from traits_audit.checks.credal import ImprecisionWidthFractionCheck, EnvelopeViolationRateCheck
-
+from traits_audit.checks.credal import (
+    EnvelopeViolationRateCheck,
+    ImprecisionWidthFractionCheck,
+)
 
 # ── ImprecisionWidthFractionCheck ───────────────────────────────────────────
 

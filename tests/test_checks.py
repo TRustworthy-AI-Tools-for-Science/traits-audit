@@ -14,18 +14,17 @@ from traits_audit.checks import (
     CalibrationErrorCheck,
     ConformalCoverageCheck,
     CRPSCheck,
-    NegativeLogLikelihoodCheck,
-    PITUniformityCheck,
-    IntervalScoreCheck,
     IntervalCoverageCheck,
+    IntervalScoreCheck,
     LyapunovStabilityCheck,
     MahalanobisOODCheck,
-    VarianceAlignmentCheck,
-    UncertaintyEvolutionCheck,
+    NegativeLogLikelihoodCheck,
+    PITUniformityCheck,
     UncertaintyAnomalyCheck,
+    UncertaintyEvolutionCheck,
+    VarianceAlignmentCheck,
     VarianceErrorCorrelationCheck,
 )
-
 
 # ── shared data builders ─────────────────────────────────────────────────────
 
@@ -35,7 +34,7 @@ def _calibrated(n=400, seed=0):
     mu = rng.standard_normal(n)
     sigma = np.abs(rng.standard_normal(n)) + 0.5
     y_true = mu + sigma * rng.standard_normal(n)
-    return dict(y_true=y_true, y_pred_mean=mu, y_pred_std=sigma)
+    return {"y_true": y_true, "y_pred_mean": mu, "y_pred_std": sigma}
 
 
 def _overconfident(n=400, seed=0):
@@ -44,7 +43,7 @@ def _overconfident(n=400, seed=0):
     mu = rng.standard_normal(n)
     sigma = np.ones(n) * 0.01
     y_true = mu + rng.standard_normal(n)
-    return dict(y_true=y_true, y_pred_mean=mu, y_pred_std=sigma)
+    return {"y_true": y_true, "y_pred_mean": mu, "y_pred_std": sigma}
 
 
 # ── CalibrationErrorCheck ────────────────────────────────────────────────────
@@ -548,9 +547,9 @@ def test_lyapunov_batched_jacobian_matches_scalar_nested_computation():
     # batched call instead of 4n^2 scalar ones) -- this is the numerical
     # contract the whole batching optimization depends on.
     from traits_audit.checks.lyapunov import (
-        _numerical_jacobian,
         _numerical_jacobian_batched,
-        _gd_predictor,
+        make_gd_predictor,
+        numerical_jacobian,
     )
 
     rng = np.random.default_rng(7)
@@ -564,8 +563,8 @@ def test_lyapunov_batched_jacobian_matches_scalar_nested_computation():
     def f_batched(X):
         return np.sum(X**3, axis=1) + 2.0 * X[:, 0] * X[:, -1]
 
-    predictor = _gd_predictor(f_scalar, alpha=0.02)
-    J_seq = _numerical_jacobian(predictor, state)
+    predictor = make_gd_predictor(f_scalar, alpha=0.02)
+    J_seq = numerical_jacobian(predictor, state)
     J_batched = _numerical_jacobian_batched(f_batched, state, alpha=0.02)
 
     np.testing.assert_allclose(J_seq, J_batched, rtol=1e-10, atol=1e-12)
@@ -605,7 +604,7 @@ def test_lyapunov_surrogate_fn_batched_with_pca_matches_scalar_path():
 
     check = LyapunovStabilityCheck(alpha=0.01, n_pca=2)
     lm_scalar, info_scalar = check._compute_lambda_max(f_scalar, op_states)
-    lm_batched, info_batched = check._compute_lambda_max(
+    lm_batched, _info_batched = check._compute_lambda_max(
         f_scalar, op_states, surrogate_fn_batched=f_batched
     )
 

@@ -1,5 +1,4 @@
 import numpy as np
-import pytest
 
 from traits_audit.checks.scoring import ScoreDecompositionCheck
 
@@ -9,7 +8,7 @@ def _calibrated(n=600, seed=0):
     mu = rng.standard_normal(n)
     sigma = np.abs(rng.standard_normal(n)) + 0.5
     y_true = mu + sigma * rng.standard_normal(n)
-    return dict(y_true=y_true, y_pred_mean=mu, y_pred_std=sigma)
+    return {"y_true": y_true, "y_pred_mean": mu, "y_pred_std": sigma}
 
 
 def _overconfident(n=600, seed=0):
@@ -17,7 +16,7 @@ def _overconfident(n=600, seed=0):
     mu = rng.standard_normal(n)
     sigma = np.ones(n) * 0.01
     y_true = mu + rng.standard_normal(n)
-    return dict(y_true=y_true, y_pred_mean=mu, y_pred_std=sigma)
+    return {"y_true": y_true, "y_pred_mean": mu, "y_pred_std": sigma}
 
 
 def test_calibrated_data_small_cal_and_identity_holds():

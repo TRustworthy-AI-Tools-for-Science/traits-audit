@@ -1,5 +1,5 @@
 import json
-import pytest
+
 from traits_audit.base import AuditCategory, AuditCheck, AuditResult
 from traits_audit.pipeline import AuditPipeline
 

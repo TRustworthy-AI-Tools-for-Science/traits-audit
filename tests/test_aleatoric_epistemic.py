@@ -2,10 +2,9 @@ import numpy as np
 import pytest
 
 from traits_audit.checks.aleatoric_epistemic import (
-    ReducibilityRealisationRatioCheck,
     AleatoricFloorConsistencyCheck,
+    ReducibilityRealisationRatioCheck,
 )
-
 
 # ── ReducibilityRealisationRatioCheck ───────────────────────────────────────
 

@@ -1,12 +1,10 @@
 import numpy as np
-import pytest
 
 from traits_audit.checks.ergodic import (
-    EnsembleIndependenceDeficitCheck,
     DMDcSpectralRadiusCheck,
+    EnsembleIndependenceDeficitCheck,
     ResidualPersistenceHalfLifeCheck,
 )
-
 
 # ── EnsembleIndependenceDeficitCheck ────────────────────────────────────────
 
