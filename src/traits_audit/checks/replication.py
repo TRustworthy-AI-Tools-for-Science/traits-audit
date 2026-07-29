@@ -24,11 +24,37 @@ class SignedBiasCheck(AuditCheck):
     classify a persistent non-zero value here as systematic (Class 1,
     Colclough 1987) rather than random.
 
+    Bias is in the same units as the target, so a single hardcoded
+    absolute threshold cannot generalize across datasets. Three ways to
+    judge it are supported; when more than one is configured, the first
+    that applies wins, in this order:
+
+    1. ``threshold`` — an absolute cutoff you supply yourself, in y's units.
+    2. ``se_multiplier`` — a statistical, scale-free cutoff:
+       ``passed = abs(bias) <= se_multiplier * bias_std_error``. Comparing
+       the bias to its own standard error asks whether it is
+       distinguishable from zero at all, adapting automatically to sample
+       size and noise level. ``se_multiplier=2`` is roughly a 95 % band.
+    3. ``rel_std_frac`` — a domain-relative cutoff:
+       ``passed = abs(bias) <= rel_std_frac * mean(y_pred_std)``, expressed
+       as a fraction of the model's own typical predictive spread rather
+       than an absolute number. Needs ``y_pred_std``.
+
+    If none of the three is set (the default), this reports for
+    monitoring only, like ``CRPSCheck``.
+
     Parameters
     ----------
     threshold : float or None
-        Maximum acceptable ``abs(bias)``. ``None`` (default) disables
-        pass/fail — reports for monitoring, like ``CRPSCheck``.
+        Absolute ``abs(bias)`` cutoff, in y's units. Takes priority over
+        the other two if set.
+    se_multiplier : float or None
+        ``abs(bias) <= se_multiplier * bias_std_error``. Used when
+        ``threshold`` is ``None``.
+    rel_std_frac : float or None
+        ``abs(bias) <= rel_std_frac * mean(y_pred_std)``. Used when both
+        ``threshold`` and ``se_multiplier`` are ``None``. Requires
+        ``y_pred_std``.
 
     References
     ----------
@@ -37,11 +63,19 @@ class SignedBiasCheck(AuditCheck):
 
     Required data (kwargs or history keys)
     ----------------------------------------
-    ``y_true``, ``y_pred_mean``
+    ``y_true``, ``y_pred_mean``; ``y_pred_std`` additionally required when
+    ``rel_std_frac`` is the active mode.
     """
 
-    def __init__(self, threshold: Optional[float] = None):
+    def __init__(
+        self,
+        threshold: Optional[float] = None,
+        se_multiplier: Optional[float] = None,
+        rel_std_frac: Optional[float] = None,
+    ):
         self.threshold = threshold
+        self.se_multiplier = se_multiplier
+        self.rel_std_frac = rel_std_frac
 
     @property
     def name(self) -> str:
@@ -65,15 +99,45 @@ class SignedBiasCheck(AuditCheck):
         bias = float(np.mean(residual))
         bias_se = float(np.std(residual, ddof=1) / np.sqrt(n)) if n > 1 else float("nan")
 
-        passed = True if self.threshold is None else abs(bias) <= self.threshold
+        effective_threshold = self.threshold
+        threshold_kind = "absolute" if effective_threshold is not None else None
+
+        if effective_threshold is None and self.se_multiplier is not None:
+            if not np.isfinite(bias_se):
+                return AuditResult(
+                    name=self.name, passed=True, category=self.category,
+                    message="Skipped — need n >= 2 to compute bias_std_error for se_multiplier.",
+                )
+            effective_threshold = self.se_multiplier * bias_se
+            threshold_kind = f"{self.se_multiplier:g}x SE"
+
+        elif effective_threshold is None and self.rel_std_frac is not None:
+            sigma = _require("y_pred_std", history, kwargs)
+            if sigma is None:
+                return AuditResult(
+                    name=self.name, passed=True, category=self.category,
+                    message="Skipped — y_pred_std not available for rel_std_frac.",
+                )
+            effective_threshold = self.rel_std_frac * float(np.mean(sigma))
+            threshold_kind = f"{self.rel_std_frac:g}x mean(y_pred_std)"
+
+        passed = True if effective_threshold is None else abs(bias) <= effective_threshold
+        message = f"Signed mean residual = {bias:.4f} (SE={bias_se:.4f}, n={n})"
+        if effective_threshold is not None:
+            message += f"  [threshold: {threshold_kind} = {effective_threshold:.4f}]"
+
         return AuditResult(
             name=self.name,
             passed=passed,
             category=self.category,
             value=bias,
-            threshold=self.threshold,
-            message=f"Signed mean residual = {bias:.4f} (SE={bias_se:.4f}, n={n})",
-            details={"n_samples": n, "bias_std_error": bias_se},
+            threshold=effective_threshold,
+            message=message,
+            details={
+                "n_samples": n,
+                "bias_std_error": bias_se,
+                "threshold_kind": threshold_kind,
+            },
         )
 
 
