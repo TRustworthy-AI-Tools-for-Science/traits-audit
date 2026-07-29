@@ -41,11 +41,25 @@ This is useful for long-running loops where early anomaly detection matters.
 """
 from __future__ import annotations
 
+import json as _json
+from pathlib import Path
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .pipeline import AuditPipeline
     from .base import AuditReport
+
+
+def _json_default(obj: Any) -> Any:
+    """JSON encoder for numpy scalars and arrays."""
+    import numpy as np
+    if isinstance(obj, np.integer):
+        return int(obj)
+    if isinstance(obj, np.floating):
+        return float(obj)
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    return str(obj)
 
 
 class AuditHook:
@@ -196,6 +210,31 @@ class AuditHook:
                 import numpy as np
                 return np.asarray(step["uncertainty_vector"])
         return None
+
+    def save_history(self, path: "str | Path") -> Path:
+        """Serialize the per-step history to a JSON file.
+
+        Each entry is a dict ``{"_step": int, ...on_step_kwargs}``.  The file
+        can be reloaded later to regenerate figures without re-running the
+        experiment::
+
+            import json
+            history = json.load(open("_results/history.json"))
+
+        Parameters
+        ----------
+        path : str or Path
+            Destination file.  Parent directories are created if needed.
+
+        Returns
+        -------
+        Path
+            The path that was written.
+        """
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(_json.dumps(self._history, default=_json_default, indent=2))
+        return path
 
     def reset(self) -> None:
         """Clear accumulated history and reports (reuse the hook for a new run)."""
