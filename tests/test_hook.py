@@ -68,7 +68,7 @@ def test_on_end_returns_report():
 
 def test_report_property_raises_before_on_end():
     with pytest.raises(RuntimeError, match="on_end"):
-        _make_hook().report
+        _make_hook().report  # noqa: B018
 
 
 def test_on_end_kwargs_forwarded_to_checks():

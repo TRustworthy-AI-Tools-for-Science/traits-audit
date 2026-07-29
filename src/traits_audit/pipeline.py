@@ -101,7 +101,7 @@ class AuditPipeline:
         path = Path(path)
         data = report.to_dict()
         if merge and path.exists():
-            existing = json.loads(path.read_text())
+            existing = json.loads(path.read_text(encoding="utf-8"))
             # Replace by check name so repeated saves don't accumulate duplicates.
             existing_by_name = {r["name"]: r for r in existing.get("results", [])}
             for r in data["results"]:
@@ -114,4 +114,4 @@ class AuditPipeline:
             existing["passed"] = existing["n_failed"] == 0
             data = existing
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data, indent=2))
+        path.write_text(json.dumps(data, indent=2), encoding="utf-8")

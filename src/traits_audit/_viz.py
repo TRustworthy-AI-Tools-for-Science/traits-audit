@@ -120,21 +120,21 @@ def plot_poles(
     )
 
     if purely_real:
-        re = eigs.real
-        stable   = np.abs(re) < 1.0
+        re_vals = eigs.real
+        stable   = np.abs(re_vals) < 1.0
         unstable = ~stable
 
         fig, ax = plt.subplots(figsize=(3.5, 3.5))
-        rng_spread = float(np.abs(re).max()) * 1.15
+        rng_spread = float(np.abs(re_vals).max()) * 1.15
         lim = max(1.3, rng_spread)
-        jitter = np.random.default_rng(0).uniform(-0.08, 0.08, size=len(re))
+        jitter = np.random.default_rng(0).uniform(-0.08, 0.08, size=len(re_vals))
 
         if stable.any():
-            ax.scatter(re[stable], jitter[stable],
+            ax.scatter(re_vals[stable], jitter[stable],
                        c="C0", s=22, alpha=0.7, linewidths=0,
                        label=f"Stable |λ|<1  ({stable.sum()})")
         if unstable.any():
-            ax.scatter(re[unstable], jitter[unstable],
+            ax.scatter(re_vals[unstable], jitter[unstable],
                        c="C3", s=22, alpha=0.8, linewidths=0,
                        label=f"Unstable |λ|≥1  ({unstable.sum()})")
 
@@ -143,11 +143,11 @@ def plot_poles(
                    label="Stability boundary (±1)")
         ax.axhline(0.0,  color="k", lw=0.4, alpha=0.25)
 
-        out_view = int((np.abs(re) > lim).sum())
+        out_view = int((np.abs(re_vals) > lim).sum())
         if out_view:
             ax.text(0.97, 0.05,
                     f"{out_view} pole(s) outside view  "
-                    f"[{re.min():.2f}, {re.max():.2f}]",
+                    f"[{re_vals.min():.2f}, {re_vals.max():.2f}]",
                     transform=ax.transAxes, ha="right", va="bottom",
                     fontsize=7, color="C3")
 
@@ -721,8 +721,7 @@ def plot_convergence(
     ax.set_ylabel(y_label)
     ax.grid(False)
     fig.tight_layout()
-    ax.legend(frameon=False, fontsize=7,
-              bbox_to_anchor=(0.5, 1.02), loc="lower center", ncol=1)
+    ax.legend()
     _save(fig, out_dir, fig_title)
 
 
@@ -764,7 +763,7 @@ def _result_status(result: Any) -> tuple[float, str]:
 
     name = result.name
     details = result.details or {}
-    if name == "CalibrationError" or name == "UncertaintyAnomalies":
+    if name in ("CalibrationError", "UncertaintyAnomalies"):
         # Lower is better; PASS if v ≤ t
         signed = (t - v) / max(abs(t), 1e-6)
     elif name == "UncertaintyEvolution":
@@ -1707,7 +1706,7 @@ def plot_exploration_campaign(
                         facecolors="#2c3e8c", edgecolors="white", linewidths=0.6,
                         zorder=3, label="Seed")
 
-        if len(xs_q):
+        if xs_q:
             sc = ax1.scatter(xs_q, ys_q, c=step_q, cmap="plasma", norm=step_norm,
                              s=20, marker="o", edgecolors="k", linewidths=0.3,
                              alpha=0.85, zorder=4, label="Queried")
@@ -1939,7 +1938,7 @@ def run_lyapunov_analysis(
     plot_stability_vs_uncertainty(lambda_max_arr, gp_std_arr, model_label, out_dir)
 
     csv_path = out_dir / "lyapunov_stability.csv"
-    with open(csv_path, "w", newline="") as fh:
+    with open(csv_path, "w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
         writer.writeheader()
         writer.writerows(rows)
@@ -2062,7 +2061,7 @@ def run_dmdc_lyapunov_analysis(
         for i in range(T)
     ]
     csv_path = out_dir / "lyapunov_stability.csv"
-    with open(csv_path, "w", newline="") as fh:
+    with open(csv_path, "w", newline="", encoding="utf-8") as fh:
         writer = _csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
         writer.writeheader()
         writer.writerows(rows)

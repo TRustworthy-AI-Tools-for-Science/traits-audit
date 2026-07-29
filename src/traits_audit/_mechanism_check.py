@@ -13,7 +13,7 @@ flagged rather than silently trusted.
 """
 from __future__ import annotations
 
-from typing import Sequence
+from collections.abc import Sequence
 
 import numpy as np
 

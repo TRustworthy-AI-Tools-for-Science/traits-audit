@@ -233,7 +233,7 @@ class AuditHook:
         """
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(_json.dumps(self._history, default=_json_default, indent=2))
+        path.write_text(_json.dumps(self._history, default=_json_default, indent=2), encoding="utf-8")
         return path
 
     def reset(self) -> None:

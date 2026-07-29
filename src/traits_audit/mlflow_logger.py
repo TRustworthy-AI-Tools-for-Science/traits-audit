@@ -247,7 +247,7 @@ class MLflowLogger:
         basename = os.path.basename(artifact_file)
         with tempfile.TemporaryDirectory() as tmp:
             local_path = os.path.join(tmp, basename)
-            with open(local_path, "w") as f:
+            with open(local_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
             mlflow.MlflowClient().log_artifact(
                 self._run_id(),

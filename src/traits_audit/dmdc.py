@@ -89,7 +89,7 @@ def _detrend_trajectory(states: np.ndarray, regimes: np.ndarray | None = None) -
         regimes = np.asarray(regimes, dtype=np.float64)
     detrender = RegimeDetrender()
     out = np.empty_like(states)
-    for i in range(len(states)):
+    for i, _ in enumerate(states):
         out[i] = detrender.update(states[i], regimes[i]).detrended
     return out
 
