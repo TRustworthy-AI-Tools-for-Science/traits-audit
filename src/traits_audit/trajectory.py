@@ -10,7 +10,7 @@ at the end; :func:`analyze_trajectory` then produces the three-fit DMDc
 decomposition (state-only, uncertainty-only, joint), the spectral radii, the
 controllability Gramian, and block-bootstrap confidence intervals.
 
-Design decisions (see paper1_NMI_metric_outline.md §2, §3):
+Design decisions (see paper1_outline.md §2, §3):
   * The **action** is the protocol / query point the policy chose at each step.
     It must be the real action, never a placeholder — otherwise ``B`` is
     unidentified and the controllability Gramian is meaningless. The camd demo
@@ -181,6 +181,9 @@ class TrajectoryDMDcResult:
     rho_joint_ci: tuple[float, float] | None = None
     warmup_excluded: int = 0
     scalar_uncertainty_warning: bool = False
+    cond_Wc_ci: tuple[float, float] | None = None
+    min_length_ok: bool = True
+    Wc_eigenvectors: np.ndarray | None = None
 
 
 def _rho(A: np.ndarray) -> float:
@@ -203,7 +206,28 @@ def analyze_trajectory(
     Fits ``A_state`` (state subvector — sanity check, should be policy-invariant),
     ``A_unc`` (uncertainty subvector — the policy-discriminating signal), and the
     joint ``A`` (primary metric). Computes the controllability Gramian and, if
-    requested, a block-bootstrap CI on the joint spectral radius.
+    requested, block-bootstrap CIs on both the joint spectral radius and the
+    Gramian eigenvalue ratio ``cond_Wc`` (the latter on a log scale, then
+    exponentiated back — ``cond_Wc`` is the actual headline mechanism statistic,
+    not ``rho_A_joint``, and can span many orders of magnitude).
+
+    Also flags whether the fitted trajectory meets the ``T >= 4d+1``
+    estimability boundary (``d`` = augmented-state dimension, ``T`` = number of
+    fitted transitions) via ``min_length_ok`` — a short trajectory still
+    produces a result, but callers should not trust an under-powered ratio
+    without checking this flag.
+
+    ``Wc_eigenvectors`` (shape ``(n_state + n_unc, r)``) are the Gramian's
+    eigenvectors, projected back from the reduced DMDc basis to the original
+    augmented-state coordinates via ``U_joint`` (same projection
+    :func:`modal_decomposition` uses for ``A_r``'s eigenvectors), sorted by
+    descending eigenvalue to match ``Wc_singular_values``. This is what lets a
+    caller check which *original* state/uncertainty component the
+    least-controllable direction (last column) aligns with — the mechanism's
+    secondary, non-discriminating alignment statistic (the eigenvalue ratio
+    ``cond_Wc`` is the headline one; alignment saturates near 1 whether or not
+    a genuine reducible/irreducible split exists, see
+    ``paper1_logical_pitfalls.md`` Category 1).
     """
     if rec.states is None:
         rec.finalize()
@@ -226,18 +250,28 @@ def analyze_trajectory(
     A_joint, B_joint, U_joint = _dmdc.fit_dmdc(aug, actions, n_components=n_components)
     Wc = _dmdc.compute_gramians(A_joint, B_joint)
     Wc_c = Wc[0] if isinstance(Wc, tuple) else Wc      # compute_gramians may return (Wc, Wo)
-    sv = np.linalg.svd(Wc_c, compute_uv=False)
+    # Wc_c is symmetric PSD, so its SVD's left singular vectors are its
+    # eigenvectors and the singular values its eigenvalues (both descending).
+    U_wc, sv, _ = np.linalg.svd(Wc_c)
     tr_Wc = float(np.trace(Wc_c))
     cond_Wc = float(sv[0] / sv[-1]) if sv[-1] > 0 else float("inf")
+    Wc_eigvectors_orig = (U_joint @ U_wc).real   # (n_state+n_unc, r)
 
     # State-only and uncertainty-only fits
     A_state, _, _ = _dmdc.fit_dmdc(states, actions, n_components=n_components)
     A_unc, _, _ = _dmdc.fit_dmdc(unc, actions, n_components=min(n_components, unc_dim))
 
-    # Block-bootstrap CI on joint rho
+    # Block-bootstrap CIs on joint rho and on the Gramian eigenvalue ratio
     rho_ci = None
+    cond_wc_ci = None
     if block_bootstrap:
-        rho_ci = _block_bootstrap_rho(aug, actions, n_components, n_boot, block_len, seed)
+        rho_ci, cond_wc_ci = _block_bootstrap_stats(
+            aug, actions, n_components, n_boot, block_len, seed
+        )
+
+    d = aug.shape[1]
+    T_fit = len(aug) - 1
+    min_length_ok = T_fit >= 4 * d + 1
 
     return TrajectoryDMDcResult(
         domain=rec.domain,
@@ -249,25 +283,42 @@ def analyze_trajectory(
         cond_Wc=cond_Wc,
         Wc_singular_values=sv,
         uncertainty_dim=unc_dim,
-        n_fit=len(aug) - 1,
+        n_fit=T_fit,
         rho_joint_ci=rho_ci,
         warmup_excluded=warmup_excluded,
         scalar_uncertainty_warning=scalar_warn,
+        cond_Wc_ci=cond_wc_ci,
+        min_length_ok=min_length_ok,
+        Wc_eigenvectors=Wc_eigvectors_orig,
     )
 
 
-def _block_bootstrap_rho(aug, actions, n_components, n_boot, block_len, seed):
-    """Moving-block bootstrap CI for rho(A_joint) — respects autocorrelation.
+def _block_bootstrap_stats(aug, actions, n_components, n_boot, block_len, seed):
+    """Moving-block bootstrap CIs for rho(A_joint) and the Gramian eigenvalue
+    ratio cond_Wc — respects autocorrelation.
 
     The i.i.d. ``bootstrap_eig_ci`` in dmdc.py resamples individual transition
     pairs, which is invalid for an autocorrelated AL trajectory. This resamples
     contiguous blocks of length ``block_len`` to preserve short-range temporal
-    structure.
+    structure. ``cond_Wc`` is bootstrapped on a log10 scale (its natural scale,
+    since it can span many orders of magnitude — see
+    ``paper1_logical_pitfalls.md``'s "report ratios on a log scale with CIs")
+    and exponentiated back before returning.
+
+    Returns
+    -------
+    (rho_ci, cond_wc_ci) : tuple of (tuple[float, float] | None)
     """
     rng = np.random.default_rng(seed)
     T = len(aug)
+    if T <= block_len:
+        # Trajectory too short to form even one block of the requested
+        # length (e.g. a small demo smoke run) — no valid bootstrap draw is
+        # possible, so skip rather than raise.
+        return None, None
     n_blocks = max(1, (T - 1) // block_len)
     rhos = []
+    log_ratios = []
     for _ in range(n_boot):
         starts = rng.integers(0, T - block_len, size=n_blocks)
         idx = np.concatenate([np.arange(s, s + block_len) for s in starts])
@@ -275,14 +326,24 @@ def _block_bootstrap_rho(aug, actions, n_components, n_boot, block_len, seed):
         if len(idx) < n_components + actions.shape[1] + 2:
             continue
         try:
-            A_b, _, _ = _dmdc.fit_dmdc(aug[idx], actions[idx], n_components=n_components)
+            A_b, B_b, _ = _dmdc.fit_dmdc(aug[idx], actions[idx], n_components=n_components)
             rhos.append(_rho(A_b))
+            Wc_b = _dmdc.compute_gramians(A_b, B_b)
+            Wc_b = Wc_b[0] if isinstance(Wc_b, tuple) else Wc_b
+            sv_b = np.linalg.svd(Wc_b, compute_uv=False)
+            if sv_b[-1] > 0:
+                log_ratios.append(np.log10(sv_b[0] / sv_b[-1]))
         except np.linalg.LinAlgError:
             continue
-    if not rhos:
-        return None
-    lo, hi = np.percentile(rhos, [2.5, 97.5])
-    return (float(lo), float(hi))
+    rho_ci = None
+    if rhos:
+        lo, hi = np.percentile(rhos, [2.5, 97.5])
+        rho_ci = (float(lo), float(hi))
+    cond_wc_ci = None
+    if log_ratios:
+        lo_log, hi_log = np.percentile(log_ratios, [2.5, 97.5])
+        cond_wc_ci = (float(10.0 ** lo_log), float(10.0 ** hi_log))
+    return rho_ci, cond_wc_ci
 
 
 # ─────────────────────────────────────────────────────────────────────────────

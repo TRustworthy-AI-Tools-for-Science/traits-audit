@@ -23,6 +23,7 @@ authors = [
     { name = "Ashley Dale", email = "trustworthyai4sci@gmail.com" },
 ]
 dependencies = [
+    "botorch>=0.18.0",
     "kaleido>=1.3.0",
     "matplotlib",
     "numpy",

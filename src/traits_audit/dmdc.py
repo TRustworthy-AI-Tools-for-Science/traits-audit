@@ -69,6 +69,8 @@ __all__ = [
     "bootstrap_eig_ci",
     "modal_decomposition",
     "rank_sensitivity",
+    "windowed_rho",
+    "transition_step",
 ]
 
 
@@ -481,3 +483,78 @@ def rank_sensitivity(aug_states: np.ndarray, actions: np.ndarray, r_values) -> d
         except Exception:
             out[r] = np.array([])
     return out
+
+
+def windowed_rho(
+    aug_states: np.ndarray,
+    actions: np.ndarray,
+    window: int = 20,
+    stride: int = 5,
+    n_components: int = 8,
+):
+    """Spectral radius of the DMDc operator on sliding windows.
+
+    Fits :func:`fit_dmdc` independently on each contiguous window of length
+    ``window``, stepping by ``stride``, tracking how the local dynamics change
+    over a trajectory (e.g. the exploration-to-exploitation transition of an
+    active-learning campaign) rather than the single global fit
+    :func:`fit_dmdc`/:func:`stability_convergence` produce.
+
+    Returns
+    -------
+    (centers, rho_t) : tuple of np.ndarray
+        ``centers`` : window centre indices, shape ``(W,)``.
+        ``rho_t`` : spectral radius ``|λ_max|`` per window, shape ``(W,)``.
+
+    References
+    ----------
+    [PRO16] : rank-r truncation via SVD, reused per-window here.
+    """
+    aug_states = np.asarray(aug_states, dtype=np.float64)
+    actions = np.asarray(actions, dtype=np.float64)
+    T = len(aug_states)
+    centers, rho_t = [], []
+    for start in range(0, T - window, stride):
+        sl = slice(start, start + window)
+        a = aug_states[sl]
+        u = actions[sl]
+        if len(a) < n_components + u.shape[1] + 2:
+            continue
+        try:
+            A_r, _, _ = fit_dmdc(a, u, n_components=n_components)
+            rho_t.append(float(np.max(np.abs(np.linalg.eigvals(A_r)))))
+            centers.append(start + window // 2)
+        except np.linalg.LinAlgError:
+            continue
+    return np.array(centers), np.array(rho_t)
+
+
+def transition_step(
+    centers: np.ndarray,
+    rho_t: np.ndarray,
+    threshold: float = 1.0,
+    persist: int = 2,
+):
+    """First window centre after which :func:`windowed_rho`'s ``rho_t`` stays
+    below ``threshold``.
+
+    The exploration-to-exploitation transition: the campaign leaves the
+    transient ``rho > 1`` regime and settles into contraction. Requires
+    ``persist`` consecutive sub-threshold windows to avoid a single-window dip
+    triggering a false transition.
+
+    Returns
+    -------
+    int or None
+        The transition centre index, or ``None`` if it never persistently
+        settles below ``threshold``.
+    """
+    if len(rho_t) == 0:
+        return None
+    below = rho_t < threshold
+    run = 0
+    for i, b in enumerate(below):
+        run = run + 1 if b else 0
+        if run >= persist:
+            return int(centers[i - persist + 1])
+    return None

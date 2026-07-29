@@ -5,7 +5,10 @@ experiments required) on the built-in test dataset.  The active learning
 loop is driven manually step-by-step so that per-step AdaBoost committee
 uncertainty can be captured and fed to :class:`~traits_audit.AuditHook`.
 After the loop, Lyapunov stability analysis is performed on the learned
-surrogate in a PCA-reduced feature space.
+surrogate in a PCA-reduced feature space, and a controllability-Gramian
+mechanism check is run on ``[committee spread, heteroscedastic held-out
+floor]`` using the genuine per-step queried point as the DMDc action (see
+``--mechanism-null`` for the two-epistemic falsification test).
 
 Install the optional dependency first::
 
@@ -43,6 +46,10 @@ def _make_pipeline(check_every: int, logger=None):
         UncertaintyAnomalyCheck,
         VarianceErrorCorrelationCheck,
         LyapunovStabilityCheck,
+        DMDcSpectralRadiusCheck,
+        SignedBiasCheck,
+        TailIndexCheck,
+        ScoreDecompositionCheck,
     )
     pipeline = AuditPipeline(
         checks=[
@@ -62,10 +69,45 @@ def _make_pipeline(check_every: int, logger=None):
             # nature. Contrast with the PyBAMM demo's window=30 (local). See
             # docs/checks.rst and LYAPUNOV_ANALYSIS.md for the distinction.
             LyapunovStabilityCheck(stability_threshold=1.0, min_stable_fraction=0.5),
+            # Paired with LyapunovStabilityCheck -- fed the GLOBAL spectral
+            # radius of the single DMDc fit on the full trajectory, as
+            # opposed to Lyapunov's growing-prefix (local-in-time) series --
+            # see run(), where rho_A is extracted from the same
+            # run_dmdc_lyapunov_analysis() call CAMD already makes.
+            DMDcSpectralRadiusCheck(stability_threshold=1.0),
+            # Cross-cutting, cheap.
+            SignedBiasCheck(),
+            TailIndexCheck(),
+            ScoreDecompositionCheck(),
         ],
         verbose=False,
     )
     return AuditHook(pipeline, check_every=check_every, logger=logger)
+
+
+def _make_ensemble_pipeline():
+    """EID/ResidualPersistenceHalfLife/IWF/EnvelopeViolation, run as a
+    SEPARATE small pipeline (see run()) rather than folded into
+    _make_pipeline(): they need y_true/y_pred_mean/y_pred_std evaluated on
+    the committee ensemble at a specific evaluation set, which collides in
+    name (not meaning) with the SAME kwargs the main pipeline's calibration
+    checks receive for the full accumulated campaign. Self-contained so the
+    EID/ResidualPersistenceHalfLife pairing (see validation.NAME_PAIRS) is
+    still satisfied within this pipeline alone.
+    """
+    from traits_audit import AuditPipeline
+    from traits_audit.checks import (
+        EnsembleIndependenceDeficitCheck,
+        ResidualPersistenceHalfLifeCheck,
+        ImprecisionWidthFractionCheck,
+        EnvelopeViolationRateCheck,
+    )
+    return AuditPipeline(checks=[
+        EnsembleIndependenceDeficitCheck(),
+        ResidualPersistenceHalfLifeCheck(),
+        ImprecisionWidthFractionCheck(),
+        EnvelopeViolationRateCheck(),
+    ])
 
 
 # ── Data loading ───────────────────────────────────────────────────────────────
@@ -282,6 +324,89 @@ def _committee_predict(agent, X: np.ndarray):
     return np.zeros(len(X)), np.zeros(len(X))
 
 
+def _committee_ensemble(agent, X: np.ndarray) -> "np.ndarray | None":
+    """Return (n_members, n_pts) raw per-estimator predictions, when available.
+
+    This is one line from being free: ``_committee_predict``'s generic
+    fallback branch (above) already builds exactly this ``preds`` matrix
+    before collapsing it to (mean, std) and discarding it. Feeds
+    EnsembleIndependenceDeficitCheck, ImprecisionWidthFractionCheck,
+    EnvelopeViolationRateCheck.
+
+    For ``_ExposedAdaBoost`` this reaches directly for the stored
+    ``_adaboost``/``_scaler`` rather than going through
+    ``committee_predict``'s weighted ``_get_unc_ada`` -- so these members
+    are UNWEIGHTED and will not exactly reproduce ``std_hyp`` (which IS
+    weighted by ``estimator_weights_``); documented here rather than
+    silently assumed consistent. For the sklearn ``BaggingRegressor``
+    fallback, ``estimators_`` needs no separate scaler.
+    """
+    ada = getattr(agent, "_adaboost", None)
+    scaler = getattr(agent, "_scaler", None)
+    if ada is not None and scaler is not None:
+        X_sc = scaler.transform(X)
+        return np.stack([e.predict(X_sc) for e in ada.estimators_])
+    estimators = getattr(agent, "estimators_", None)
+    if estimators:
+        return np.stack([e.predict(X) for e in estimators])
+    return None
+
+
+# ── Heteroscedastic aleatoric floor (mechanism check) ─────────────────────────
+
+def _fit_heteroscedastic_floor(X_seed: np.ndarray, y_seed: np.ndarray, seed: int,
+                               n_neighbors: int = 5):
+    """Fit a ONE-TIME, frozen heteroscedastic aleatoric floor.
+
+    Splits the initial seed data into train/test, fits a quick committee on
+    the train fold, and regresses the held-out ``|residual|`` against
+    position in feature space via a k-NN model. The returned callable is
+    never refit during the AL loop -- a genuine FIXED floor (per
+    ``paper1_logical_pitfalls.md`` Category 1: sigma_al must never come from
+    the live epistemic posterior, or both would shrink together and the split
+    would be circular).
+
+    A literal second target column (e.g. a separate predicted property) isn't
+    available in the OQMD binary-compound dataset this demo uses -- confirmed
+    by inspecting the cached dataframe, which carries only ``delta_e`` as a
+    real regression target. Enriching the *floor itself* to be
+    heteroscedastic (rather than a single flat scalar) is the alternative:
+    materials in sparser regions of composition space genuinely do carry
+    higher held-out residual noise, a real, well-precedented effect in
+    materials-informatics, not a fabricated signal.
+    """
+    from sklearn.ensemble import AdaBoostRegressor
+    from sklearn.model_selection import train_test_split
+    from sklearn.neighbors import KNeighborsRegressor
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.tree import DecisionTreeRegressor
+
+    if len(X_seed) < 10:
+        # Too little seed data for a held-out split -- fall back to a flat
+        # (still FIXED, just not heteroscedastic) floor.
+        const = float(np.std(y_seed)) * 0.1 if len(y_seed) > 1 else 0.05
+
+        def _flat(X):
+            return np.full(len(X), const)
+
+        return _flat
+
+    Xtr, Xte, ytr, yte = train_test_split(X_seed, y_seed, test_size=0.3, random_state=seed)
+    sc = StandardScaler().fit(Xtr)
+    committee = AdaBoostRegressor(
+        estimator=DecisionTreeRegressor(max_depth=4), n_estimators=30, random_state=seed,
+    ).fit(sc.transform(Xtr), ytr)
+    abs_resid = np.abs(yte - committee.predict(sc.transform(Xte)))
+    floor_min = float(np.percentile(abs_resid, 10))   # avoid a near-zero floor at test points
+    knn = KNeighborsRegressor(n_neighbors=min(n_neighbors, len(Xte)))
+    knn.fit(sc.transform(Xte), abs_resid)
+
+    def _het_floor(X):
+        return np.maximum(knn.predict(sc.transform(X)), floor_min)
+
+    return _het_floor
+
+
 # ── Main run ───────────────────────────────────────────────────────────────────
 
 def run(
@@ -293,6 +418,7 @@ def run(
     check_every: int = 5,
     n_pca: int = 5,
     max_cand: int = 3000,
+    mechanism_null: bool = False,
     mlflow_uri: str | None = None,
     run_name: str = "camd_demo",
 ) -> dict:
@@ -319,6 +445,15 @@ def run(
         Maximum candidate pool size.  The CAMD agent's uncertainty loop is
         O(n_candidates), so capping at ~3 000 keeps each step to ~5 s.
         Pass 0 or None to use the full OQMD pool (~14 k entries, ~25 s/step).
+    mechanism_null : bool
+        If True, replace the real ``[sigma_ep, sigma_al]`` controllability-
+        Gramian mechanism check (committee spread + a heteroscedastic
+        held-out floor) with the E6-style two-epistemic null: a second,
+        independently-seeded committee refit alongside the primary one each
+        step, giving ``[sigma_ep_a, sigma_ep_b]`` -- both reducible, so the
+        eigenvalue ratio should collapse toward the null band rather than the
+        real split's separation. See ``paper1_logical_pitfalls.md`` Category
+        5. Run the demo once with this False and once True to compare.
     """
     import pandas as pd
 
@@ -385,6 +520,25 @@ def run(
         cand_data = cand_data.sample(max_cand, random_state=int(seed)).reset_index(drop=True)
         print(f"  Candidate pool capped at {max_cand} (pass --max-cand 0 for full pool)")
 
+    # Held-out evaluation set: carved out of the candidate pool now, before
+    # the AL loop starts, and never eligible for querying. The calibration/
+    # coverage/scoring checks are evaluated against this set at the final
+    # report (see hook.on_end() below) instead of falling back to the
+    # per-step queried history, which is an acquisition-biased sample (LCB
+    # deliberately over-represents high-uncertainty regions) and not what a
+    # calibration verdict should be judged against.
+    n_holdout = min(60, max(20, len(cand_data) // 10))
+    n_holdout = min(n_holdout, max(len(cand_data) - n_query, 0))
+    if n_holdout > 0:
+        holdout_idx = rng.choice(len(cand_data), size=n_holdout, replace=False)
+        holdout_data = cand_data.iloc[holdout_idx].copy().reset_index(drop=True)
+        cand_data = cand_data.drop(cand_data.index[holdout_idx]).reset_index(drop=True)
+        print(f"  Held out {n_holdout} points for final calibration evaluation (never queried)")
+    else:
+        holdout_data = df_full.iloc[:0].copy()
+        print("  Candidate pool too small to carve out a held-out set — "
+              "final report will fall back to acquisition-history evaluation")
+
     from sklearn.ensemble import BaggingRegressor
     from sklearn.tree import DecisionTreeRegressor
     _surrogate = BaggingRegressor(
@@ -392,6 +546,28 @@ def run(
         n_estimators=20,
         random_state=int(seed),
     )
+
+    # ── Controllability-Gramian mechanism check: second uncertainty component ──
+    # Real run: a FIXED heteroscedastic held-out floor (fit once, here, before
+    # the AL loop -- never refit against the live committee posterior). Null
+    # run (--mechanism-null): a second, independently-seeded committee, refit
+    # each step alongside the primary one on the same growing data -- both
+    # equally reducible, the E6-style falsification test (see run() docstring
+    # and paper1_logical_pitfalls.md Category 5).
+    if mechanism_null:
+        _null_surrogate = BaggingRegressor(
+            estimator=DecisionTreeRegressor(max_depth=5),
+            n_estimators=20,
+            random_state=int(seed) + 1000,
+        )
+        _floor_fn = None
+    else:
+        _null_surrogate = None
+        _floor_fn = _fit_heteroscedastic_floor(
+            seed_data[feat].values.astype(float),
+            seed_data[target].values.astype(float),
+            seed=int(seed),
+        )
 
     if _camd_available and _ExposedAdaBoost is not None:
         # alpha=0.5 matches the paper's best-performing "AB-ε0-α0.5" agent
@@ -425,8 +601,10 @@ def run(
 
     initial_seed = seed_data.copy()
     uncertainties: list[float] = []
+    unc_second: list[float] = []             # 2nd mechanism-check component per step
     queried_batches: list = []
     aug_states_list: list[np.ndarray] = []   # [scaled PCA coords | mean std] per step
+    pca_coords_list: list[np.ndarray] = []   # scaled PCA coords alone (state/action for the mechanism check)
     lambda_max_per_step: list[float] = []    # filled post-loop via DMDc stability_convergence
 
     # ── AL loop ────────────────────────────────────────────────────────────────
@@ -479,6 +657,24 @@ def run(
         mean_std = float(std_hyp.mean())
         uncertainties.append(mean_std)
 
+        # Second uncertainty component for the controllability-Gramian
+        # mechanism check (real: heteroscedastic held-out floor; null: a
+        # second, independently-seeded committee refit on the same growing
+        # seed_data). Evaluated over the SAME points `mean_std` above
+        # averages -- the whole queried batch, not just its first point (a
+        # previous version evaluated this channel at hypotheses[:1] only,
+        # so the two channels of one Gramian analysis were measured on
+        # different things).
+        _q_batch_feat = hypotheses[feat].values.astype(float)
+        if mechanism_null:
+            _null_surrogate.fit(
+                seed_data[feat].values.astype(float), seed_data[target].values.astype(float),
+            )
+            _, _std_null = _committee_predict(_null_surrogate, _q_batch_feat)
+            unc_second.append(float(_std_null.mean()))
+        else:
+            unc_second.append(float(_floor_fn(_q_batch_feat).mean()))
+
         # Augmented state for DMDc: [scaled PCA coords of queried point | mean std].
         # Analogous to battery-forecast's [ECM means | ECM stds].  A_r fitted on
         # this trajectory is a general (non-symmetric) matrix — complex eigenvalues
@@ -489,7 +685,18 @@ def run(
             _pca_live.transform(X_hyp[0].reshape(1, -1))
         ).flatten()
         aug_states_list.append(np.append(_q_pca_scaled, mean_std))
+        pca_coords_list.append(_q_pca_scaled.copy())
 
+        # y_true/y_pred_mean/y_pred_std ARE passed here (batch arrays, one
+        # per step) so the calibration/coverage/scoring checks have real
+        # data at every intermediate check_every snapshot, not just the
+        # final report. Batches can be a different length on the final step
+        # (a candidate pool that doesn't divide evenly by n_query) -- that
+        # used to crash `_require`'s `np.asarray(vals).ravel()` as soon as
+        # two steps' array lengths differed, which is why this data was
+        # previously withheld from on_step entirely. `_require` now
+        # concatenates history entries via `np.concatenate` instead, which
+        # tolerates ragged per-step arrays, so it's safe to pass them again.
         hook.on_step(
             y_true=y_true,
             y_pred_mean=mu_hyp,
@@ -504,12 +711,41 @@ def run(
                   f"seed={len(seed_data)}  cand={len(cand_data)}  "
                   f"uncertainty={mean_std:.4f}")
 
+    # ── Controllability-Gramian mechanism check ───────────────────────────────
+    # Real run: does the Gramian separate the reducible committee spread from
+    # the fixed heteroscedastic held-out floor? Null run (--mechanism-null):
+    # two independently-seeded committees, both reducible -- the ratio should
+    # collapse instead of separating. Action is the genuine queried PCA point
+    # (pca_coords_list), not a placeholder.
+    from traits_audit import trajectory as _traj
+    from traits_audit._mechanism_check import print_mechanism_check
+
+    if mechanism_null:
+        _unc_vectors = [np.array([ep, ep2]) for ep, ep2 in zip(uncertainties, unc_second)]
+        _aleatoric_idx = None
+        _mech_label = "two-epistemic null (--mechanism-null)"
+    else:
+        _unc_vectors = [np.array([ep, al]) for ep, al in zip(uncertainties, unc_second)]
+        _aleatoric_idx = [1]
+        _mech_label = "real split (committee spread + heteroscedastic held-out floor)"
+
+    mech_rec = _traj.from_camd(
+        {
+            "pca_coords": pca_coords_list,
+            "uncertainties": _unc_vectors,
+            "queried_coords": pca_coords_list,
+        },
+        policy=_model_label,
+    )
+    mech_result = _traj.analyze_trajectory(mech_rec, n_components=min(6, n_pca))
+    print_mechanism_check(mech_result, _mech_label, aleatoric_indices=_aleatoric_idx)
+
     # ── Lyapunov analysis ──────────────────────────────────────────────────────
     # Computed before hook.on_end() so LyapunovStabilityCheck (in the pipeline
     # above) can be given the real lambda_max series via the precomputed route.
     print("\n[2/3] Lyapunov stability analysis …")
     from traits_audit._viz import (
-        _fig_check_grid,
+        check_grid_figures,
         run_dmdc_lyapunov_analysis,
         plot_uncertainty_evolution,
         plot_lyapunov_evolution,
@@ -524,7 +760,11 @@ def run(
     # Build augmented state trajectory and compute per-step lambda_max via
     # growing-prefix DMDc fits (analogous to battery-forecast's stability_convergence).
     aug_traj = np.array(aug_states_list)  # (T, n_pca + 1)
-    _dmdc_actions = np.ones((len(aug_traj), 1))
+    # Real per-step queried PCA point as the DMDc action (previously a dummy
+    # np.ones((T, 1)), which left B unidentified and made any Gramian
+    # computed from this fit meaningless -- see paper1_logical_pitfalls.md
+    # Category 1 and demo_multioutput_plan.md's "camd action wiring" note).
+    _dmdc_actions = np.array(pca_coords_list)
     _min_obs_dmdc = n_pca + 2
     _conv = dm.stability_convergence(
         aug_traj, _dmdc_actions, min_obs=_min_obs_dmdc, n_components=n_pca,
@@ -540,15 +780,101 @@ def run(
     print(f"  DMDc augmented state: D={aug_traj.shape[1]} "
           f"({n_pca} PCA coords + committee std), T={len(aug_traj)} steps")
 
+    # DMDcSpectralRadiusCheck: paired with LyapunovStabilityCheck above --
+    # Lyapunov gets the growing-prefix (local-in-time) series
+    # (lambda_max_per_step); this is the GLOBAL spectral radius of a single
+    # DMDc fit on the complete trajectory. A cheap, separate fit rather than
+    # reusing run_dmdc_lyapunov_analysis's (below, figure-generation-only)
+    # fit, so this check doesn't depend on that call's ordering.
+    try:
+        _A_r_global, _, _ = dm.fit_dmdc(aug_traj, _dmdc_actions, n_components=n_pca)
+        rho_A = float(np.max(np.abs(np.linalg.eigvals(_A_r_global))))
+    except Exception as exc:
+        print(f"  Global DMDc fit failed ({exc}); DMDcSpectralRadiusCheck will skip.")
+        rho_A = None
+
+    # Evaluate the FINAL fitted committee on the held-out set carved out
+    # before the loop started (never queried, never trained on) -- this is
+    # what makes the final report's calibration/coverage/scoring checks a
+    # genuine out-of-sample verdict rather than a re-statement of the
+    # acquisition-biased per-step history.
+    if len(holdout_data) > 0:
+        _X_hold = holdout_data[_feat_pca].values.astype(float)
+        _y_hold = holdout_data[target].values.astype(float)
+        if _use_camd_agent:
+            _mu_hold, _std_hold = _committee_predict(agent, _X_hold)
+        else:
+            _mu_hold, _std_hold = _committee_predict(_surrogate, _X_hold)
+    else:
+        _y_hold = _mu_hold = _std_hold = None
+
     # UncertaintyAnomalyCheck compares recent behaviour against an earlier
     # baseline.  Use the first two check windows as the historical reference so
     # the check detects genuine drift rather than within-series variance.
     n_warmup = max(check_every * 2, len(uncertainties) // 5, 1)
+    # y_true/y_pred_mean/y_pred_std ARE passed explicitly here (the held-out
+    # set) so they win over the per-step history in `_require` (kwargs take
+    # priority) for this final report only -- intermediate check_every
+    # snapshots still read the growing acquisition history via on_step,
+    # since the held-out set is deliberately evaluated once, at the end,
+    # with the fully-trained final committee. Falls back to history (the
+    # previous behaviour) when the candidate pool was too small to carve
+    # out a held-out set at all.
     report = hook.on_end(
         historical_uncertainties=np.array(uncertainties[:n_warmup]),
         lambda_max=np.array(lambda_max_per_step),
+        rho_A=rho_A,
+        y_true=_y_hold, y_pred_mean=_mu_hold, y_pred_std=_std_hold,
     )
+
+    # Ensemble-based checks (EID, IWF, EnvelopeViolation, +
+    # ResidualPersistenceHalfLife for the EID pairing): evaluate the FINAL
+    # fitted committee's raw members on the SAME held-out set. A separate
+    # pipeline (see _make_ensemble_pipeline) since its y_true/y_pred_mean/
+    # y_pred_std mean something different from the main pipeline's (a
+    # specific evaluation slice vs. the full campaign).
+    if len(holdout_data) >= 5:
+        if _use_camd_agent:
+            _ens = _committee_ensemble(agent, _X_hold)
+        else:
+            _ens = _committee_ensemble(_surrogate, _X_hold)
+        if _ens is not None:
+            _ensemble_pipeline = _make_ensemble_pipeline()
+            _ensemble_report = _ensemble_pipeline.run(
+                [],
+                y_true=_y_hold,
+                y_pred_mean=_ens.mean(axis=0),
+                y_pred_std=_ens.std(axis=0),
+                y_pred_ensemble=_ens,
+            )
+            report.results.extend(_ensemble_report.results)
+            for w in _ensemble_pipeline.validate_config():
+                report.metadata.setdefault("pairing_warnings", []).append(w)
+
+    # DecisionFlipRate needs y_pred_mean/y_pred_std for the CANDIDATE POOL
+    # decision surface -- a different array than the calibration data above
+    # -- so it runs as a second, small pipeline (same pattern as ta-demo /
+    # ta-pybamm-demo) rather than overloading hook.on_end's kwargs.
+    if _use_camd_agent and len(cand_data) > 0:
+        _X_final_cand = cand_data[_feat_pca].values.astype(float)
+        _mu_final, _std_final = _committee_predict(agent, _X_final_cand)
+
+        def _lowest_stability(mu_arr):
+            return int(np.argmin(mu_arr - 0.5 * _std_final))
+
+        from traits_audit import AuditPipeline as _AuditPipeline
+        from traits_audit.checks import DecisionFlipRateCheck as _DecisionFlipRateCheck
+        _dfr_pipeline = _AuditPipeline(checks=[_DecisionFlipRateCheck(seed=int(seed))])
+        _dfr_report = _dfr_pipeline.run(
+            [], decision_fn=_lowest_stability, y_pred_mean=_mu_final, y_pred_std=_std_final,
+        )
+        report.results.extend(_dfr_report.results)
+
     print("\n" + report.summary())
+    if report.metadata.get("pairing_warnings"):
+        print("\n  Pairing warnings:")
+        for w in report.metadata["pairing_warnings"]:
+            print(f"    - {w}")
 
     report_path = out_dir / "audit_report.json"
     with open(report_path, "w") as fh:
@@ -604,7 +930,12 @@ def run(
             for i, r in enumerate(hook.intermediate_reports)
         ]
         stage_reports.append(("final", report))
-        fig_grid = _fig_check_grid(stage_reports, _model_label)
+        # Split step-trackable checks (real value at every snapshot) from
+        # final-report-only ones (EnsembleIndependenceDeficit and friends,
+        # merged in only after hook.on_end() via _make_ensemble_pipeline())
+        # so the latter don't pad the main grid with empty columns for their
+        # entire history.
+        fig_grid, fig_grid_final = check_grid_figures(stage_reports, _model_label)
         if fig_grid is not None:
             _grid_png = fig_dir / "fig10_check_grid.png"
             try:
@@ -619,6 +950,20 @@ def run(
                 _grid_html = fig_dir / "fig10_check_grid.html"
                 fig_grid.write_html(str(_grid_html))
                 print(f"  Saved fig10_check_grid.html (install kaleido for PNG export)")
+        if fig_grid_final is not None:
+            _grid_final_png = fig_dir / "fig10b_check_grid_final_only.png"
+            try:
+                fig_grid_final.write_image(
+                    str(_grid_final_png),
+                    width=fig_grid_final.layout.width,
+                    height=fig_grid_final.layout.height,
+                    scale=2,
+                )
+                print("  Saved fig10b_check_grid_final_only.png")
+            except Exception:
+                _grid_final_html = fig_dir / "fig10b_check_grid_final_only.html"
+                fig_grid_final.write_html(str(_grid_final_html))
+                print("  Saved fig10b_check_grid_final_only.html (install kaleido for PNG export)")
 
     abs_errors_al = [h.get("abs_error", float("nan")) for h in hook.history]
     plot_pareto_frontier(
@@ -692,7 +1037,7 @@ def run(
         _run_ctx.__exit__(None, None, None)
 
     print(f"\nDone. All results written to {out_dir}")
-    return {"report": report, "lyapunov": lyap}
+    return {"report": report, "lyapunov": lyap, "mechanism_check": mech_result}
 
 
 # ── CLI ────────────────────────────────────────────────────────────────────────
@@ -710,12 +1055,18 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Queries per iteration (default: 4)")
     p.add_argument("--out-dir",     type=str, default="_results/camd_demo")
     p.add_argument("--seed",        type=int, default=0)
-    p.add_argument("--check-every", type=int, default=4,
-                   help="Intermediate audit frequency (default: 4)")
+    p.add_argument("--check-every", type=int, default=5,
+                   help="Intermediate audit frequency (default: 5)")
     p.add_argument("--n-pca",       type=int, default=5,
                    help="PCA components for Lyapunov state space (default: 5)")
     p.add_argument("--max-cand",    type=int, default=3000,
                    help="Max candidate pool size; 0 = full OQMD pool (default: 3000)")
+    p.add_argument("--mechanism-null", action="store_true",
+                   help="Run the two-epistemic null instead of the real "
+                        "committee-spread/held-out-floor split for the "
+                        "controllability-Gramian mechanism check "
+                        "(falsification test; compare against a normal run's "
+                        "ratio)")
     default_uri = "sqlite:///" + str(Path.cwd() / "traits_audit_demo.db")
     p.add_argument("--mlflow-uri",  type=str, default=None,
                    help=f"MLflow tracking URI (default: disabled; pass a URI such as "
@@ -738,6 +1089,7 @@ def main() -> None:
         check_every=args.check_every,
         n_pca=args.n_pca,
         max_cand=args.max_cand,
+        mechanism_null=args.mechanism_null,
         mlflow_uri=args.mlflow_uri,
         run_name=args.run_name,
     )

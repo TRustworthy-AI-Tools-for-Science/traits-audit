@@ -14,11 +14,32 @@ from typing import Any, Dict, List, Optional
 
 
 class AuditCategory(str, Enum):
-    """Broad classification of the uncertainty source a check addresses."""
-    ALEATORIC_IRREDUCIBLE = "aleatoric_irreducible"
-    ALEATORIC_MODEL       = "aleatoric_model"
-    EPISTEMIC             = "epistemic"
-    UNKNOWN               = "unknown"
+    """
+    Broad classification of the uncertainty source a check addresses.
+
+    The first three values are the aleatoric/epistemic (reducibility) taxonomy
+    class from ``.claude/METRIC_TAXONOMY_AUDIT.md`` §3 — that scheme was
+    already exactly what this enum encoded, so it keeps its original three-way
+    split rather than gaining a redundant fourth member. The remaining values
+    each correspond to one of the other seven classification schemes surveyed
+    there (random/systematic, Type A/Type B, ergodic/non-ergodic,
+    variability/ignorance, model/approximation/misspecification/procedural,
+    locus in the chain, reduction under replication). ``UNKNOWN`` is reserved
+    for checks the audit explicitly identifies as NOT belonging to any of the
+    eight classes (e.g. cross-cutting diagnostics like the tail index) rather
+    than as a generic fallback.
+    """
+    ALEATORIC_IRREDUCIBLE       = "aleatoric_irreducible"
+    ALEATORIC_MODEL             = "aleatoric_model"
+    EPISTEMIC                   = "epistemic"
+    RANDOM_SYSTEMATIC           = "random_systematic"
+    TYPE_A_TYPE_B               = "type_a_type_b"
+    ERGODIC_NON_ERGODIC         = "ergodic_non_ergodic"
+    VARIABILITY_IGNORANCE       = "variability_ignorance"
+    MODEL_PROCEDURAL            = "model_procedural"
+    LOCUS_IN_CHAIN              = "locus_in_chain"
+    REDUCTION_UNDER_REPLICATION = "reduction_under_replication"
+    UNKNOWN                     = "unknown"
 
 
 @dataclass
