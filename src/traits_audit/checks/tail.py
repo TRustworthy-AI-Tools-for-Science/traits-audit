@@ -95,7 +95,14 @@ class TailIndexCheck(AuditCheck):
                 message="Skipped — degenerate tail (threshold value is zero).",
             )
 
-        alpha_hat = 1.0 / float(np.mean(np.log(abs_z[:k] / threshold_val)))
+        log_ratios = np.log(abs_z[:k] / threshold_val)
+        mean_log_ratio = float(np.mean(log_ratios))
+        if mean_log_ratio <= 0:
+            return AuditResult(
+                name=self.name, passed=True, category=self.category,
+                message="Skipped — degenerate tail (all tail values equal threshold; Hill estimator undefined).",
+            )
+        alpha_hat = 1.0 / mean_log_ratio
 
         return AuditResult(
             name=self.name,
