@@ -38,10 +38,11 @@ Issues = "https://github.com/TRustworthy-AI-Tools-for-Science/traits-audit/issue
 Documentation = "https://trustworthy-ai-tools-for-science.github.io/traits-audit/"
 
 [project.scripts]
-ta-demo        = "traits_audit._example:main"
+ta-cal-demo    = "traits_audit._cal_demo:main"
 ta-sdl-demo    = "traits_audit._sdl_demo:main"
 ta-camd-demo   = "traits_audit._camd_demo:main"
 ta-pybamm-demo = "traits_audit._pybamm_demo:main"
+ta-mobo-demo   = "traits_audit._mobo_demo:main"
 
 [project.optional-dependencies]
 mlflow  = ["mlflow", "plotly", "matplotlib"]
@@ -97,4 +98,90 @@ dev = [
     "traits-audit[mlflow,camd,pybamm,sdl]",
     "pytest>=8",
     "pytest-cov>=5",
+]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "C4", "RUF", "S", "SIM", "PLW", "ISC"]
+ignore = [
+    # Intentional broad exception catches — Lyapunov solves, optional figure
+    # generation, and optional ML imports deliberately suppress all failures.
+    "BLE001", "S110", "S112",
+    # assert is pytest's standard assertion mechanism in test files.
+    "S101",
+    # Greek letters (σ, μ, α, λ, …) are intentional mathematical notation in
+    # docstrings, comments, and strings throughout this scientific codebase.
+    "RUF001", "RUF002", "RUF003",
+    # Semicolon-separated assignments (`s_plus = x.copy(); s_plus[i] += dx`)
+    # are used intentionally for compact paired-perturbation code.
+    "E702",
+    # Subprocess calls in demo entry points use trusted, hardcoded arguments.
+    "S603", "S301", "S105",
+    # Style suggestions — ternary, contextlib.suppress, Yoda — not required.
+    "SIM105", "SIM108", "SIM300",
+    # Longer lines are acceptable (docstrings, long mathematical expressions).
+    "E501",
+]
+
+[tool.pylint.messages_control]
+disable = [
+    # Naming: single-letter math variables (J, P, mu, sigma, x, n) are standard
+    # in scientific computing and more readable than verbose names.
+    "invalid-name",
+    # Docstrings: private helpers and inner functions don't need them.
+    "missing-function-docstring", "missing-class-docstring", "missing-module-docstring",
+    # Line length and file size managed by ruff; pylint's limits are redundant.
+    "line-too-long", "too-many-lines",
+    # Deferred imports inside functions are intentional — optional heavy
+    # dependencies (botorch, pybamm, ax, camd) must not be imported at module
+    # load time.
+    "import-outside-toplevel", "reimported", "ungrouped-imports",
+    # Complexity limits that would require harmful refactoring of scientific
+    # functions (Jacobians, AL loops, audit runners).
+    "too-many-locals", "too-many-arguments", "too-many-positional-arguments",
+    "too-many-statements", "too-many-branches", "too-many-instance-attributes",
+    # Duplicate-code false positives: the _require/skip/AuditResult pattern is
+    # structurally identical across checks by design — each check is independent.
+    "duplicate-code",
+    # Broad exception catches and attribute-outside-init are intentional
+    # (lazy-init fit() pattern, "skip on any failure" guards).
+    "broad-exception-caught", "attribute-defined-outside-init",
+    # Semicolon-separated paired assignments are used intentionally for compact
+    # perturbation code throughout.
+    "multiple-statements",
+    # Demos access hook._pipeline to inspect internals for figures — intentional.
+    "protected-access",
+    # Unused arguments that satisfy an interface (action=None in GD predictor,
+    # run_name/target/model_label in optional viz callbacks).
+    "unused-argument",
+    # Redefined outer scope: local `re` variable in _viz.py and local imports
+    # inside try blocks are intentional.
+    "redefined-outer-name",
+    # Pylint false positives: matplotlib colormaps registered at runtime,
+    # scipy kmeans2 `seed` kwarg exists but pylint can't see it.
+    "no-member", "unexpected-keyword-arg",
+    # Ellipsis in abstract method bodies is the idiomatic alternative to `pass`.
+    "unnecessary-ellipsis",
+    # __enter__/__exit__ called explicitly in demos where the context manager
+    # span is too wide for a `with` block (mlflow run wraps the whole AL loop).
+    "unnecessary-dunder-call",
+    # W0621: redefining outer name is already addressed by ruff where needed.
+    "redefined-builtin",
+    # Superfluous parens around `not (set & set)` — parens are used for clarity
+    # in boolean set expressions; removing them doesn't improve readability.
+    "superfluous-parens",
+    # R1732: subprocess.Popen for MLflow UI is intentionally left open (it runs
+    # for the duration of the demo); using `with` would kill it immediately.
+    "consider-using-with",
+    # R1735: dict(...) call form is used intentionally in demos for multi-line
+    # keyword-argument readability — brace literals work too but are not clearer.
+    "use-dict-literal",
+    # Too-many-return-statements: audit check scoring functions have one return
+    # per detected anomaly category; refactoring would obscure the logic.
+    "too-many-return-statements",
+    # W0611: probe imports in demos are documentation — they verify the optional
+    # dependency is installed, not used for their return value.
+    "unused-import",
 ]
