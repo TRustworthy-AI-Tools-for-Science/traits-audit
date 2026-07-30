@@ -20,15 +20,15 @@ def _mlflow_uri(tmp_path: Path) -> str:
     return f"sqlite:///{tmp_path / 'test.db'}"
 
 
-# ── ta-demo (calibration scenarios) ──────────────────────────────────────────
+# ── ta-cal-demo (calibration scenarios) ──────────────────────────────────────
 
 def test_demo_smoke(tmp_path, monkeypatch, mlflow_stub):
-    from traits_audit._example import main
+    from traits_audit._cal_demo import main
 
     monkeypatch.setattr(
         sys, "argv",
         [
-            "ta-demo",
+            "ta-cal-demo",
             "--steps", "3",
             "--check-every", "1",
             "--scenarios", "perfectly_calibrated",
@@ -43,7 +43,7 @@ def test_demo_smoke(tmp_path, monkeypatch, mlflow_stub):
 
 def test_demo1_scenario_verdicts(tmp_path, monkeypatch, mlflow_stub):
     """Primary acceptance test for the empirically-derived threshold table
-    (see _example.py's module docstring and CHANGELOG for the full table):
+    (see _cal_demo.py's module docstring and CHANGELOG for the full table):
     the gold standard passes the core calibration/coverage/scoring checks
     cleanly, and each pathological scenario fails the checks it was
     specifically designed to trip. Regression-guards the threshold
@@ -55,7 +55,7 @@ def test_demo1_scenario_verdicts(tmp_path, monkeypatch, mlflow_stub):
     ~40s) because the separation was validated empirically at this scale;
     fewer steps do not reliably reproduce it.
     """
-    from traits_audit._example import _SCENARIOS, _replicate_locations, _run_scenario
+    from traits_audit._cal_demo import _SCENARIOS, _replicate_locations, _run_scenario
 
     monkeypatch.chdir(tmp_path)
     locations = _replicate_locations()
