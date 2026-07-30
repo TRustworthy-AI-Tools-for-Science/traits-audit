@@ -33,6 +33,8 @@ mlartifacts/
 # Generated outputs
 figures/
 _results/
+results/
+_nb_results/
 
 # Editor
 .vscode/
