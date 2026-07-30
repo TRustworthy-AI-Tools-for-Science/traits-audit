@@ -148,9 +148,9 @@ def test_fig_check_grid_distinguishes_report_only_from_pass():
     scatter_traces = [t for t in fig.data if t.type == "scatter"]
     assert len(scatter_traces) == 2
     names = {t.name for t in scatter_traces}
-    assert "Report-only (no threshold)" in names
-    assert "Skipped (no data)" in names
+    assert "Report-only/no-threshold" in names
+    assert "Skipped/no-data" in names
     for t in scatter_traces:
         assert t.mode == "markers+text"
-        if t.name == "Report-only (no threshold)":
+        if t.name == "Report-only/no-threshold":
             assert t.text == ("13.47",)
