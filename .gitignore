@@ -33,10 +33,12 @@ mlartifacts/
 # Generated outputs
 figures/
 _results/
+runs/
 
 # Editor
 .vscode/
 .idea/
+.claude/
 *.swp
 *.swo
 
