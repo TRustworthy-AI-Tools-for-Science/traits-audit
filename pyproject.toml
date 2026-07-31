@@ -24,7 +24,7 @@ authors = [
     { name = "Ashley Dale", email = "trustworthyai4sci@gmail.com" },
 ]
 dependencies = [
-    "kaleido>=1.3.0",
+    "kaleido>=0.2.1",
     "matplotlib",
     "numpy",
     "scipy>=1.10.0",
@@ -41,12 +41,16 @@ ta-demo        = "traits_audit._example:main"
 ta-sdl-demo    = "traits_audit._sdl_demo:main"
 ta-camd-demo   = "traits_audit._camd_demo:main"
 ta-pybamm-demo = "traits_audit._pybamm_demo:main"
+ta-committee-train   = "traits_audit.committee.train_solo:main"
+ta-committee-demo    = "traits_audit.committee._committee_demo:main"
+ta-committee-analyze = "traits_audit.committee.analysis._cli:main"
 
 [project.optional-dependencies]
 mlflow  = ["mlflow", "plotly", "matplotlib"]
 sdl     = ["self-driving-lab-demo", "ax-platform>=1.3.0"]
 camd    = ["scikit-learn", "pandas", "pymatgen", "matminer", "django", "PuLP"]
 pybamm  = ["pybamm", "scikit-learn"]
+committee = ["stable-baselines3>=2.3", "gymnasium>=0.29", "torch>=2.1", "tensorboard"]
 docs = [
     "sphinx>=7",
     "furo",
