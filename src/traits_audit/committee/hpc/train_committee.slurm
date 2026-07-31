@@ -23,7 +23,7 @@
 # =============================================================================
 
 #SBATCH --job-name=traits_committee
-#SBATCH --account=rrg-j3goals          # <-- replace with your Alliance allocation
+#SBATCH --account=YOUR_ACCOUNT         # <-- replace with your Alliance allocation
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=4G
@@ -35,8 +35,8 @@
 # ---------------------------------------------------------------------------
 # Paths — edit these for your cluster
 # ---------------------------------------------------------------------------
-PROJECT_DIR="/scratch/$USER/traits-audit"
-VENV_ACTIVATE="$HOME/envs/traits-audit/bin/activate"
+PROJECT_DIR="/scratch/$USER/traits-audit"          # edit locally, don't push
+VENV_ACTIVATE="$HOME/envs/traits-audit/bin/activate" # edit locally, don't push
 LOG_DIR="$PROJECT_DIR/runs/committee_v0_5M"
 
 # ---------------------------------------------------------------------------

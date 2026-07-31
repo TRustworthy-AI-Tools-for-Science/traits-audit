@@ -12,7 +12,7 @@
 # =============================================================================
 
 #SBATCH --job-name=committee_analyze
-#SBATCH --account=rrg-j3goals          # <-- replace with your allocation
+#SBATCH --account=YOUR_ACCOUNT         # <-- replace with your allocation
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=8G
@@ -20,8 +20,8 @@
 #SBATCH --output=logs/slurm/analyze_%j.out
 #SBATCH --error=logs/slurm/analyze_%j.err
 
-PROJECT_DIR="/scratch/$USER/traits-audit"
-VENV_ACTIVATE="$HOME/envs/traits-audit/bin/activate"
+PROJECT_DIR="/scratch/$USER/traits-audit"          # edit locally, don't push
+VENV_ACTIVATE="$HOME/envs/traits-audit/bin/activate" # edit locally, don't push
 
 cd "$PROJECT_DIR"
 mkdir -p logs/slurm
