@@ -107,12 +107,13 @@ call, for every numeric kwarg:
    audit/final/CalibrationError/passed
    audit/final/all_passed
 
-**Artifacts** — the full JSON report under ``audit/`` in the artifact store:
+**Artifacts** — the full JSON report under ``audit/`` in the artifact store,
+with the step count embedded in the filename:
 
 .. code-block:: text
 
-   audit/final_report.json
-   audit/intermediate_report.json   (if check_every is set)
+   audit/final_<step>_report.json
+   audit/intermediate_<step>_report.json   (if check_every is set)
 
 
 Custom prefix

@@ -42,6 +42,7 @@ def _make_pipeline(check_every: int, logger=None):
         UncertaintyEvolutionCheck,
         UncertaintyAnomalyCheck,
         VarianceErrorCorrelationCheck,
+        LyapunovStabilityCheck,
     )
     pipeline = AuditPipeline(
         checks=[
@@ -53,9 +54,14 @@ def _make_pipeline(check_every: int, logger=None):
             IntervalScoreCheck(),
             IntervalCoverageCheck(expected_coverage=0.683, tolerance=0.15),
             VarianceAlignmentCheck(tolerance=0.5),
-            UncertaintyEvolutionCheck(slope_threshold=-0.05),
+            UncertaintyEvolutionCheck(),
             UncertaintyAnomalyCheck(z_threshold=3.0),
             VarianceErrorCorrelationCheck(min_correlation=0.1),
+            # window=None (default): a GLOBAL/cumulative verdict, consistent
+            # with stability_convergence's already-cumulative growing-prefix
+            # nature. Contrast with the PyBAMM demo's window=30 (local). See
+            # docs/checks.rst and LYAPUNOV_ANALYSIS.md for the distinction.
+            LyapunovStabilityCheck(stability_threshold=1.0, min_stable_fraction=0.5),
         ],
         verbose=False,
     )
@@ -398,6 +404,8 @@ def run(
         agent = None
         _use_camd_agent = False
 
+    _model_label = "AdaBoost-QBC (CAMD)" if _use_camd_agent else "BaggingRegressor-QBC (CAMD fallback)"
+
     # Feature set for PCA / Lyapunov: CAMD agent uses its own feature_labels
     # (which may differ from _feature_cols() by one column), sklearn path uses feat.
     _feat_pca = agent.feature_labels if _use_camd_agent else feat
@@ -407,9 +415,8 @@ def run(
     _pca_live = _PCA(n_components=_n_comp_live)
     _pca_live.fit(df_full[_feat_pca].values.astype(float))
 
-    # Pre-fit the PCA scaler on the full pool so it's stable across all steps.
-    # Per-step KRRs are then fitted in this fixed scaled PCA space.
-    from sklearn.kernel_ridge import KernelRidge as _KernelRidge
+    # Pre-fit a PCA scaler on the full pool so the augmented-state PCA coords
+    # are unit-variance and stable across all steps.
     from sklearn.preprocessing import StandardScaler as _KRRScaler
     _krr_scaler = _KRRScaler()
     _krr_scaler.fit(_pca_live.transform(df_full[_feat_pca].values.astype(float)))
@@ -419,8 +426,8 @@ def run(
     initial_seed = seed_data.copy()
     uncertainties: list[float] = []
     queried_batches: list = []
-    queried_feature_vecs: list[np.ndarray] = []
-    lambda_max_per_step: list[float] = []    # |λ_max| at each step using live model
+    aug_states_list: list[np.ndarray] = []   # [scaled PCA coords | mean std] per step
+    lambda_max_per_step: list[float] = []    # filled post-loop via DMDc stability_convergence
 
     # ── AL loop ────────────────────────────────────────────────────────────────
     print(f"\n[1/3] Active learning loop — {n_iter} iterations …")
@@ -469,39 +476,19 @@ def run(
         _qcols = [c for c in ["Composition", target] + feat if c in hypotheses.columns]
         queried_batches.append(hypotheses[_qcols].copy())
 
-        # Track one representative operating point per step (for Lyapunov)
-        queried_feature_vecs.append(X_hyp[0])
-
-        # Per-step |λ_max|: fit a smooth RBF KRR on accumulated seed data
-        # in scaled PCA space (same basis as the post-hoc final analysis).
-        # Tree ensembles are piecewise-constant so their finite-difference
-        # Hessian is 0 within a leaf, collapsing every eigenvalue to 1+0i.
-        try:
-            from traits_audit._lyapunov import (
-                make_gd_predictor, numerical_jacobian, eigenvalues_and_stability,
-            )
-            _X_step_scaled = _krr_scaler.transform(
-                _pca_live.transform(seed_data[_feat_pca].values.astype(float))
-            )
-            _y_step = seed_data[target].values.astype(float)
-            _step_krr = _KernelRidge(kernel="rbf", alpha=1.0).fit(
-                _X_step_scaled, _y_step
-            )
-
-            def _live_scalar(state_scaled: np.ndarray) -> float:
-                return float(_step_krr.predict(state_scaled.reshape(1, -1))[0])
-
-            _live_pred = make_gd_predictor(_live_scalar, alpha=1.0, eps=1e-3)
-            _q_scaled = _krr_scaler.transform(
-                _pca_live.transform(X_hyp[0].reshape(1, -1))
-            ).flatten()
-            _J = numerical_jacobian(_live_pred, _q_scaled, dx=1e-3)
-            lambda_max_per_step.append(eigenvalues_and_stability(_J)["lambda_max"])
-        except Exception:
-            lambda_max_per_step.append(float("nan"))
-
         mean_std = float(std_hyp.mean())
         uncertainties.append(mean_std)
+
+        # Augmented state for DMDc: [scaled PCA coords of queried point | mean std].
+        # Analogous to battery-forecast's [ECM means | ECM stds].  A_r fitted on
+        # this trajectory is a general (non-symmetric) matrix — complex eigenvalues
+        # emerge naturally, unlike the GD-predictor Jacobian J = I − αH_f which is
+        # always symmetric.  Per-step lambda_max is computed post-loop via
+        # stability_convergence (growing-prefix DMDc fits).
+        _q_pca_scaled = _krr_scaler.transform(
+            _pca_live.transform(X_hyp[0].reshape(1, -1))
+        ).flatten()
+        aug_states_list.append(np.append(_q_pca_scaled, mean_std))
 
         hook.on_step(
             y_true=y_true,
@@ -517,7 +504,50 @@ def run(
                   f"seed={len(seed_data)}  cand={len(cand_data)}  "
                   f"uncertainty={mean_std:.4f}")
 
-    report = hook.on_end()
+    # ── Lyapunov analysis ──────────────────────────────────────────────────────
+    # Computed before hook.on_end() so LyapunovStabilityCheck (in the pipeline
+    # above) can be given the real lambda_max series via the precomputed route.
+    print("\n[2/3] Lyapunov stability analysis …")
+    from traits_audit._viz import (
+        _fig_check_grid,
+        run_dmdc_lyapunov_analysis,
+        plot_uncertainty_evolution,
+        plot_lyapunov_evolution,
+        plot_audit_evolution,
+        plot_pareto_frontier,
+        plot_convergence,
+        plot_exploration_campaign,
+        plot_discovery_rate,
+    )
+    from traits_audit import dmdc as dm
+
+    # Build augmented state trajectory and compute per-step lambda_max via
+    # growing-prefix DMDc fits (analogous to battery-forecast's stability_convergence).
+    aug_traj = np.array(aug_states_list)  # (T, n_pca + 1)
+    _dmdc_actions = np.ones((len(aug_traj), 1))
+    _min_obs_dmdc = n_pca + 2
+    _conv = dm.stability_convergence(
+        aug_traj, _dmdc_actions, min_obs=_min_obs_dmdc, n_components=n_pca,
+    )
+    # Align one |λ_max| value per AL step: the first (len(aug_traj) - len(_conv))
+    # steps precede the DMDc warm-up and are NaN.  Padding to the actual step
+    # count (not a fixed _min_obs_dmdc) keeps this in sync with `uncertainties`
+    # even when n_iter < _min_obs_dmdc leaves _conv empty.  LyapunovStabilityCheck
+    # drops the NaN prefix itself rather than counting it as unstable.
+    _n_pad = max(0, len(aug_traj) - len(_conv))
+    lambda_max_per_step = [float("nan")] * _n_pad + _conv.tolist()
+
+    print(f"  DMDc augmented state: D={aug_traj.shape[1]} "
+          f"({n_pca} PCA coords + committee std), T={len(aug_traj)} steps")
+
+    # UncertaintyAnomalyCheck compares recent behaviour against an earlier
+    # baseline.  Use the first two check windows as the historical reference so
+    # the check detects genuine drift rather than within-series variance.
+    n_warmup = max(check_every * 2, len(uncertainties) // 5, 1)
+    report = hook.on_end(
+        historical_uncertainties=np.array(uncertainties[:n_warmup]),
+        lambda_max=np.array(lambda_max_per_step),
+    )
     print("\n" + report.summary())
 
     report_path = out_dir / "audit_report.json"
@@ -533,98 +563,33 @@ def run(
         _mlflow.set_tag("audit_verdict/overall", "PASS" if report.passed else "FAIL")
         _mlflow.log_artifact(str(report_path), "audit")
 
-    # ── Lyapunov analysis ──────────────────────────────────────────────────────
-    print("\n[2/3] Lyapunov stability analysis …")
-    from traits_audit._viz import (
-        _fig_check_grid,
-        make_gd_predictor,
-        run_lyapunov_analysis,
-        plot_uncertainty_evolution,
-        plot_lyapunov_evolution,
-        plot_audit_evolution,
-        plot_pareto_frontier,
-        plot_convergence,
-        plot_exploration_campaign,
-        plot_discovery_rate,
-    )
-
-    # Re-use _pca_live (fitted on full df_full) so per-step lambda_max and
-    # the final Lyapunov analysis share the same basis.
-    op_states_raw = np.array(queried_feature_vecs)   # (N, D_feat)
-    op_states_pca = _pca_live.transform(op_states_raw)  # (N, n_pca)
-    print(f"  PCA: D={op_states_raw.shape[1]} → {_pca_live.n_components_} components")
-
-    _post_pred = agent if _use_camd_agent else _surrogate
-
-    # Fit a smooth RBF surrogate in SCALED PCA space for Jacobian computation.
-    #
-    # Two reasons to work in scaled PCA space rather than the full 274-D feature space:
-    #
-    # 1. Tree ensembles are piecewise-constant: finite-difference perturbations that
-    #    stay within a single leaf give zero gradient, collapsing every eigenvalue to
-    #    1+0i (one apparent pole on the diagram). The C∞-smooth RBF KRR has a
-    #    well-defined, non-zero Hessian everywhere.
-    #
-    # 2. The OQMD PCA components have stds of 193–1454 in raw feature units. If the
-    #    KRR is fitted on original features and the Jacobian is computed via finite
-    #    differences of size eps=1e-3 in raw PCA space, the StandardScaler inside the
-    #    KRR maps that perturbation to ~7e-7 in scaled space — below the level where
-    #    the RBF kernel changes, so the numerical Hessian is ~1e-8 regardless of alpha.
-    #    Fitting and evaluating the KRR directly in scaled PCA space avoids this: the
-    #    perturbation lands in the kernel's sensitive range and the Hessian is ~0.2,
-    #    giving eigenvalue spread of [0.97, 1.59] with gd_alpha=1.0.
-    _X_lyap_raw = seed_data[_feat_pca].values.astype(float)
-    _X_lyap_pca = _pca_live.transform(_X_lyap_raw)     # (N, n_pca) raw PCA coords
-    _y_lyap = seed_data[target].values.astype(float)
-    _X_lyap_scaled = _krr_scaler.transform(_X_lyap_pca)  # unit variance per PC (scaler pre-fitted on full pool)
-    _smooth_surr = _KernelRidge(kernel="rbf", alpha=1.0)
-    _smooth_surr.fit(_X_lyap_scaled, _y_lyap)
-    print(f"  Smooth RBF surrogate fitted on {len(_X_lyap_scaled)} points "
-          f"for Jacobian computation")
-
-    # State space for Lyapunov analysis: scaled PCA coordinates.
-    # All predictor calls and finite differences run in this space.
-    op_states_scaled = _krr_scaler.transform(op_states_pca)  # (N, n_pca)
-
-    def _camd_mean_scaled(state_scaled: np.ndarray) -> float:
-        return float(_smooth_surr.predict(state_scaled.reshape(1, -1))[0])
-
-    def _camd_std_scaled(state_scaled: np.ndarray) -> float:
-        state_pca = _krr_scaler.inverse_transform(state_scaled.reshape(1, -1))
-        state_orig = _pca_live.inverse_transform(state_pca).flatten()
-        _, std = _committee_predict(_post_pred, state_orig.reshape(1, -1))
-        return float(std[0])
-
-    # gd_alpha=1.0: with the KRR Hessian ~0.2 in scaled PCA space, this gives
-    # eigenvalue spread [0.97, 1.59] across typical operating points — meaningful
-    # variation around the stability boundary without numerical blowup.
-    gd_pred = make_gd_predictor(_camd_mean_scaled, alpha=1.0, eps=1e-3)
-
-    lyap = run_lyapunov_analysis(
-        predictor=gd_pred,
-        op_states=op_states_scaled,
-        gp_std_fn=_camd_std_scaled,
-        model_label="AdaBoost-QBC (CAMD)",
+    lyap = run_dmdc_lyapunov_analysis(
+        aug_states=aug_traj,
+        model_label=_model_label,
         out_dir=fig_dir,
+        n_components=n_pca,
+        gp_std_seq=np.array(uncertainties),
+        actions=_dmdc_actions,
+        min_obs=_min_obs_dmdc,
     )
 
     plot_uncertainty_evolution(
         np.array(uncertainties),
-        model_label="AdaBoost-QBC (CAMD)",
+        model_label=_model_label,
         out_dir=fig_dir,
     )
 
     plot_lyapunov_evolution(
         lambda_max_seq=np.array(lambda_max_per_step),
         uncertainties=np.array(uncertainties),
-        model_label="AdaBoost-QBC (CAMD)",
+        model_label=_model_label,
         out_dir=fig_dir,
     )
 
     plot_audit_evolution(
         pipeline=hook._pipeline,
         history=hook.history,
-        model_label="AdaBoost-QBC (CAMD)",
+        model_label=_model_label,
         out_dir=fig_dir,
         snapshot_every=4,
     )
@@ -639,28 +604,29 @@ def run(
             for i, r in enumerate(hook.intermediate_reports)
         ]
         stage_reports.append(("final", report))
-        fig_grid = _fig_check_grid(stage_reports, "AdaBoost-QBC (CAMD)")
-        _grid_png = fig_dir / "fig10_check_grid.png"
-        try:
-            fig_grid.write_image(
-                str(_grid_png),
-                width=fig_grid.layout.width,
-                height=fig_grid.layout.height,
-                scale=2,
-            )
-            print("  Saved fig10_check_grid.png")
-        except Exception:
-            _grid_html = fig_dir / "fig10_check_grid.html"
-            fig_grid.write_html(str(_grid_html))
-            print(f"  Saved fig10_check_grid.html (install kaleido for PNG export)")
+        fig_grid = _fig_check_grid(stage_reports, _model_label)
+        if fig_grid is not None:
+            _grid_png = fig_dir / "fig10_check_grid.png"
+            try:
+                fig_grid.write_image(
+                    str(_grid_png),
+                    width=fig_grid.layout.width,
+                    height=fig_grid.layout.height,
+                    scale=2,
+                )
+                print("  Saved fig10_check_grid.png")
+            except Exception:
+                _grid_html = fig_dir / "fig10_check_grid.html"
+                fig_grid.write_html(str(_grid_html))
+                print(f"  Saved fig10_check_grid.html (install kaleido for PNG export)")
 
     abs_errors_al = [h.get("abs_error", float("nan")) for h in hook.history]
     plot_pareto_frontier(
         x_vals=np.array(uncertainties),
         y_vals=np.array(abs_errors_al),
         x_label="Committee std (stability units)",
-        y_label="Mean absolute error",
-        model_label="AdaBoost-QBC (CAMD)",
+        y_label="Mean absolute error (MAE)",
+        model_label=_model_label,
         out_dir=fig_dir,
         minimize_x=True,
         minimize_y=True,
@@ -680,7 +646,7 @@ def run(
         best_vals=best_stability,
         query_counts=np.arange(1, len(best_stability) + 1) * n_query,
         y_label=r"Best $\Delta E$ (eV/atom)",
-        model_label="AdaBoost-QBC (CAMD)",
+        model_label=_model_label,
         out_dir=fig_dir,
         maximise=False,
     )
@@ -691,7 +657,7 @@ def run(
         target=target,
         seed_df=initial_seed,
         queried_batches=queried_batches,
-        model_label="AdaBoost-QBC (CAMD)",
+        model_label=_model_label,
         out_dir=fig_dir,
     )
 
@@ -708,7 +674,7 @@ def run(
         y_true_per_batch=_y_true_per_batch,
         df_all_target=df_full[target].values,
         stability_threshold=_stability_threshold,
-        model_label="AdaBoost-QBC (CAMD)",
+        model_label=_model_label,
         out_dir=fig_dir,
     )
 

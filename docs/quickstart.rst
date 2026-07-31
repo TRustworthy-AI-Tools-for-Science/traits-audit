@@ -13,7 +13,7 @@ Install the package and run:
 
    ta-demo
 
-The demo runs a 40-step active learning loop in which a bootstrap-ensemble
+The demo runs a 100-step active learning loop in which a bootstrap-ensemble
 polynomial surrogate learns a 1-D target function via lower-confidence-bound
 acquisition.  At each step the loop pushes predictions to
 :class:`~traits_audit.hook.AuditHook`, which triggers an intermediate audit
@@ -47,7 +47,7 @@ Minimal example
    pipeline = AuditPipeline([
        CalibrationErrorCheck(threshold=0.1),
        IntervalCoverageCheck(expected_coverage=0.683, tolerance=0.1),
-       UncertaintyEvolutionCheck(slope_threshold=-0.05),
+       UncertaintyEvolutionCheck(),
    ], verbose=True)
 
    hook = AuditHook(pipeline)

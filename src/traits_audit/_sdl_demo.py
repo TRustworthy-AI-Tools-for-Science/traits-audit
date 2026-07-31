@@ -31,6 +31,31 @@ import numpy as np
 _LYAPUNOV_ALPHA = 0.01
 
 
+def _ensure_self_driving_lab_demo_importable() -> None:
+    """self_driving_lab_demo's __init__.py unconditionally imports
+    utils.search, which does ``from ax import optimize`` — an API removed
+    from the modern ax-platform this demo needs elsewhere (AxClient service
+    API, generation_strategy modules below). We only use
+    SelfDrivingLabDemoLight, never utils.search, so stub that submodule out
+    and retry rather than pinning ax-platform to a version incompatible with
+    the rest of this file.
+    """
+    if "self_driving_lab_demo" in sys.modules:
+        return
+    try:
+        import self_driving_lab_demo  # noqa: F401
+    except ImportError as exc:
+        if not (getattr(exc, "name", None) == "ax" and "optimize" in str(exc)):
+            raise
+        import types
+        stub = types.ModuleType("self_driving_lab_demo.utils.search")
+        stub.ax_bayesian_optimization = None
+        stub.grid_search = None
+        stub.random_search = None
+        sys.modules["self_driving_lab_demo.utils.search"] = stub
+        import self_driving_lab_demo  # noqa: F401  (retry)
+
+
 # ── Shared audit pipeline ──────────────────────────────────────────────────────
 
 def _make_pipeline(check_every: int, logger=None):
@@ -59,7 +84,7 @@ def _make_pipeline(check_every: int, logger=None):
             IntervalScoreCheck(),
             IntervalCoverageCheck(expected_coverage=0.683, tolerance=0.15),
             VarianceAlignmentCheck(tolerance=0.5),
-            UncertaintyEvolutionCheck(slope_threshold=-0.05),
+            UncertaintyEvolutionCheck(),
             UncertaintyAnomalyCheck(z_threshold=3.0),
             VarianceErrorCorrelationCheck(min_correlation=0.1),
             LyapunovStabilityCheck(stability_threshold=1.0, min_stable_fraction=0.5, alpha=_LYAPUNOV_ALPHA),
@@ -73,7 +98,7 @@ def _make_pipeline(check_every: int, logger=None):
 
 def run(
     n_init: int = 6,
-    n_iter: int = 25,
+    n_iter: int = 250,
     out_dir: Path = Path("_results/sdl_demo"),
     seed: int = 0,
     check_every: int = 10,
@@ -110,6 +135,7 @@ def run(
     )
 
     try:
+        _ensure_self_driving_lab_demo_importable()
         from self_driving_lab_demo import SelfDrivingLabDemoLight
     except ImportError:
         print("ERROR: self-driving-lab-demo is not installed.")
@@ -418,14 +444,15 @@ def run(
     ]
     stage_reports.append(("final", report))
     fig_grid = _fig_check_grid(stage_reports, "Ax-GP (SDL)")
-    try:
-        fig_grid.write_image(
-            str(fig_dir / "check_grid_sdl.png"),
-            width=fig_grid.layout.width, height=fig_grid.layout.height, scale=2,
-        )
-        print("  Saved check_grid_sdl.png")
-    except Exception:
-        pass
+    if fig_grid is not None:
+        try:
+            fig_grid.write_image(
+                str(fig_dir / "check_grid_sdl.png"),
+                width=fig_grid.layout.width, height=fig_grid.layout.height, scale=2,
+            )
+            print("  Saved check_grid_sdl.png")
+        except Exception:
+            pass
 
     if _use_mlflow:
         for r in report.results:
@@ -506,8 +533,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--n-init",      type=int,   default=6,
                    help="Sobol warm-start trials (default: 6)")
-    p.add_argument("--n-iter",      type=int,   default=25,
-                   help="BO iterations (default: 25)")
+    p.add_argument("--n-iter",      type=int,   default=250,
+                   help="BO iterations (default: 250)")
     p.add_argument("--out-dir",     type=str,   default="_results/sdl_demo")
     p.add_argument("--seed",        type=int,   default=0)
     p.add_argument("--check-every", type=int,   default=10,

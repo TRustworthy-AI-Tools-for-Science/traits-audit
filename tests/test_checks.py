@@ -19,6 +19,7 @@ from traits_audit.checks import (
     IntervalScoreCheck,
     IntervalCoverageCheck,
     LyapunovStabilityCheck,
+    MahalanobisOODCheck,
     VarianceAlignmentCheck,
     UncertaintyEvolutionCheck,
     UncertaintyAnomalyCheck,
@@ -144,19 +145,36 @@ def test_variance_alignment_skips_when_no_data():
     assert "Skipped" in result.message
 
 
-# ── UncertaintyEvolutionCheck ────────────────────────────────────────────────
+# ── UncertaintyEvolutionCheck (multi-channel: value = #decreasing channels) ───
 
 def test_evolution_passes_on_gentle_decline():
-    u = np.linspace(1.0, 0.5, 100)  # gentle: ~-0.3% per step relative to mean
-    result = UncertaintyEvolutionCheck(slope_threshold=-0.05).run([], uncertainties=u)
+    u = np.linspace(1.0, 0.5, 100)  # slope ≈ −0.005 > −0.01·mean → not flagged
+    result = UncertaintyEvolutionCheck().run([], uncertainties=u)
     assert result.passed
+    assert result.value == 0.0
 
 
 def test_evolution_fails_on_collapse():
-    u = np.linspace(1.0, 0.01, 10)  # steep: relative slope ≈ -0.22/step
-    result = UncertaintyEvolutionCheck(slope_threshold=-0.05).run([], uncertainties=u)
+    u = np.linspace(1.0, 0.01, 10)  # steep: slope ≈ −0.11 ≪ −0.01·mean → flagged
+    result = UncertaintyEvolutionCheck().run([], uncertainties=u)
     assert not result.passed
-    assert result.value < -0.05
+    assert result.value == 1.0  # one channel flagged
+
+
+def test_evolution_multichannel_flags_only_declining():
+    steps = 30
+    u = np.column_stack([np.full(steps, 0.8), np.linspace(1.0, 0.05, steps)])
+    result = UncertaintyEvolutionCheck().run([], uncertainties=u)
+    assert not result.passed
+    assert result.value == 1.0
+    assert result.details["n_channels"] == 2
+    assert len(result.details["uncertainty_series"]) == steps
+
+
+def test_evolution_respects_slope_threshold():
+    u = np.linspace(1.0, 0.5, 100)  # ~−0.7 %/step relative
+    assert UncertaintyEvolutionCheck(slope_threshold=-0.005).run([], uncertainties=u).passed is False
+    assert UncertaintyEvolutionCheck(slope_threshold=-0.05).run([], uncertainties=u).passed is True
 
 
 def test_evolution_passes_on_increasing_uncertainty():
@@ -164,10 +182,10 @@ def test_evolution_passes_on_increasing_uncertainty():
     assert UncertaintyEvolutionCheck().run([], uncertainties=u).passed
 
 
-def test_evolution_skips_single_step():
+def test_evolution_single_step_not_flagged():
     result = UncertaintyEvolutionCheck().run([], uncertainties=[0.5])
     assert result.passed
-    assert "Too few" in result.message
+    assert result.value == 0.0
 
 
 def test_evolution_skips_when_no_data():
@@ -177,32 +195,41 @@ def test_evolution_skips_when_no_data():
 
 
 def test_evolution_reads_from_history():
-    u = np.linspace(1.0, 0.6, 60)
+    u = np.linspace(1.0, 0.6, 60)  # slope ≈ −0.0068 > −0.01·mean → not flagged
     history = [{"uncertainty": float(v)} for v in u]
     assert UncertaintyEvolutionCheck().run(history).passed
 
 
-# ── UncertaintyAnomalyCheck ──────────────────────────────────────────────────
+# ── UncertaintyAnomalyCheck (z-score vs HISTORICAL baseline) ──────────────────
 
-def test_anomaly_passes_on_smooth_series():
-    u = 0.5 + 0.01 * np.sin(np.linspace(0, 4 * np.pi, 50))
-    assert UncertaintyAnomalyCheck().run([], uncertainties=u).passed
+def test_anomaly_passes_when_current_matches_baseline():
+    rng = np.random.default_rng(0)
+    hist = 0.5 + 0.05 * rng.standard_normal(50)
+    cur  = 0.5 + 0.05 * rng.standard_normal(20)
+    result = UncertaintyAnomalyCheck().run(
+        [], uncertainties=cur, historical_uncertainties=hist
+    )
+    assert result.passed
+    assert result.value < 0.05
 
 
-def test_anomaly_fails_with_multiple_large_spikes():
-    # 18 normal points + 2 spikes → anomaly fraction = 2/20 = 10% > 5%
-    u = np.concatenate([np.ones(18), [100.0, 100.0]])
+def test_anomaly_fails_with_spikes_vs_baseline():
+    rng = np.random.default_rng(1)
+    hist = 1.0 + 0.05 * rng.standard_normal(50)
+    cur = np.concatenate([1.0 + 0.05 * rng.standard_normal(18), [100.0, 100.0]])
     result = UncertaintyAnomalyCheck(z_threshold=3.0, max_anomaly_fraction=0.05).run(
-        [], uncertainties=u
+        [], uncertainties=cur, historical_uncertainties=hist
     )
     assert not result.passed
     assert result.value > 0.05
 
 
-def test_anomaly_skips_too_few_steps():
-    result = UncertaintyAnomalyCheck().run([], uncertainties=[1.0, 2.0])
+def test_anomaly_falls_back_to_within_series_without_baseline():
+    # When no historical_uncertainties provided, check should fall back to
+    # within-series z-scoring and return a real value rather than skipping.
+    result = UncertaintyAnomalyCheck().run([], uncertainties=[1.0, 2.0, 3.0])
     assert result.passed
-    assert "Too few" in result.message
+    assert result.value is not None
 
 
 def test_anomaly_skips_when_no_data():
@@ -211,10 +238,24 @@ def test_anomaly_skips_when_no_data():
     assert "Skipped" in result.message
 
 
-def test_anomaly_reads_from_history():
-    u = 0.5 + 0.01 * np.sin(np.linspace(0, 4 * np.pi, 30))
+def test_anomaly_details_keys():
+    rng = np.random.default_rng(2)
+    hist = 0.5 + 0.05 * rng.standard_normal(40)
+    cur = 0.5 + 0.05 * rng.standard_normal(20)
+    result = UncertaintyAnomalyCheck().run(
+        [], uncertainties=cur, historical_uncertainties=hist
+    )
+    for key in ("anomalous_fraction", "max_z_score", "hist_mean",
+                "hist_std", "current_mean", "current_std"):
+        assert key in result.details
+
+
+def test_anomaly_reads_current_from_history():
+    rng = np.random.default_rng(3)
+    hist = 0.5 + 0.05 * rng.standard_normal(30)
+    u = 0.5 + 0.05 * rng.standard_normal(20)
     history = [{"uncertainty": float(v)} for v in u]
-    assert UncertaintyAnomalyCheck().run(history).passed
+    assert UncertaintyAnomalyCheck().run(history, historical_uncertainties=hist).passed
 
 
 # ── VarianceErrorCorrelationCheck ────────────────────────────────────────────
@@ -388,6 +429,17 @@ def test_lyapunov_details_keys():
     assert result.details["n_stable"] == 1
 
 
+def test_lyapunov_drops_nan_prefix_instead_of_counting_unstable():
+    # A NaN-padded warm-up prefix (e.g. from a growing-window DMDc fit) must
+    # not be counted as "unstable" — it should be excluded entirely, so the
+    # verdict reflects only the valid entries.
+    lm = np.array([np.nan, np.nan, 0.3, 0.4, 0.5])
+    result = LyapunovStabilityCheck(min_stable_fraction=0.5).run([], lambda_max=lm)
+    assert result.passed
+    assert result.details["n_total"] == 3
+    assert result.details["n_stable"] == 3
+
+
 def test_lyapunov_from_surrogate_callable():
     # Flat quadratic bowl: f(x) = sum(x**2). Hessian = 2I, so GD Jacobian = I - 2α*I.
     # With alpha=0.01: J = (1 - 0.02)*I → |λ| = 0.98 < 1 → all stable.
@@ -412,6 +464,298 @@ def test_lyapunov_callable_unstable():
     op_states = rng.standard_normal((5, 2)) * 0.1  # small perturbations
     result = LyapunovStabilityCheck(alpha=0.01, min_stable_fraction=0.5).run(
         [], surrogate_fn=f, op_states=op_states
+    )
+    assert not result.passed
+
+
+# ── LyapunovStabilityCheck: max_workers concurrency ──────────────────────────
+#
+# The per-point Jacobian loop in _compute_lambda_max is where the check's
+# real cost lives (4n^2 surrogate_fn calls per point) and every point is
+# independent of every other, so it's embarrassingly parallel. These tests
+# call the "private" _compute_lambda_max directly (rather than only through
+# run()) because run() only exposes the aggregated fraction_stable/mean/max —
+# verifying that concurrent execution assigns each result to the *correct*
+# point (not just the correct set of values) requires the per-point array.
+
+def _quartic_distinct_scales():
+    # f(x) = sum(x**4): Hessian = diag(12*x_i**2), so curvature -- and
+    # therefore lambda_max -- grows strictly with |x|. Using points at
+    # clearly increasing scales means each point has a genuinely different
+    # expected lambda_max: a point-to-index mixup under concurrency would
+    # show up as specific entries changing, not just as the same values in
+    # a different order.
+    def f(x):
+        return float(np.sum(x**4))
+
+    op_states = np.array([
+        [0.05, 0.05],
+        [0.5, 0.5],
+        [1.5, 1.5],
+        [3.0, 3.0],
+        [6.0, 6.0],
+    ])
+    return f, op_states
+
+
+def test_lyapunov_concurrent_matches_sequential_and_preserves_point_mapping():
+    f, op_states = _quartic_distinct_scales()
+
+    seq_check = LyapunovStabilityCheck(alpha=0.01)  # max_workers=None default
+    conc_check = LyapunovStabilityCheck(alpha=0.01, max_workers=4)
+
+    lm_seq, info_seq = seq_check._compute_lambda_max(f, op_states)
+    lm_conc, info_conc = conc_check._compute_lambda_max(f, op_states)
+
+    np.testing.assert_array_equal(lm_seq, lm_conc)
+    # All 5 values genuinely distinct (to 6 decimals) -- so the equality
+    # above is confirming results land at the point they belong to, not
+    # trivially passing because every point happens to produce the same value.
+    assert len(set(np.round(lm_seq, 6))) == 5
+    assert info_seq["n_computed"] == info_conc["n_computed"] == 5
+
+
+def test_lyapunov_concurrent_with_more_workers_than_points():
+    # max_workers exceeding the number of points needing computation must not
+    # error or drop points.
+    f, op_states = _quartic_distinct_scales()
+    check = LyapunovStabilityCheck(alpha=0.01, max_workers=32)
+    lm, info = check._compute_lambda_max(f, op_states)
+    assert info["n_computed"] == 5
+    assert len(lm) == 5
+
+
+def test_lyapunov_concurrent_respects_cache_across_calls():
+    f, op_states = _quartic_distinct_scales()
+    cache: dict = {}
+    check = LyapunovStabilityCheck(alpha=0.01, max_workers=4)
+
+    lm1, info1 = check._compute_lambda_max(f, op_states[:3], cache=cache)
+    assert info1["n_computed"] == 3
+    assert info1["n_cached"] == 0
+
+    # Extend the trajectory by two points -- only the new ones should be
+    # (concurrently) computed; the first three must be reused unchanged.
+    lm2, info2 = check._compute_lambda_max(f, op_states, cache=cache)
+    assert info2["n_computed"] == 2
+    assert info2["n_cached"] == 3
+    np.testing.assert_array_equal(lm2[:3], lm1)
+
+
+def test_lyapunov_batched_jacobian_matches_scalar_nested_computation():
+    # _numerical_jacobian_batched must reproduce _numerical_jacobian(
+    # _gd_predictor(f_scalar, alpha), state) exactly (same math, issued as one
+    # batched call instead of 4n^2 scalar ones) -- this is the numerical
+    # contract the whole batching optimization depends on.
+    from traits_audit.checks.lyapunov import (
+        _numerical_jacobian,
+        _numerical_jacobian_batched,
+        _gd_predictor,
+    )
+
+    rng = np.random.default_rng(7)
+    state = rng.standard_normal(6)
+
+    def f_scalar(x):
+        # Deliberately asymmetric / non-quadratic so a wrong index mapping
+        # inside the batched construction would change the result.
+        return float(np.sum(x**3) + 2.0 * x[0] * x[-1])
+
+    def f_batched(X):
+        return np.sum(X**3, axis=1) + 2.0 * X[:, 0] * X[:, -1]
+
+    predictor = _gd_predictor(f_scalar, alpha=0.02)
+    J_seq = _numerical_jacobian(predictor, state)
+    J_batched = _numerical_jacobian_batched(f_batched, state, alpha=0.02)
+
+    np.testing.assert_allclose(J_seq, J_batched, rtol=1e-10, atol=1e-12)
+
+
+def test_lyapunov_surrogate_fn_batched_matches_scalar_path_via_compute_lambda_max():
+    def f_scalar(x):
+        return float(np.sum(x**3) + 2.0 * x[0] * x[-1])
+
+    def f_batched(X):
+        return np.sum(X**3, axis=1) + 2.0 * X[:, 0] * X[:, -1]
+
+    rng = np.random.default_rng(3)
+    op_states = rng.standard_normal((4, 6))
+
+    check = LyapunovStabilityCheck(alpha=0.02)
+    lm_scalar, info_scalar = check._compute_lambda_max(f_scalar, op_states)
+    lm_batched, info_batched = check._compute_lambda_max(
+        f_scalar, op_states, surrogate_fn_batched=f_batched
+    )
+
+    np.testing.assert_allclose(lm_scalar, lm_batched, rtol=1e-10, atol=1e-12)
+    assert info_scalar["n_computed"] == info_batched["n_computed"] == 4
+
+
+def test_lyapunov_surrogate_fn_batched_with_pca_matches_scalar_path():
+    # PCA path: f_use_batched must inverse_transform the whole batch and stay
+    # consistent with the per-point f_use's inverse_transform + surrogate_fn.
+    def f_scalar(x):
+        return float(np.sum(x**2))
+
+    def f_batched(X):
+        return np.sum(X**2, axis=1)
+
+    rng = np.random.default_rng(11)
+    op_states = rng.standard_normal((10, 5))  # m=10 > n_pca=2 -> PCA engages
+
+    check = LyapunovStabilityCheck(alpha=0.01, n_pca=2)
+    lm_scalar, info_scalar = check._compute_lambda_max(f_scalar, op_states)
+    lm_batched, info_batched = check._compute_lambda_max(
+        f_scalar, op_states, surrogate_fn_batched=f_batched
+    )
+
+    assert not info_scalar["pca_skipped"]
+    np.testing.assert_allclose(lm_scalar, lm_batched, rtol=1e-8, atol=1e-10)
+
+
+def test_lyapunov_batched_respects_cache_across_calls():
+    def f_batched(X):
+        return np.sum(X**3, axis=1) + 2.0 * X[:, 0] * X[:, -1]
+
+    rng = np.random.default_rng(5)
+    op_states = rng.standard_normal((3, 4))
+    cache: dict = {}
+    check = LyapunovStabilityCheck(alpha=0.02)
+
+    lm1, info1 = check._compute_lambda_max(
+        lambda x: float(f_batched(x[np.newaxis])[0]), op_states, cache=cache,
+        surrogate_fn_batched=f_batched,
+    )
+    assert info1["n_computed"] == 3
+
+    op_states2 = np.vstack([op_states, rng.standard_normal((1, 4))])
+    lm2, info2 = check._compute_lambda_max(
+        lambda x: float(f_batched(x[np.newaxis])[0]), op_states2, cache=cache,
+        surrogate_fn_batched=f_batched,
+    )
+    assert info2["n_computed"] == 1
+    assert info2["n_cached"] == 3
+    np.testing.assert_array_equal(lm2[:3], lm1)
+
+
+def test_lyapunov_concurrent_via_run_matches_sequential_fraction():
+    # End-to-end through the public run() API, not just _compute_lambda_max.
+    f, op_states = _quartic_distinct_scales()
+    seq = LyapunovStabilityCheck(alpha=0.01, min_stable_fraction=0.5).run(
+        [], surrogate_fn=f, op_states=op_states
+    )
+    conc = LyapunovStabilityCheck(alpha=0.01, min_stable_fraction=0.5, max_workers=4).run(
+        [], surrogate_fn=f, op_states=op_states
+    )
+    assert seq.passed == conc.passed
+    assert seq.value == pytest.approx(conc.value)
+    assert seq.details["lambda_max_mean"] == pytest.approx(conc.details["lambda_max_mean"])
+
+
+# ── MahalanobisOODCheck ──────────────────────────────────────────────────────
+
+def _mahalanobis_data(seed, n_id=40, d=2, window=10, shift=20.0):
+    """(n_id + window, d) array: an in-distribution cluster followed by a shifted
+    OOD tail occupying the whole trailing window."""
+    rng = np.random.default_rng(seed)
+    id_cluster = rng.standard_normal((n_id, d))
+    tail = rng.standard_normal((window, d)) * 0.5 + shift
+    return np.vstack([id_cluster, tail]), n_id, window
+
+
+def test_mahalanobis_skips_when_op_states_absent():
+    result = MahalanobisOODCheck().run([])
+    assert result.passed
+    assert result.value is None
+    assert "Skipped" in result.message
+
+
+def test_mahalanobis_skips_below_min_history():
+    op_states = np.random.default_rng(0).standard_normal((10, 2))
+    result = MahalanobisOODCheck(min_history=20).run([], op_states=op_states)
+    assert result.passed
+    assert result.value is None
+    assert "Skipped" in result.message
+
+
+def test_mahalanobis_passes_on_pure_in_distribution_data():
+    op_states = np.random.default_rng(0).standard_normal((30, 2))
+    result = MahalanobisOODCheck(min_history=20, window=10, n_bootstrap=50, random_state=0).run(
+        [], op_states=op_states, uncertainties=np.full(30, 0.1)
+    )
+    assert result.passed
+    assert result.value == pytest.approx(0.0)
+
+
+def test_mahalanobis_passes_when_ood_exploration_has_healthy_uncertainty():
+    op_states, n_id, window = _mahalanobis_data(seed=42)
+    uncertainties = np.concatenate([np.full(n_id, 0.1), np.full(window, 1.0)])
+    result = MahalanobisOODCheck(min_history=20, window=window, n_bootstrap=50, random_state=0).run(
+        [], op_states=op_states, uncertainties=uncertainties
+    )
+    assert result.passed
+    assert result.value == pytest.approx(1.0)
+    assert result.details["suppression_assessed"] is True
+
+
+def test_mahalanobis_fails_when_ood_uncertainty_is_suppressed():
+    op_states, n_id, window = _mahalanobis_data(seed=42)
+    uncertainties = np.concatenate([np.full(n_id, 1.0), np.full(window, 0.05)])
+    result = MahalanobisOODCheck(min_history=20, window=window, n_bootstrap=50, random_state=0).run(
+        [], op_states=op_states, uncertainties=uncertainties
+    )
+    assert not result.passed
+    assert result.value == pytest.approx(1.0)
+    assert "suppression" in result.message
+
+
+def test_mahalanobis_degraded_pass_without_uncertainty_data():
+    op_states, _, _ = _mahalanobis_data(seed=42)
+    result = MahalanobisOODCheck(min_history=20, window=10, n_bootstrap=50, random_state=0).run(
+        [], op_states=op_states
+    )
+    assert result.passed
+    assert result.value == pytest.approx(1.0)
+    assert result.details["suppression_assessed"] is False
+
+
+def test_mahalanobis_uses_in_window_baseline_when_enough_id_points_in_window():
+    rng = np.random.default_rng(7)
+    n_id, d, window = 40, 2, 10
+    id_cluster = rng.standard_normal((n_id, d))
+    ood_part = rng.standard_normal((6, d)) * 0.5 + 20.0
+    id_part = rng.standard_normal((4, d))
+    op_states = np.vstack([id_cluster, ood_part, id_part])
+    uncertainties = np.concatenate([np.full(n_id, 0.1), np.full(6, 1.0), np.full(4, 0.1)])
+
+    result = MahalanobisOODCheck(min_history=20, window=window, n_bootstrap=50, random_state=1).run(
+        [], op_states=op_states, uncertainties=uncertainties
+    )
+    assert result.passed
+    assert result.details["id_baseline_mode"] == "window"
+
+
+def test_mahalanobis_details_keys():
+    op_states, n_id, window = _mahalanobis_data(seed=42)
+    uncertainties = np.concatenate([np.full(n_id, 0.1), np.full(window, 1.0)])
+    result = MahalanobisOODCheck(min_history=20, window=window, n_bootstrap=50, random_state=0).run(
+        [], op_states=op_states, uncertainties=uncertainties
+    )
+    for key in (
+        "mahalanobis_series", "threshold", "is_ood", "ood_fraction", "window_effective",
+        "n_reference", "n_bootstrap", "shrinkage_", "n_ood_total", "suppression_assessed",
+        "id_baseline_mode", "id_baseline_mean", "ood_window_mean",
+    ):
+        assert key in result.details
+    assert len(result.details["mahalanobis_series"]) == op_states.shape[0]
+
+
+def test_mahalanobis_reads_uncertainty_from_history():
+    op_states, n_id, window = _mahalanobis_data(seed=42)
+    u = np.concatenate([np.full(n_id, 1.0), np.full(window, 0.05)])
+    history = [{"uncertainty": float(v)} for v in u]
+    result = MahalanobisOODCheck(min_history=20, window=window, n_bootstrap=50, random_state=0).run(
+        history, op_states=op_states
     )
     assert not result.passed
 

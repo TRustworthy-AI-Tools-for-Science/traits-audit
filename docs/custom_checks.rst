@@ -44,7 +44,7 @@ record anything extra via ``on_step``.
    import numpy as np
    from traits_audit.base import AuditCheck, AuditCategory, AuditResult
 
-   class ENCECheck(AuditCheck):
+   class CustomENCECheck(AuditCheck):
        """Expected Normalised Calibration Error (Levi et al. 2022).
 
        Compares root-mean-variance (RMV) to RMSE in equal-frequency bins.
@@ -67,7 +67,7 @@ record anything extra via ``on_step``.
 
        @property
        def name(self) -> str:
-           return f"ENCE(bins={self.n_bins})"
+           return f"CustomENCE(bins={self.n_bins})"
 
        @property
        def category(self) -> AuditCategory:
@@ -108,7 +108,7 @@ Wire it up — no changes to the loop body:
 
 .. code-block:: python
 
-   pipeline = AuditPipeline([ENCECheck(n_bins=10, threshold=0.1)])
+   pipeline = AuditPipeline([CustomENCECheck(n_bins=10, threshold=0.1)])
    hook     = AuditHook(pipeline)
 
    for step in my_loop:
@@ -260,7 +260,7 @@ regardless of which data route they use — the pipeline passes both
    pipeline = AuditPipeline(
        checks=[
            CalibrationErrorCheck(threshold=0.1),     # batch
-           ENCECheck(n_bins=10),                      # batch
+           CustomENCECheck(n_bins=10),                      # batch
            UncertaintyEvolutionCheck(),               # sequence
            PredictiveEntropyDecayCheck(),             # sequence
            MaxUncertaintyFractionCheck(cap=2.0),      # mixed

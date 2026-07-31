@@ -17,3 +17,19 @@ Checks
 .. automodule:: traits_audit.checks.uncertainty
    :members:
    :undoc-members:
+
+.. automodule:: traits_audit.checks.conformal
+   :members:
+   :undoc-members:
+
+.. automodule:: traits_audit.checks.pit
+   :members:
+   :undoc-members:
+
+.. automodule:: traits_audit.checks.scoring
+   :members:
+   :undoc-members:
+
+.. automodule:: traits_audit.checks.lyapunov
+   :members:
+   :undoc-members:

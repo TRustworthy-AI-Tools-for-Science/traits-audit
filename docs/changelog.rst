@@ -1,6 +1,23 @@
 Changelog
 =========
 
+0.1.2 (2026-07-02)
+-------------------
+
+- ``uv sync`` now installs all demo extras (mlflow, camd, pybamm, sdl) by
+  default via ``[dependency-groups]``; no extra flags required.
+- Removed ``camd`` / ``qmpy-tri`` legacy compatibility notes — the demo uses
+  a scikit-learn BaggingRegressor surrogate and does not require either package.
+- ``requires-python`` raised to ``≥ 3.11`` (required by ax-platform ≥ 1.3.0).
+- Fixed ``UncertaintyEvolutionCheck`` being called with a nonexistent
+  ``slope_threshold`` argument in all four demos.
+- Four-panel ``oracle_uncertainty_panel.png`` replaces individual per-scenario
+  oracle figures in the calibration demo.
+- Smoke tests added for all four demo entry points; mlflow is stubbed so
+  tests run without a real MLflow installation.
+- ``fig_dir.mkdir`` calls updated to ``parents=True`` in the calibration demo.
+
+
 0.1.0 (2026-05-23)
 -------------------
 
