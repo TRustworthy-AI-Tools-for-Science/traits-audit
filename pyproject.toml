@@ -89,7 +89,7 @@ members = [
 ]
 
 [tool.uv.sources]
-traits-audit = { editable = true }
+traits-audit = { workspace = true }
 
 [dependency-groups]
 dev = [
