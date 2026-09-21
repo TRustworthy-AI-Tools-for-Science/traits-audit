@@ -1,9 +1,10 @@
 """Conformal prediction coverage validity check."""
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any
 
 import numpy as np
+from scipy.stats import norm as _norm
 
 from ..base import AuditCategory, AuditCheck, AuditResult
 from .calibration import _require
@@ -77,9 +78,7 @@ class ConformalCoverageCheck(AuditCheck):
     def category(self) -> AuditCategory:
         return AuditCategory.ALEATORIC_MODEL
 
-    def run(self, history: List[Dict[str, Any]], **kwargs) -> AuditResult:
-        from scipy.stats import norm
-
+    def run(self, history: list[dict[str, Any]], **kwargs) -> AuditResult:
         y_true = _require("y_true", history, kwargs)
         mu     = _require("y_pred_mean", history, kwargs)
         sigma  = _require("y_pred_std", history, kwargs)
@@ -109,7 +108,7 @@ class ConformalCoverageCheck(AuditCheck):
         empirical_coverage = float(np.mean(scores <= q_hat))
 
         # Ratio of conformal quantile to expected Gaussian critical value
-        z_expected = float(norm.ppf(1.0 - alpha / 2.0))
+        z_expected = float(_norm.ppf(1.0 - alpha / 2.0))
         q_ratio = q_hat / max(z_expected, 1e-12)
 
         passed = q_ratio <= self.max_q_ratio

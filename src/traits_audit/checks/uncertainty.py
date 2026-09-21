@@ -1,7 +1,7 @@
 """Uncertainty evolution, anomaly, Mahalanobis OOD, and variance-error correlation checks."""
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import numpy as np
 
@@ -9,7 +9,7 @@ from ..base import AuditCategory, AuditCheck, AuditResult
 from .calibration import _require
 
 
-def _uncertainties(history: list, kwargs: dict) -> Optional[np.ndarray]:
+def _uncertainties(history: list, kwargs: dict) -> np.ndarray | None:
     """Pull uncertainty series from kwargs or history['uncertainty'] key.
 
     Returns None if the data is not available — callers must return a skipped
@@ -58,20 +58,20 @@ class UncertaintyEvolutionCheck(AuditCheck):
 
     @property
     def category(self) -> AuditCategory:
-        return AuditCategory.EPISTEMIC
+        # Reduction under replication (METRIC_TAXONOMY_AUDIT.md §3 table):
+        # this tests the trend of the *reported* sigma, not the realized
+        # error — the reported-side half of that taxonomy class. See
+        # ReplicationShrinkageExponentCheck / DarkUncertaintyGapCheck in
+        # checks/replication.py for the realized-side complement.
+        return AuditCategory.REDUCTION_UNDER_REPLICATION
 
-    def run(self, history: List[Dict[str, Any]], **kwargs) -> AuditResult:
-        raw = kwargs.get("uncertainties")
-        if raw is not None:
-            u = np.asarray(raw, dtype=float)
-        else:
-            vals = [h["uncertainty"] for h in history if "uncertainty" in h]
-            if not vals:
-                return AuditResult(
-                    name=self.name, passed=True, category=self.category,
-                    message="Skipped — uncertainty series not available.",
-                )
-            u = np.asarray(vals, dtype=float)
+    def run(self, history: list[dict[str, Any]], **kwargs) -> AuditResult:
+        u = _uncertainties(history, kwargs)
+        if u is None:
+            return AuditResult(
+                name=self.name, passed=True, category=self.category,
+                message="Skipped — uncertainty series not available.",
+            )
 
         if u.ndim == 1:
             u = u[:, np.newaxis]
@@ -145,9 +145,10 @@ class UncertaintyAnomalyCheck(AuditCheck):
 
     @property
     def category(self) -> AuditCategory:
-        return AuditCategory.EPISTEMIC
+        # Reduction under replication — same lineage as UncertaintyEvolutionCheck.
+        return AuditCategory.REDUCTION_UNDER_REPLICATION
 
-    def run(self, history: List[Dict[str, Any]], **kwargs) -> AuditResult:
+    def run(self, history: list[dict[str, Any]], **kwargs) -> AuditResult:
         raw_current = kwargs.get("uncertainties")
         current_u = (
             np.asarray(raw_current, dtype=float).flatten()
@@ -274,7 +275,7 @@ class MahalanobisOODCheck(AuditCheck):
         window: int = 10,
         n_bootstrap: int = 200,
         ood_fraction_threshold: float = 0.5,
-        random_state: Optional[int] = None,
+        random_state: int | None = None,
     ):
         self.min_history = min_history
         self.threshold_sigma = threshold_sigma
@@ -291,7 +292,7 @@ class MahalanobisOODCheck(AuditCheck):
     def category(self) -> AuditCategory:
         return AuditCategory.EPISTEMIC
 
-    def run(self, history: List[Dict[str, Any]], **kwargs) -> AuditResult:
+    def run(self, history: list[dict[str, Any]], **kwargs) -> AuditResult:
         raw_states = kwargs.get("op_states")
         if raw_states is None:
             return AuditResult(
@@ -351,7 +352,7 @@ class MahalanobisOODCheck(AuditCheck):
         window_ood = is_ood[-window_effective:]
         ood_fraction = float(np.mean(window_ood))
 
-        details: Dict[str, Any] = {
+        details: dict[str, Any] = {
             "mahalanobis_series": mahalanobis_series.tolist(),
             "threshold": threshold,
             "is_ood": window_ood.tolist(),
@@ -476,7 +477,7 @@ class VarianceErrorCorrelationCheck(AuditCheck):
     def category(self) -> AuditCategory:
         return AuditCategory.EPISTEMIC
 
-    def run(self, history: List[Dict[str, Any]], **kwargs) -> AuditResult:
+    def run(self, history: list[dict[str, Any]], **kwargs) -> AuditResult:
         from scipy.stats import spearmanr
 
         y_true = _require("y_true", history, kwargs)

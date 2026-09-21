@@ -41,11 +41,25 @@ This is useful for long-running loops where early anomaly detection matters.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+import json as _json
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Self
 
 if TYPE_CHECKING:
-    from .pipeline import AuditPipeline
     from .base import AuditReport
+    from .pipeline import AuditPipeline
+
+
+def _json_default(obj: Any) -> Any:
+    """JSON encoder for numpy scalars and arrays."""
+    import numpy as np
+    if isinstance(obj, np.integer):
+        return int(obj)
+    if isinstance(obj, np.floating):
+        return float(obj)
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    return str(obj)
 
 
 class AuditHook:
@@ -67,16 +81,16 @@ class AuditHook:
 
     def __init__(
         self,
-        pipeline: "AuditPipeline",
-        check_every: Optional[int] = None,
+        pipeline: AuditPipeline,
+        check_every: int | None = None,
         logger: Any = None,
     ):
         self._pipeline = pipeline
         self._check_every = check_every
         self._logger = logger
-        self._history: List[Dict[str, Any]] = []
-        self._report: Optional["AuditReport"] = None
-        self.intermediate_reports: List["AuditReport"] = []
+        self._history: list[dict[str, Any]] = []
+        self._report: AuditReport | None = None
+        self.intermediate_reports: list[AuditReport] = []
 
     # ------------------------------------------------------------------
     # Core interface — called by the external loop
@@ -114,7 +128,7 @@ class AuditHook:
             if self._logger is not None:
                 self._logger.log_report(report, step=len(self._history), tag="intermediate")
 
-    def on_end(self, **kwargs: Any) -> "AuditReport":
+    def on_end(self, **kwargs: Any) -> AuditReport:
         """
         Finalise: run the pipeline on the full accumulated history.
 
@@ -138,7 +152,7 @@ class AuditHook:
     # Context-manager integration
     # ------------------------------------------------------------------
 
-    def __enter__(self) -> "AuditHook":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
@@ -161,14 +175,14 @@ class AuditHook:
     # ------------------------------------------------------------------
 
     @property
-    def report(self) -> "AuditReport":
+    def report(self) -> AuditReport:
         """The most recent final report. Raises if on_end has not been called."""
         if self._report is None:
             raise RuntimeError("No report yet — call on_end() or exit the context manager.")
         return self._report
 
     @property
-    def history(self) -> List[Dict[str, Any]]:
+    def history(self) -> list[dict[str, Any]]:
         """Read-only view of the accumulated step data."""
         return list(self._history)
 
@@ -196,6 +210,31 @@ class AuditHook:
                 import numpy as np
                 return np.asarray(step["uncertainty_vector"])
         return None
+
+    def save_history(self, path: str | Path) -> Path:
+        """Serialize the per-step history to a JSON file.
+
+        Each entry is a dict ``{"_step": int, ...on_step_kwargs}``.  The file
+        can be reloaded later to regenerate figures without re-running the
+        experiment::
+
+            import json
+            history = json.load(open("_results/history.json"))
+
+        Parameters
+        ----------
+        path : str or Path
+            Destination file.  Parent directories are created if needed.
+
+        Returns
+        -------
+        Path
+            The path that was written.
+        """
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(_json.dumps(self._history, default=_json_default, indent=2), encoding="utf-8")
+        return path
 
     def reset(self) -> None:
         """Clear accumulated history and reports (reuse the hook for a new run)."""

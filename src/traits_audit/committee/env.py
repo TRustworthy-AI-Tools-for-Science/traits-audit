@@ -24,7 +24,7 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
-from traits_audit._example import BootstrapSurrogate, oracle as forrester_oracle
+from traits_audit._cal_demo import BootstrapSurrogate, oracle as forrester_oracle
 from traits_audit.committee.rewards import RewardComputer
 
 
@@ -48,7 +48,7 @@ class CommitteeEnv(gym.Env):
     reward_computer : RewardComputer
         Per-step reward; cumulative-mean delta of an audit check.
     oracle_fn : callable, optional
-        Oracle f(x, rng) -> y. Defaults to noisy Forrester from _example.py.
+        Oracle f(x, rng) -> y. Defaults to noisy Forrester from _cal_demo.py.
     warmstart_n : int
         Number of initial random queries before step 0 (clean oracle, no noise).
     episode_length : int

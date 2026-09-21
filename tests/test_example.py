@@ -1,4 +1,4 @@
-from traits_audit._example import _ensure_cal_demo_dir
+from traits_audit._cal_demo import _ensure_cal_demo_dir
 
 
 def test_ensure_cal_demo_dir_creates_parents(tmp_path, monkeypatch):

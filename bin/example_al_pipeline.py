@@ -2,12 +2,12 @@
 """Thin shim — delegates to the installable entry point.
 
 Prefer the installed CLI command:
-    ta-demo [OPTIONS]
+    ta-cal-demo [OPTIONS]
 
 Or via uv without installing:
     uv run bin/example_al_pipeline.py [OPTIONS]
 """
-from traits_audit._example import main
+from traits_audit._cal_demo import main
 
 if __name__ == "__main__":
     main()

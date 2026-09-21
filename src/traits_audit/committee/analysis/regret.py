@@ -29,7 +29,7 @@ from typing import Callable, Optional
 
 import numpy as np
 
-from traits_audit._example import oracle as forrester_oracle
+from traits_audit._cal_demo import oracle as forrester_oracle
 from traits_audit.committee.env import DEFAULT_EPISODE_LENGTH, DEFAULT_WARMSTART
 from traits_audit.committee.rewards import REWARD_REGISTRY
 from traits_audit.committee.analysis.rollouts import (

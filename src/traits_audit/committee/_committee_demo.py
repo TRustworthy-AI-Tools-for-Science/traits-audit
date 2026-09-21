@@ -18,7 +18,7 @@ from typing import Optional
 import numpy as np
 
 from traits_audit import AuditHook, AuditPipeline
-from traits_audit._example import BootstrapSurrogate, oracle as forrester_oracle, lcb
+from traits_audit._cal_demo import BootstrapSurrogate, oracle as forrester_oracle, lcb
 from traits_audit.checks import (
     CalibrationErrorCheck,
     ConformalCoverageCheck,

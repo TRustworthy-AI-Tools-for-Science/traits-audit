@@ -11,16 +11,20 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Dict, Optional
-
-import numpy as np
-from scipy.linalg import solve_discrete_lyapunov
+from typing import Any
 
 import matplotlib.pyplot as plt
+import numpy as np
+
+from .checks.lyapunov import (
+    compute_lyapunov,
+    eigenvalues_and_stability,
+    numerical_jacobian,
+)
 
 # ── Publication rcParams (applied once at import) ───────────────────────────
 
-_RCPARAMS: Dict[str, Any] = {
+_RCPARAMS: dict[str, Any] = {
     "font.family":     "serif",
     "font.size":       10,
     "axes.titlesize":  11,
@@ -37,86 +41,52 @@ plt.rcParams.update(_RCPARAMS)
 
 # ── Plotly figure constants ─────────────────────────────────────────────────
 
-#: Short labels for check names used on the x-axis of the check-grid heatmap.
-_CHECK_ABBREV: Dict[str, str] = {
-    "CalibrationError":         "CalibError",
-    "ConformalCoverage":        "CnfCoverage",
-    "CRPS":                     "CRPS",
-    "IntervalCoverage":         "IntCoverage",
-    "IntervalScore":            "IntScore",
-    "NegativeLogLikelihood":    "NegLogLik",
-    "PITUniformity":            "PITUnif",
-    "UncertaintyEvolution":     "UncEvolution",
-    "UncertaintyAnomalies":     "UncAnomalies",
-    "VarianceAlignment":        "VarAlignment",
-    "VarianceErrorCorrelation": "VarErrCorr",
+#: Short labels for check names used on the x-axis of the check-grid heatmap
+#: and the metric-correlation matrix. Every ``AuditCheck.name`` in the
+#: package should have an entry here — a missing one falls back to the full
+#: name (check grid) or a hard 12-char truncation (correlation matrix), both
+#: of which get visually cramped or ambiguous fast.
+_CHECK_ABBREV: dict[str, str] = {
+    # Total-predictive-distribution checks (pre-existing).
+    "CalibrationError":            "CE",
+    "KuleshovCalibrationError":    "KCE",
+    "ENCE":                        "ENCE",
+    "CalibrationError1Std":        "CE1Sig",
+    "ConformalCoverage":           "CC",
+    "CRPS":                        "CRPS",
+    "IntervalCoverage":            "IC",
+    "IntervalScore":               "IS",
+    "NegativeLogLikelihood":       "NLL",
+    "PITUniformity":               "PITU",
+    "UncertaintyEvolution":        "UE",
+    "UncertaintyAnomalies":        "UA",
+    "VarianceAlignment":           "VA",
+    "VarianceErrorCorrelation":    "VEC",
+    "LyapunovStability":           "LYS",
+    "MahalanobisOOD":              "MOOD",
+    # Taxonomy-audit additions (METRIC_TAXONOMY_AUDIT.md §4).
+    "SignedBias":                  "SB",
+    "ReplicationShrinkageExponent": "RSE",
+    "DarkUncertaintyGap":          "DUG",
+    "TypeBMassFraction":           "TBMF",
+    "ReducibilityRealisationRatio": "RRR",
+    "AleatoricFloorConsistency":   "AFC",
+    "EnsembleIndependenceDeficit": "EID",
+    "DMDcSpectralRadius":          "Rho",
+    "ResidualPersistenceHalfLife": "RHL",
+    "ImprecisionWidthFraction":    "IWF",
+    "EnvelopeViolationRate":       "EV",
+    "ProceduralVarianceShare":     "PVS",
+    "DataVarianceShare":           "DVS",
+    "MisspecificationResidualFloor": "MRF",
+    "StageVarianceAttribution":    "SVA",
+    "DecisionFlipRate":            "DFR",
+    "TailIndex":                   "TI",
+    "ScoreDecomposition":          "SD",
 }
 
 #: Per-step scalar keys recorded by the audit hook and shown in the state heatmap.
 _STATE_KEYS = ["uncertainty", "pool_sigma_mean", "pool_sigma_max", "abs_error"]
-
-
-# ── Core Lyapunov functions ─────────────────────────────────────────────────
-
-def numerical_jacobian(
-    predictor,
-    state: np.ndarray,
-    action: np.ndarray | None = None,
-    dx: float = 1e-4,
-) -> np.ndarray:
-    """n×n Jacobian of predictor(state, action) → ℝⁿ via central differences."""
-    n = len(state)
-    J = np.zeros((n, n), dtype=np.float64)
-    for i in range(n):
-        s_plus  = state.copy(); s_plus[i]  += dx
-        s_minus = state.copy(); s_minus[i] -= dx
-        col = (predictor(s_plus, action) - predictor(s_minus, action)) / (2.0 * dx)
-        J[:, i] = col
-    return J
-
-
-def eigenvalues_and_stability(J: np.ndarray) -> dict:
-    """Eigenvalue spectrum and discrete-time stability indicators."""
-    eigs = np.linalg.eigvals(J)
-    mags = np.abs(eigs)
-    return {
-        "eigenvalues": eigs,
-        "magnitudes":  mags,
-        "lambda_max":  float(mags.max()),
-        "lambda_min":  float(mags.min()),
-        "is_stable":   bool((mags < 1.0).all()),
-        "n_unstable":  int((mags >= 1.0).sum()),
-    }
-
-
-def compute_lyapunov(A: np.ndarray, rho_max: float = 0.99) -> np.ndarray | None:
-    """Solve discrete Lyapunov equation Aᵀ P A − P = −I.
-
-    If ``A``'s spectral radius is ≥ 1, ``A`` is rescaled to spectral radius
-    *rho_max* before solving — same approach as
-    :func:`traits_audit.dmdc.compute_gramians`. Returns ``None`` only if
-    ``solve_discrete_lyapunov`` itself raises.
-    """
-    rho = float(np.abs(np.linalg.eigvals(A)).max())
-    if rho >= 1.0:
-        A = A * (rho_max / rho)
-    try:
-        return solve_discrete_lyapunov(A.T, np.eye(len(A)))
-    except Exception:
-        return None
-
-
-def make_gd_predictor(f_scalar, alpha: float = 0.01, eps: float = 1e-5):
-    """Discrete gradient-descent step predictor: x_{t+1} = x_t − α ∇f(x_t)."""
-    def predictor(state: np.ndarray, action=None) -> np.ndarray:
-        n = len(state)
-        grad = np.zeros(n)
-        for i in range(n):
-            s_p = state.copy(); s_p[i] += eps
-            s_m = state.copy(); s_m[i] -= eps
-            grad[i] = (f_scalar(s_p) - f_scalar(s_m)) / (2.0 * eps)
-        return state - alpha * grad
-    return predictor
 
 
 # ── Private save helper ─────────────────────────────────────────────────────
@@ -124,6 +94,7 @@ def make_gd_predictor(f_scalar, alpha: float = 0.01, eps: float = 1e-5):
 def _save(fig, out_dir: Path, stem: str) -> None:
     fig.savefig(out_dir / f"{stem}.png", dpi=300, bbox_inches="tight")
     plt.close(fig)
+    print(f"  Saved {stem}.png")
 
 
 # ── Matplotlib plot functions ───────────────────────────────────────────────
@@ -149,21 +120,21 @@ def plot_poles(
     )
 
     if purely_real:
-        re = eigs.real
-        stable   = np.abs(re) < 1.0
+        re_vals = eigs.real
+        stable   = np.abs(re_vals) < 1.0
         unstable = ~stable
 
-        fig, ax = plt.subplots(figsize=(3.5, 2.0))
-        rng_spread = float(np.abs(re).max()) * 1.15
+        fig, ax = plt.subplots(figsize=(3.5, 3.5))
+        rng_spread = float(np.abs(re_vals).max()) * 1.15
         lim = max(1.3, rng_spread)
-        jitter = np.random.default_rng(0).uniform(-0.08, 0.08, size=len(re))
+        jitter = np.random.default_rng(0).uniform(-0.08, 0.08, size=len(re_vals))
 
         if stable.any():
-            ax.scatter(re[stable], jitter[stable],
+            ax.scatter(re_vals[stable], jitter[stable],
                        c="C0", s=22, alpha=0.7, linewidths=0,
                        label=f"Stable |λ|<1  ({stable.sum()})")
         if unstable.any():
-            ax.scatter(re[unstable], jitter[unstable],
+            ax.scatter(re_vals[unstable], jitter[unstable],
                        c="C3", s=22, alpha=0.8, linewidths=0,
                        label=f"Unstable |λ|≥1  ({unstable.sum()})")
 
@@ -172,11 +143,11 @@ def plot_poles(
                    label="Stability boundary (±1)")
         ax.axhline(0.0,  color="k", lw=0.4, alpha=0.25)
 
-        out_view = int((np.abs(re) > lim).sum())
+        out_view = int((np.abs(re_vals) > lim).sum())
         if out_view:
             ax.text(0.97, 0.05,
                     f"{out_view} pole(s) outside view  "
-                    f"[{re.min():.2f}, {re.max():.2f}]",
+                    f"[{re_vals.min():.2f}, {re_vals.max():.2f}]",
                     transform=ax.transAxes, ha="right", va="bottom",
                     fontsize=7, color="C3")
 
@@ -228,7 +199,6 @@ def plot_poles(
                    bbox_to_anchor=(1.02, 0.5), loc="center left")
 
     _save(fig, out_dir, "fig1_poles")
-    print("  Saved fig1_poles.png")
 
 
 def plot_stability_contours(
@@ -246,7 +216,7 @@ def plot_stability_contours(
     z = pca.fit_transform(states - states.mean(axis=0))
     z2 = z[:, 1] if z.shape[1] > 1 else np.zeros(len(z))
 
-    fig, ax = plt.subplots(figsize=(5.5, 3.5))
+    fig, ax = plt.subplots(figsize=(3.5, 3.5))
 
     if P is not None and n_comp == 2:
         V = pca.components_.T[:, :2]
@@ -281,7 +251,6 @@ def plot_stability_contours(
     ax.grid(False)
     fig.tight_layout()
     _save(fig, out_dir, "fig2_stability_contours")
-    print("  Saved fig2_stability_contours.png")
 
 
 def plot_stability_vs_uncertainty(
@@ -302,115 +271,6 @@ def plot_stability_vs_uncertainty(
     ax.legend(frameon=False, fontsize=7,
               bbox_to_anchor=(0.5, 1.02), loc="lower center", ncol=1)
     _save(fig, out_dir, "fig3_stability_vs_unc")
-    print("  Saved fig3_stability_vs_unc.png")
-
-
-def plot_grid_check(
-    predict_fn,
-    predictor,
-    op_states: np.ndarray,
-    model_label: str,
-    out_dir: Path,
-    n_grid: int = 20,
-    b_slice: float | None = None,
-    dim_labels: tuple[str, str, str] = ("dim 0", "dim 1", "dim 2"),
-) -> None:
-    """GP mean, std, and |λ_max| on a regular 2-D grid.
-
-    Sweeps a grid over dimensions 0–1 while holding dimension 2 fixed at
-    *b_slice* (default: mean of ``op_states[:, 2]``).  Three side-by-side
-    panels are produced; queried operating points are overlaid as scatter.
-
-    Parameters
-    ----------
-    predict_fn
-        ``(state_3: ndarray) → (mean: float, std: float)`` in raw surrogate
-        units.
-    predictor
-        GD-step predictor from :func:`make_gd_predictor`; used to compute the
-        Jacobian and |λ_max| via central differences at each grid cell.
-    op_states
-        (N, 3) queried operating points in normalised [0, 1]³ space.
-    dim_labels
-        Axis labels for the three input dimensions.
-    """
-    from matplotlib.colors import TwoSlopeNorm
-
-    if b_slice is None:
-        b_slice = float(np.mean(op_states[:, 2]))
-
-    xs = np.linspace(0.0, 1.0, n_grid)
-    ys = np.linspace(0.0, 1.0, n_grid)
-
-    mean_grid = np.full((n_grid, n_grid), np.nan)
-    std_grid  = np.full((n_grid, n_grid), np.nan)
-    lmax_grid = np.full((n_grid, n_grid), np.nan)
-
-    print(
-        f"  Grid check — {n_grid}×{n_grid} at "
-        f"{dim_labels[2]}={b_slice:.3f} …",
-        flush=True,
-    )
-    for i, y in enumerate(ys):
-        for j, x in enumerate(xs):
-            state = np.array([x, y, b_slice])
-            mu, sigma = predict_fn(state)
-            if not (np.isnan(mu) or np.isnan(sigma)):
-                mean_grid[i, j] = mu
-                std_grid[i, j]  = sigma
-            try:
-                stab = eigenvalues_and_stability(numerical_jacobian(predictor, state))
-                lmax_grid[i, j] = stab["lambda_max"]
-            except Exception:
-                pass
-
-    extent   = [0.0, 1.0, 0.0, 1.0]
-    qx, qy   = op_states[:, 0], op_states[:, 1]
-    dot_kw   = dict(c="white", s=14, edgecolors="k", linewidths=0.5, zorder=3)
-
-    fig, axes = plt.subplots(1, 3, figsize=(10.5, 3.5))
-
-    # ── Panel 1: GP mean ──────────────────────────────────────────────────────
-    ax = axes[0]
-    im = ax.imshow(mean_grid, origin="lower", extent=extent,
-                   aspect="auto", cmap="viridis")
-    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    ax.scatter(qx, qy, **dot_kw, label="Queried")
-    ax.set_xlabel(dim_labels[0])
-    ax.set_ylabel(dim_labels[1])
-    ax.set_title(f"GP mean  [{dim_labels[2]}={b_slice:.2f}]")
-    ax.legend(fontsize=7, frameon=False, loc="lower right")
-
-    # ── Panel 2: GP std ───────────────────────────────────────────────────────
-    ax = axes[1]
-    im = ax.imshow(std_grid, origin="lower", extent=extent,
-                   aspect="auto", cmap="plasma")
-    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    ax.scatter(qx, qy, **dot_kw)
-    ax.set_xlabel(dim_labels[0])
-    ax.set_title(f"GP std  [{dim_labels[2]}={b_slice:.2f}]")
-
-    # ── Panel 3: |λ_max| stability ────────────────────────────────────────────
-    ax = axes[2]
-    lm_lo = float(np.nanpercentile(lmax_grid, 2))
-    lm_hi = float(np.nanpercentile(lmax_grid, 98))
-    lm_lo = min(lm_lo, 0.98)
-    lm_hi = max(lm_hi, 1.02)
-    norm = TwoSlopeNorm(vcenter=1.0, vmin=lm_lo, vmax=lm_hi)
-    im = ax.imshow(lmax_grid, origin="lower", extent=extent,
-                   aspect="auto", cmap="coolwarm", norm=norm)
-    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="|λ_max|")
-    if lm_lo < 1.0 < lm_hi:
-        ax.contour(xs, ys, lmax_grid, levels=[1.0],
-                   colors=["k"], linewidths=[0.8], linestyles=["--"])
-    ax.scatter(qx, qy, **dot_kw)
-    ax.set_xlabel(dim_labels[0])
-    ax.set_title(f"|λ_max|  [{dim_labels[2]}={b_slice:.2f}]")
-
-    fig.suptitle(model_label, fontsize=10)
-    fig.tight_layout()
-    _save(fig, out_dir, "fig_grid_check")
-    print("  Saved fig_grid_check.png")
 
 
 def plot_pareto_frontier(
@@ -424,11 +284,14 @@ def plot_pareto_frontier(
     minimize_y: bool = True,
     color_vals: np.ndarray | None = None,
     color_label: str = "AL step",
+    true_front_x: np.ndarray | None = None,
+    true_front_y: np.ndarray | None = None,
 ) -> None:
-    """Pareto frontier in 2-D objective space (uncertainty × performance) (fig7).
+    """Pareto frontier in 2-D objective space (fig7).
 
-    Highlights the non-dominated set of queried points: those achieving the
-    best simultaneous trade-off between both objectives.
+    Highlights the non-dominated set of queried points.  Optionally overlays
+    the known true Pareto front as a dashed reference line via ``true_front_x``
+    and ``true_front_y``.
     """
     x = np.asarray(x_vals, dtype=float)
     y = np.asarray(y_vals, dtype=float)
@@ -456,7 +319,7 @@ def plot_pareto_frontier(
     order = np.argsort(x[pareto_idx])
     px, py = x[pareto_idx][order], y[pareto_idx][order]
 
-    fig, ax = plt.subplots(figsize=(3.5, 2.625))
+    fig, ax = plt.subplots(figsize=(3.5, 3.5))
 
     if cv is not None:
         sc = ax.scatter(
@@ -484,6 +347,12 @@ def plot_pareto_frontier(
         ax.plot([px[k + 1], px[k + 1]], [py[k], py[k + 1]],
                 color="C1", lw=1.0, ls="--", alpha=0.8)
 
+    if true_front_x is not None and true_front_y is not None:
+        tfx = np.asarray(true_front_x, dtype=float)
+        tfy = np.asarray(true_front_y, dtype=float)
+        order = np.argsort(tfx)
+        ax.plot(tfx[order], tfy[order], color="k", lw=1.0, ls=":", alpha=0.6, label="True front")
+
     ax.set_xlabel(x_label)
     ax.set_ylabel(y_label)
     ax.legend(frameon=False)
@@ -491,7 +360,146 @@ def plot_pareto_frontier(
     ax.set_title(model_label)
     fig.tight_layout()
     _save(fig, out_dir, "fig7_pareto_frontier")
-    print("  Saved fig7_pareto_frontier.png")
+
+
+def plot_cie_trajectory(
+    lhs_points: np.ndarray,
+    al_points: np.ndarray,
+    y_lhs: np.ndarray,
+    y_al: np.ndarray,
+    out_dir: Path,
+    model_label: str = "",
+) -> None:
+    """CIE 1931 xy chromaticity diagram showing the acquisition trajectory (fig7).
+
+    LED (R, G, B) intensities (normalised to [0, 1]) are converted to CIE XYZ
+    via the sRGB/D65 matrix and projected to (x, y) chromaticity.  LHS initial
+    samples and the active-learning trajectory are overlaid on the standard
+    horse-shoe locus with the sRGB gamut triangle.
+
+    Parameters
+    ----------
+    lhs_points : array (n_init, 3)
+        Normalised (r, g, b) ∈ [0, 1]³ for the initial LHS samples.
+    al_points : array (n_iter, 3)
+        Normalised (r, g, b) for each AL-queried point, in acquisition order.
+    y_lhs : array (n_init,)
+        Fréchet distance at each LHS point (used for colour scale).
+    y_al : array (n_iter,)
+        Fréchet distance at each AL point.
+    out_dir : Path
+        Output directory.
+    model_label : str
+        Figure title.
+    """
+    # ── CIE 1931 spectral locus xy (380–780 nm, 10 nm steps) ─────────────────
+    _locus_x = np.array([
+        0.17411, 0.17396, 0.17383, 0.17367, 0.17343,
+        0.16892, 0.16437, 0.15659, 0.14399, 0.12413,
+        0.09136, 0.04539, 0.00823, 0.01385, 0.07420,
+        0.15464, 0.22952, 0.30162, 0.37291, 0.44420,
+        0.51259, 0.57536, 0.62704, 0.66575, 0.69149,
+        0.70888, 0.72367, 0.73480, 0.74302, 0.74862,
+        0.75138, 0.75368, 0.75518, 0.75636, 0.75718,
+        0.75775, 0.75814, 0.75841, 0.75860, 0.75874,
+        0.75883,
+    ])
+    _locus_y = np.array([
+        0.00496, 0.00494, 0.00481, 0.00476, 0.00482,
+        0.00810, 0.01086, 0.01765, 0.02975, 0.05782,
+        0.13279, 0.29505, 0.53837, 0.75016, 0.83380,
+        0.81604, 0.75430, 0.69232, 0.62488, 0.55093,
+        0.48633, 0.42384, 0.37283, 0.33370, 0.30807,
+        0.29083, 0.27597, 0.26516, 0.25704, 0.25161,
+        0.24899, 0.24682, 0.24531, 0.24413, 0.24327,
+        0.24279, 0.24234, 0.24216, 0.24197, 0.24186,
+        0.24176,
+    ])
+
+    # sRGB gamut primaries + white point (D65)
+    _srgb_r = (0.6400, 0.3300)
+    _srgb_g = (0.3000, 0.6000)
+    _srgb_b = (0.1500, 0.0600)
+    _d65    = (0.3127, 0.3290)
+
+    # sRGB → XYZ (D65) matrix
+    _M = np.array([
+        [0.4124564, 0.3575761, 0.1804375],
+        [0.2126729, 0.7151522, 0.0721750],
+        [0.0193339, 0.1191920, 0.9503041],
+    ])
+
+    def _to_xy(rgb_norm: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Convert (N, 3) normalised RGB to CIE xy chromaticity."""
+        rgb = np.clip(rgb_norm, 0, 1)
+        XYZ = rgb @ _M.T                   # (N, 3)
+        s = XYZ.sum(axis=1, keepdims=True)
+        s = np.where(s < 1e-9, 1.0, s)
+        xy = XYZ[:, :2] / s
+        return xy[:, 0], xy[:, 1]
+
+    lhs = np.asarray(lhs_points, dtype=float)
+    al  = np.asarray(al_points,  dtype=float)
+    xl, yl = _to_xy(lhs)
+    xa, ya = _to_xy(al)
+
+    all_y = np.concatenate([np.asarray(y_lhs), np.asarray(y_al)]).astype(float)
+    vmin, vmax = float(np.nanmin(all_y)), float(np.nanmax(all_y))
+
+    fig, ax = plt.subplots(figsize=(3.5, 3.5))
+
+    # Spectral locus + purple line
+    lx = np.append(_locus_x, _locus_x[0])
+    ly = np.append(_locus_y, _locus_y[0])
+    ax.plot(lx, ly, color="k", lw=0.8, zorder=1)
+    ax.plot([_locus_x[-1], _locus_x[0]], [_locus_y[-1], _locus_y[0]],
+            color="k", lw=0.8, ls="--", zorder=1)
+
+    # sRGB gamut triangle
+    gx = [_srgb_r[0], _srgb_g[0], _srgb_b[0], _srgb_r[0]]
+    gy = [_srgb_r[1], _srgb_g[1], _srgb_b[1], _srgb_r[1]]
+    ax.plot(gx, gy, color="gray", lw=0.8, ls=":", zorder=2, label="sRGB gamut")
+    ax.scatter(*_d65, marker="+", s=60, color="gray", zorder=3)
+
+    cmap = plt.cm.viridis_r
+
+    # Acquisition trajectory (line connecting AL points in order)
+    if len(xa) > 1:
+        ax.plot(xa, ya, color="0.6", lw=0.7, zorder=3)
+
+    # LHS initial samples
+    ax.scatter(
+        xl, yl, c=np.asarray(y_lhs, dtype=float),
+        cmap=cmap, vmin=vmin, vmax=vmax,
+        marker="s", s=40, linewidths=0.5, edgecolors="k",
+        zorder=4, label="LHS init",
+    )
+
+    # AL-queried points
+    sc_al = ax.scatter(
+        xa, ya, c=np.asarray(y_al, dtype=float),
+        cmap=cmap, vmin=vmin, vmax=vmax,
+        marker="o", s=28, linewidths=0.3, edgecolors="k",
+        zorder=5, label="AL query",
+    )
+
+    # Best found (lowest Fréchet)
+    best_idx = int(np.argmin(y_al))
+    ax.scatter(xa[best_idx], ya[best_idx],
+               marker="*", s=200, color="gold", edgecolors="k",
+               linewidths=0.8, zorder=6, label="Best")
+
+    plt.colorbar(sc_al, ax=ax, label="Fréchet distance", fraction=0.04, pad=0.04)
+
+    ax.set_xlim(0.0, 0.80)
+    ax.set_ylim(0.0, 0.90)
+    ax.set_xlabel("CIE x")
+    ax.set_ylabel("CIE y")
+    ax.set_title(model_label or "CIE 1931 acquisition trajectory")
+    ax.legend(frameon=False, fontsize=8, loc="upper right")
+    ax.grid(False)
+    fig.tight_layout()
+    _save(fig, out_dir, "fig7_cie_trajectory")
 
 
 def plot_uncertainty_evolution(
@@ -500,7 +508,7 @@ def plot_uncertainty_evolution(
     out_dir: Path,
 ) -> None:
     """Per-step surrogate uncertainty over the AL loop (fig4)."""
-    fig, ax = plt.subplots(figsize=(3.5, 2.625))
+    fig, ax = plt.subplots(figsize=(3.5, 3.5))
     ax.plot(np.arange(len(uncertainties)), uncertainties, color="C0")
     ax.set_xlabel("Step")
     ax.set_ylabel("Surrogate std")
@@ -508,7 +516,6 @@ def plot_uncertainty_evolution(
     ax.grid(False)
     fig.tight_layout()
     _save(fig, out_dir, "fig4_uncertainty_evolution")
-    print("  Saved fig4_uncertainty_evolution.png")
 
 
 def plot_lyapunov_evolution(
@@ -521,7 +528,7 @@ def plot_lyapunov_evolution(
     n = len(lambda_max_seq)
     steps = np.arange(n)
 
-    fig, ax1 = plt.subplots(figsize=(3.5, 2.625))
+    fig, ax1 = plt.subplots(figsize=(3.5, 3.5))
     ax2 = ax1.twinx()
 
     lm = np.asarray(lambda_max_seq, dtype=float)
@@ -544,7 +551,6 @@ def plot_lyapunov_evolution(
                bbox_to_anchor=(1.12, 0.5), bbox_transform=fig.transFigure,
                frameon=False, fontsize=_RCPARAMS["legend.fontsize"])
     _save(fig, out_dir, "fig5_lyapunov_evolution")
-    print("  Saved fig5_lyapunov_evolution.png")
 
 
 def plot_audit_evolution(
@@ -557,11 +563,19 @@ def plot_audit_evolution(
     """Per-check metric vs AL step, one subplot per check (fig6).
 
     Each subplot shows the metric value at every snapshot step.  Dots are
-    coloured green (pass) or red (fail).  A dashed black horizontal line marks
-    the pass/fail threshold where one is defined; for ``IntervalCoverage`` the
-    acceptable band bounds are drawn as two lines.  Scoring checks without a
-    threshold (CRPS, NLL, IntervalScore configured with ``threshold=None``)
-    show no threshold line.
+    coloured green (pass), red (fail), or grey (report-only — the check
+    reported a value but has no configured threshold, e.g. ``CRPSCheck()``
+    with the default ``threshold=None``; a bare "always green" dot there
+    would misrepresent an unevaluated score as a healthy one).  A dashed
+    black horizontal line marks the pass/fail threshold where one is
+    defined; for ``IntervalCoverage`` the acceptable band bounds are drawn
+    as two lines.  Report-only checks show no threshold line, since they
+    have none.
+
+    ``pipeline`` is re-run from scratch at every snapshot step, so pass a
+    lightweight subset (fast checks only) rather than the demo's full
+    pipeline once it includes refit sweeps or bootstrap CIs — those are
+    affordable once per run, not once per snapshot times every AL step.
     """
     n_steps = len(history)
     if n_steps < snapshot_every:
@@ -572,8 +586,9 @@ def plot_audit_evolution(
         snap_steps.append(n_steps)
 
     records: dict[str, tuple[list, list]] = {}
-    pass_at: dict[str, list[bool]] = {}
+    status_at: dict[str, list[str]] = {}
     thresholds: dict[str, Any] = {}
+    tolerances: dict[str, float] = {}
 
     for k in snap_steps:
         sub = history[:k]
@@ -584,11 +599,16 @@ def plot_audit_evolution(
         for r in report.results:
             if r.value is None:
                 continue
+            _, status = _result_status(r)
             records.setdefault(r.name, ([], []))[0].append(k)
             records[r.name][1].append(r.value)
-            pass_at.setdefault(r.name, []).append(r.passed)
+            status_at.setdefault(r.name, []).append(status)
             if r.name not in thresholds and r.threshold is not None:
                 thresholds[r.name] = r.threshold
+            if r.name not in tolerances and r.details:
+                tol = r.details.get("tolerance")
+                if tol is not None:
+                    tolerances[r.name] = tol
 
     if not records:
         return
@@ -601,28 +621,32 @@ def plot_audit_evolution(
     fig, axes = plt.subplots(nrows, ncols, figsize=(7.0, nrows * 1.9))
     axes_flat = np.array(axes).flatten()
 
+    _STATUS_COLOR = {"pass": "#27ae60", "fail": "#c0392b", "report_only": "#9a9a9a", "skipped": "#9a9a9a"}
+
     for i, name in enumerate(check_names):
         ax = axes_flat[i]
         xs, ys = records[name]
-        passed = pass_at.get(name, [True] * len(xs))
-        colors = ["#27ae60" if p else "#c0392b" for p in passed]
+        statuses = status_at.get(name, ["pass"] * len(xs))
+        colors = [_STATUS_COLOR[s] for s in statuses]
         ax.plot(xs, ys, color="C0", lw=1.2)
         ax.scatter(xs, ys, c=colors, s=18, zorder=3)
 
         t = thresholds.get(name)
         if t is not None:
-            if name == "VarianceAlignment" and not isinstance(t, tuple):
-                tol = 0.50
-                ax.axhline(float(t) - tol, color="k", lw=0.8, ls="--", alpha=0.5)
-                ax.axhline(float(t) + tol, color="k", lw=0.8, ls="--", alpha=0.5)
-            elif isinstance(t, tuple):
+            if isinstance(t, tuple):
                 ax.axhline(t[0], color="k", lw=0.8, ls="--", alpha=0.5)
                 ax.axhline(t[1], color="k", lw=0.8, ls="--", alpha=0.5)
+            elif name in tolerances:
+                tol = tolerances[name]
+                ax.axhline(float(t) - tol, color="k", lw=0.8, ls="--", alpha=0.5)
+                ax.axhline(float(t) + tol, color="k", lw=0.8, ls="--", alpha=0.5)
             else:
                 ax.axhline(float(t), color="k", lw=0.8, ls="--", alpha=0.5)
 
-        ax.set_title(name.replace("Check", ""),
-                     fontsize=_RCPARAMS["legend.fontsize"])
+        title = name.replace("Check", "")
+        if all(s in ("report_only", "skipped") for s in statuses):
+            title += " (report-only)"
+        ax.set_title(title, fontsize=_RCPARAMS["legend.fontsize"])
         ax.set_xlabel("Step")
         ax.tick_params(labelsize=_RCPARAMS["xtick.labelsize"])
         ax.grid(False)
@@ -634,7 +658,6 @@ def plot_audit_evolution(
                  fontsize=_RCPARAMS["font.size"])
     fig.tight_layout()
     _save(fig, out_dir, "fig6_audit_evolution")
-    print("  Saved fig6_audit_evolution.png")
 
 
 def plot_convergence(
@@ -662,7 +685,12 @@ def plot_convergence(
         Surrogate label shown in the figure title.
     maximise :
         If ``True``, the objective is being maximised (e.g. capacity);
-        if ``False``, minimised (e.g. error, Fréchet distance).
+        if ``False``, minimised (e.g. error, Fréchet distance). Used only to
+        validate that ``best_vals`` was actually pre-accumulated in the
+        claimed direction — a caller that passes raw per-step values instead
+        of a running best (the ``np.maximum``/``np.minimum.accumulate`` this
+        docstring asks for) gets a warning naming the fix, rather than a
+        silently spiky "convergence" plot.
     """
     best_vals = np.asarray(best_vals, dtype=float)
     query_counts = np.asarray(query_counts, dtype=float)
@@ -670,7 +698,21 @@ def plot_convergence(
     if not valid.any():
         return
 
-    fig, ax = plt.subplots(figsize=(3.5, 2.625))
+    diffs = np.diff(best_vals[valid])
+    wrong_direction = (diffs < -1e-9) if maximise else (diffs > 1e-9)
+    if wrong_direction.any():
+        import warnings
+        accumulator = "np.maximum.accumulate" if maximise else "np.minimum.accumulate"
+        warnings.warn(
+            f"plot_convergence(maximise={maximise}) for '{model_label}' received "
+            f"best_vals that are not monotonic in the claimed direction "
+            f"({int(wrong_direction.sum())}/{len(diffs)} steps go the wrong way) — "
+            f"this should be a running best; pre-accumulate with {accumulator}() "
+            "before calling.",
+            stacklevel=2,
+        )
+
+    fig, ax = plt.subplots(figsize=(3.5, 3.5))
     ax.plot(query_counts[valid], best_vals[valid], color="C0", label=model_label)
     # Seed baseline: dashed horizontal at the initial best value
     baseline = best_vals[valid][0]
@@ -679,89 +721,157 @@ def plot_convergence(
     ax.set_ylabel(y_label)
     ax.grid(False)
     fig.tight_layout()
-    ax.legend(frameon=False, fontsize=7,
-              bbox_to_anchor=(0.5, 1.02), loc="lower center", ncol=1)
+    ax.legend()
     _save(fig, out_dir, fig_title)
-    print(f"  Saved {fig_title}")
 
 
 # ── Heatmap intensity helper ────────────────────────────────────────────────
 
-def _result_intensity(result: Any) -> float:
-    """Map an AuditResult to a continuous [0, 1] intensity.
+def _result_status(result: Any) -> tuple[float, str]:
+    """Map an AuditResult to a (intensity, status) pair.
+
+    ``status`` is one of four values, not two — this is the load-bearing
+    fix for the "report-only checks render as deeply passing" problem:
+    a check with ``threshold=None`` (``CRPSCheck``, ``TailIndexCheck``, …)
+    always sets ``passed=True`` by convention, but that is not the same
+    claim as "deeply passing" — it means the check was never asked to judge
+    anything. Likewise a ``Skipped — …`` message is a pass in
+    ``AuditResult.passed`` but means "no data", not "healthy". Collapsing
+    either into the same green as a genuinely evaluated, healthy result is
+    what produced an overconfident model's NLL (13.47, badly failing by any
+    reasonable bar) painting the identical colour as a calibrated model's
+    NLL (0.26).
 
     Returns
     -------
-    float
-        1.0 = deeply passing (large positive margin from threshold)
-        0.5 = exactly at the threshold boundary
-        0.0 = deeply failing (large negative margin)
+    (intensity, status)
+        ``intensity`` is only meaningful when ``status in ("pass", "fail")``:
+        1.0 = deeply passing, 0.5 = at the threshold boundary, 0.0 = deeply
+        failing. ``status`` is one of ``"pass"``, ``"fail"``,
+        ``"report_only"`` (threshold is None — never evaluated against a
+        criterion), or ``"skipped"`` (required data was unavailable).
     """
+    if isinstance(result.message, str) and result.message.startswith("Skipped"):
+        return 0.5, "skipped"
+
     v = result.value
     t = result.threshold
-    if v is None or t is None:
-        return 1.0 if result.passed else 0.0
+    if t is None:
+        return 0.5, "report_only"
+    if v is None:
+        return (1.0 if result.passed else 0.0), ("pass" if result.passed else "fail")
 
     name = result.name
-    if name == "CalibrationError":
-        # Lower is better; PASS if v ≤ t
-        signed = (t - v) / max(abs(t), 1e-6)
-    elif name == "UncertaintyAnomalies":
+    details = result.details or {}
+    if name in ("CalibrationError", "UncertaintyAnomalies"):
         # Lower is better; PASS if v ≤ t
         signed = (t - v) / max(abs(t), 1e-6)
     elif name == "UncertaintyEvolution":
-        # Higher (less negative) is better; PASS if v ≥ t
+        # Higher (less negative) is better; PASS if v ≥ t. Display-span
+        # heuristic, not a duplicated check parameter (UncertaintyEvolution
+        # always reports threshold=0.0, which carries no natural scale).
         span = max(abs(t) * 3, 0.10)
         signed = (v - t) / span
     elif name == "VarianceErrorCorrelation":
-        # Higher is better; PASS if v ≥ t
+        # Higher is better; PASS if v ≥ t. Same status as above — min_correlation
+        # sets the pass boundary but not a natural display scale.
         span = max(1.0 - t, 0.30)
         signed = (v - t) / span
     elif name == "IntervalCoverage":
-        # t is (lo, hi) band; derive target and tolerance from it
+        # t is (lo, hi) band; derive target and tolerance from it. The
+        # check always emits a tuple threshold, so the scalar branch below
+        # is a defensive fallback only, using the check's own default
+        # rather than a hardcoded value that could disagree with it.
         if isinstance(t, tuple):
             target = (t[0] + t[1]) / 2
             tol = max((t[1] - t[0]) / 2, 1e-6)
         else:
-            target, tol = t, 0.15
+            tol = details.get("tolerance", 0.1)
+            target = t
         signed = (tol - abs(v - target)) / tol
     elif name == "VarianceAlignment":
-        # Toward-target (ideal ratio = 1.0 = t); tolerance ≈ 0.5
-        tol = 0.50
+        # Toward-target (ideal ratio = 1.0 = t); tolerance read from the
+        # check's own details rather than hardcoded, so this can never
+        # silently disagree with VarianceAlignmentCheck(tolerance=...).
+        tol = details.get("tolerance", 0.5)
         signed = (tol - abs(v - t)) / tol
     else:
-        return 1.0 if result.passed else 0.0
+        return (1.0 if result.passed else 0.0), ("pass" if result.passed else "fail")
 
-    return float(np.clip(0.5 + 0.5 * np.clip(signed, -1.0, 1.0), 0.0, 1.0))
+    intensity = float(np.clip(0.5 + 0.5 * np.clip(signed, -1.0, 1.0), 0.0, 1.0))
+    return intensity, ("pass" if result.passed else "fail")
 
 
 # ── Plotly interactive figures ──────────────────────────────────────────────
 
 def _fig_check_grid(
-    stage_reports: "list[tuple[str, Any]]",
+    stage_reports: list[tuple[str, Any]],
     run_name: str,
 ) -> Any:
     """Plotly heatmap: rows = audit checks, cols = pipeline stages.
 
     Cell intensity encodes how far the metric sits from the pass/fail
-    threshold: dark green = deeply passing, white = at threshold,
-    dark red = deeply failing.
+    threshold: dark green = deeply passing, white = at threshold, dark red =
+    deeply failing. Two further states are distinct from both: a check with
+    no configured threshold ("report-only", e.g. ``CRPSCheck()`` by default)
+    and a check that was skipped for lack of data. Neither is a verdict, so
+    neither gets a colorscale colour — both render as an empty (NaN) cell
+    over the grey background, ringed by a hollow marker from the overlay
+    traces below, so they cannot be mistaken for "deeply passing" green.
     """
     try:
         import plotly.graph_objects as go
     except ModuleNotFoundError:
         return None
 
-    check_names = [r.name for r in stage_reports[0][1].results]
+    # Union of check names across every stage report, ordered by first
+    # appearance. Using stage 0's names alone (the previous approach) silently
+    # dropped any check that is absent from the first stage report entirely
+    # -- e.g. a demo that merges a second, ensemble-only AuditPipeline's
+    # results into the *final* report only (CAMD's EnsembleIndependenceDeficit
+    # etc.): those checks never appear in hook.intermediate_reports at all,
+    # so stage 0 doesn't know about them, and they vanished from the grid
+    # without so much as a "skipped" marker.
+    check_names: list = []
+    for _, rep in stage_reports:
+        for r in rep.results:
+            if r.name not in check_names:
+                check_names.append(r.name)
     abbrevs = [_CHECK_ABBREV.get(n, n) for n in check_names]
     stage_labels = [label for label, _ in stage_reports]
 
     # Build [stage][check] intermediate arrays then transpose to [check][stage].
-    z_by_stage, text_by_stage, hover_by_stage = [], [], []
+    #
+    # report-only/skipped cells get NO on-heatmap text (Heatmap.textfont.color
+    # is a single scalar in this plotly version, not a per-cell array, so
+    # there is no way to grey just those cells' numbers in the heatmap trace
+    # itself). Their value is instead drawn by the overlay scatter traces
+    # below, which do support their own per-trace text colour.
+    z_by_stage, text_by_stage, hover_by_stage, status_by_stage, celltext_by_stage = [], [], [], [], []
     for label, rep in stage_reports:
-        z_row, text_row, hover_row = [], [], []
-        for result in rep.results:
-            z_row.append(_result_intensity(result))
+        results_by_name = {r.name: r for r in rep.results}
+        z_row, text_row, hover_row, status_row, celltext_row = [], [], [], [], []
+        for name in check_names:
+            result = results_by_name.get(name)
+            if result is None:
+                # Not evaluated at this stage at all (as opposed to evaluated
+                # and explicitly Skipped) -- from the viewer's perspective
+                # there is equally no data here, so render it identically.
+                z_row.append(np.nan)
+                status_row.append("skipped")
+                celltext_row.append("—")
+                text_row.append("")
+                hover_row.append(
+                    f"<b>{name}</b><br>Stage: {label}<br>"
+                    "— SKIPPED — not evaluated at this stage<br>"
+                    "<i>This check is only computed at a later stage "
+                    "(e.g. it needs data only available once the run ends).</i>"
+                )
+                continue
+            intensity, status = _result_status(result)
+            report_or_skip = status in ("report_only", "skipped")
+            z_row.append(np.nan if report_or_skip else intensity)
+            status_row.append(status)
             if result.value is None:
                 cell = "—"
             else:
@@ -777,7 +887,8 @@ def _fig_check_grid(
                     exp_sign = exp_part[0]
                     exp_digits = exp_part[1:].lstrip("0") or "0"
                     cell = f"{mantissa}e{exp_digits}" if exp_sign == "+" else f"{mantissa}e-{exp_digits}"
-            text_row.append(cell)
+            celltext_row.append(cell)
+            text_row.append("" if report_or_skip else cell)
             t = result.threshold
             if t is None:
                 thresh = "—"
@@ -785,24 +896,33 @@ def _fig_check_grid(
                 thresh = f"[{t[0]:.3f}, {t[1]:.3f}]"
             else:
                 thresh = f"{t:.3f}"
+            status_label = {
+                "pass": "✓ PASS", "fail": "✗ FAIL",
+                "report_only": "◦ REPORT ONLY — no threshold configured",
+                "skipped": "— SKIPPED — data unavailable",
+            }[status]
             hover_row.append(
                 f"<b>{result.name}</b><br>"
                 f"Stage: {label}<br>"
-                f"Value: {text_row[-1]}<br>"
+                f"Value: {celltext_row[-1]}<br>"
                 f"Threshold: {thresh}<br>"
-                f"{'✓ PASS' if result.passed else '✗ FAIL'}<br>"
+                f"{status_label}<br>"
                 f"<i>{result.message}</i>"
             )
         z_by_stage.append(z_row)
         text_by_stage.append(text_row)
         hover_by_stage.append(hover_row)
+        status_by_stage.append(status_row)
+        celltext_by_stage.append(celltext_row)
 
     # Transpose so rows = checks, cols = stages.
     n_checks = len(check_names)
     n_stages = len(stage_labels)
-    z     = [[z_by_stage[s][c]     for s in range(n_stages)] for c in range(n_checks)]
-    text  = [[text_by_stage[s][c]  for s in range(n_stages)] for c in range(n_checks)]
-    hover = [[hover_by_stage[s][c] for s in range(n_stages)] for c in range(n_checks)]
+    z        = [[z_by_stage[s][c]        for s in range(n_stages)] for c in range(n_checks)]
+    text     = [[text_by_stage[s][c]     for s in range(n_stages)] for c in range(n_checks)]
+    hover    = [[hover_by_stage[s][c]    for s in range(n_stages)] for c in range(n_checks)]
+    status   = [[status_by_stage[s][c]   for s in range(n_stages)] for c in range(n_checks)]
+    celltext = [[celltext_by_stage[s][c] for s in range(n_stages)] for c in range(n_checks)]
 
     fig = go.Figure(go.Heatmap(
         z=z,
@@ -811,7 +931,7 @@ def _fig_check_grid(
         text=text,
         customdata=hover,
         texttemplate="<b>%{text}</b>",
-        textfont=dict(size=11),
+        textfont={"size": 11},
         colorscale=[
             [0.00, "#7b0000"],
             [0.25, "#c0392b"],
@@ -828,23 +948,152 @@ def _fig_check_grid(
         ygap=2,
     ))
 
+    # Hollow-marker overlays for the two non-verdict states: a scatter trace
+    # keyed to the same categorical (stage, check) coordinates as the
+    # heatmap, so it lines up exactly without any pixel-coordinate
+    # arithmetic. Each also gets its own legend entry, which the bare
+    # heatmap otherwise has none of (showscale=False). The cell's numeric
+    # value is drawn here too (mode="markers+text"), in this trace's own
+    # muted colour, since the heatmap's own text was left blank for these
+    # cells above.
+    for state, symbol, color, legend_name in (
+        ("report_only", "square-open", "#7a7a7a", "Report-only (no threshold)"),
+        ("skipped", "circle-open", "#8888c0", "Skipped (no data)"),
+    ):
+        xs, ys, vals = [], [], []
+        for ci in range(n_checks):
+            for si in range(n_stages):
+                if status[ci][si] == state:
+                    xs.append(stage_labels[si])
+                    ys.append(abbrevs[ci])
+                    vals.append(celltext[ci][si])
+        if xs:
+            fig.add_trace(go.Scatter(
+                x=xs, y=ys, mode="markers+text",
+                marker={"symbol": symbol, "size": 32, "color": color, "line": {"width": 2, "color": color}},
+                text=vals,
+                textfont={"size": 11, "color": color},
+                name=legend_name,
+                showlegend=True,
+                hoverinfo="skip",
+            ))
+
     fig.update_layout(
-        title=dict(
-            text=f"Audit check summary — {run_name}",
-            font=dict(size=15),
-        ),
-        xaxis=dict(title="Pipeline stage", side="top", tickfont=dict(size=13)),
-        yaxis=dict(title="Audit check", tickfont=dict(size=13), autorange="reversed"),
+        title={
+            "text": "",
+            "font": {"size": 15},
+        },
+        xaxis={"title": "", "side": "top", "tickfont": {"size": 13}},
+        yaxis={"title": "Audit check", "tickfont": {"size": 13}, "autorange": "reversed"},
         height=max(260, n_checks * 44 + 100),
         width=max(600, n_stages * 40 + 200),
-        margin=dict(l=150, r=20, t=90, b=20),
-        plot_bgcolor="#f8f9fa",
+        margin={"l": 150, "r": 20, "t": 90, "b": 20},
+        plot_bgcolor="#dcdcdc",
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.0, "xanchor": "left", "x": 0},
     )
     return fig
 
 
+def _split_stage_reports_by_trackability(
+    stage_reports: list[tuple[str, Any]],
+) -> tuple[list, list]:
+    """Partition check names into step-trackable vs final-report-only.
+
+    A check is "final-only" if it is skipped (or absent — see
+    ``_fig_check_grid``'s union-of-names handling) at *every* intermediate
+    stage and only produces a real value in the last stage report. This is
+    the normal, structural situation for any check that needs data only
+    available once the loop ends (``AuditHook.on_step`` only ever receives
+    the per-step kwargs the loop chooses to pass it; a held-out test set,
+    an ensemble evaluation, a replication arm, or a refit sweep is
+    deliberately computed once, post-loop, rather than re-run at every
+    ``check_every`` snapshot, which would be prohibitively expensive for
+    e.g. bootstrap refit checks). Mixing both kinds of check into one grid
+    makes the grid mostly empty cells for any pipeline with more final-only
+    checks than step-trackable ones — this split is what lets each half be
+    rendered at a size that matches how much real data it actually has.
+
+    Returns
+    -------
+    (trackable_names, final_only_names)
+        Both preserve the order names first appear in the final report.
+    """
+    if len(stage_reports) < 2:
+        return [r.name for r in stage_reports[-1][1].results], []
+    *intermediate, (_, final_report) = stage_reports
+    trackable = set()
+    for _, rep in intermediate:
+        for r in rep.results:
+            _, status = _result_status(r)
+            if status != "skipped":
+                trackable.add(r.name)
+    trackable_names, final_only_names = [], []
+    for r in final_report.results:
+        (trackable_names if r.name in trackable else final_only_names).append(r.name)
+    return trackable_names, final_only_names
+
+
+def _filter_stage_reports(stage_reports: list[tuple[str, Any]], names: list) -> list:
+    """Copy of ``stage_reports`` with each report's ``.results`` filtered to
+    ``names`` (preserving ``names``' order). A stage missing a name entirely
+    (e.g. an intermediate report from a pipeline that doesn't yet know about
+    a final-only check) simply omits it — ``_fig_check_grid`` already
+    renders an absent check the same as an explicitly skipped one.
+    """
+    from .base import AuditReport
+
+    name_set = set(names)
+    order = {n: i for i, n in enumerate(names)}
+    out = []
+    for label, rep in stage_reports:
+        by_name = {r.name: r for r in rep.results if r.name in name_set}
+        filtered = sorted(by_name.values(), key=lambda r: order[r.name])
+        out.append((label, AuditReport(results=filtered, metadata=rep.metadata)))
+    return out
+
+
+def check_grid_figures(
+    stage_reports: list[tuple[str, Any]],
+    run_name: str,
+) -> tuple[Any, Any]:
+    """Build the check-grid figure(s) for a run, splitting step-trackable
+    checks from final-report-only ones (see
+    :func:`_split_stage_reports_by_trackability`) so neither drowns the
+    other: a pipeline with e.g. 12 step-trackable and 18 final-only checks
+    would otherwise render one 30-row grid where 18 rows are empty hollow
+    circles across every intermediate column but the last, which is both
+    hard to read and easy to mistake for something being broken rather than
+    working as designed.
+
+    Returns
+    -------
+    (fig_trackable, fig_final_only)
+        ``fig_trackable`` covers every stage exactly as ``_fig_check_grid``
+        always has. ``fig_final_only`` is a single-column grid (``None`` if
+        every check turned out to be step-trackable) — same visual language
+        (colour, hollow markers for report-only checks among the final-only
+        set), just one column wide since there is only ever one stage's
+        worth of data for these checks.
+    """
+    trackable_names, final_only_names = _split_stage_reports_by_trackability(stage_reports)
+    fig_trackable = _fig_check_grid(_filter_stage_reports(stage_reports, trackable_names), run_name)
+    fig_final_only = None
+    if final_only_names:
+        final_stage = [stage_reports[-1]]
+        fig_final_only = _fig_check_grid(
+            _filter_stage_reports(final_stage, final_only_names),
+            f"{run_name} — final-report-only checks",
+        )
+        if fig_final_only is not None:
+            # The single-column grid's default width formula is sized for
+            # the check names alone; widen it enough for the title text too.
+            title_width = 14 * len(fig_final_only.layout.title.text) + 40
+            fig_final_only.update_layout(width=max(fig_final_only.layout.width, title_width))
+    return fig_trackable, fig_final_only
+
+
 def _fig_state_heatmap(
-    history: "list[dict]",
+    history: list[dict],
     run_name: str,
 ) -> Any:
     """Plotly heatmap: x = state-vector components, y = AL step.
@@ -891,37 +1140,37 @@ def _fig_state_heatmap(
         colorscale="Viridis",
         zmin=0, zmax=1,
         hovertemplate="%{customdata}<extra></extra>",
-        colorbar=dict(
-            title=dict(text="Normalised<br>value", side="right"),
-            thickness=14,
-        ),
+        colorbar={
+            "title": {"text": "Normalised<br>value", "side": "right"},
+            "thickness": 14,
+        },
         xgap=1,
         ygap=0,
     ))
 
     fig.update_layout(
-        title=dict(
-            text=(
+        title={
+            "text": (
                 f"Uncertainty state vector — {run_name}<br>"
                 f"<sup>Columns independently normalised · hover for raw values</sup>"
             ),
-            font=dict(size=14),
-        ),
-        xaxis=dict(title="Uncertainty state component", tickfont=dict(size=12)),
-        yaxis=dict(
-            title="Active learning step",
-            autorange="reversed",
-            tickfont=dict(size=10),
-        ),
+            "font": {"size": 14},
+        },
+        xaxis={"title": "Uncertainty state component", "tickfont": {"size": 12}},
+        yaxis={
+            "title": "Active learning step",
+            "autorange": "reversed",
+            "tickfont": {"size": 10},
+        },
         height=max(420, n_steps * 14 + 140),
-        margin=dict(l=70, r=80, t=100, b=60),
+        margin={"l": 70, "r": 80, "t": 100, "b": 60},
     )
     return fig
 
 
 def _fig_pareto_scenarios(
-    pareto_data: "dict[str, list[tuple[float, float, str]]]",
-    scenario_styles: "dict[str, dict] | None" = None,
+    pareto_data: dict[str, list[tuple[float, float, str]]],
+    scenario_styles: dict[str, dict] | None = None,
 ) -> Any:
     """Pareto frontier of (CalibrationError, MAE) across all scenarios and stages.
 
@@ -953,7 +1202,7 @@ def _fig_pareto_scenarios(
                 dominated[i] = True
                 break
 
-    fig, ax = plt.subplots(figsize=(3.5, 2.625))
+    fig, ax = plt.subplots(figsize=(3.5, 3.5))
 
     pt_idx = 0
     for sname, pts in pareto_data.items():
@@ -994,15 +1243,15 @@ def _fig_pareto_scenarios(
 
     ax.set_xlabel("Calibration Error (ECE)")
     ax.set_ylabel("Mean absolute error (MAE)")
-    ax.set_box_aspect(1) 
+    ax.set_box_aspect(1)
     ax.grid(False)
     ax.legend(handles=handles, frameon=False,
-            fontsize=_RCPARAMS["legend.fontsize"], bbox_to_anchor=(1.05, 0.5), loc='center left')
+            fontsize=_RCPARAMS["legend.fontsize"])
     fig.tight_layout()
     return fig
 
 
-def _fig_calibration_curve(result: Any) -> Optional[Any]:
+def _fig_calibration_curve(result: Any) -> Any | None:
     """Calibration reliability diagram for ``CalibrationErrorCheck`` results.
 
     Reads ``confidence_levels`` and ``observed_fractions`` from
@@ -1029,7 +1278,7 @@ def _fig_calibration_curve(result: Any) -> Optional[Any]:
         ax.text(
             0.05, 0.95, f"CE = {ce:.4f}",
             transform=ax.transAxes, va="top",
-            bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.5),
+            bbox={"boxstyle": "round", "facecolor": "wheat", "alpha": 0.5},
             fontsize=_RCPARAMS["legend.fontsize"],
         )
     ax.set_xlabel("Expected coverage")
@@ -1041,18 +1290,25 @@ def _fig_calibration_curve(result: Any) -> Optional[Any]:
 
 
 def _fig_calibration_curves_all(
-    scenario_results: Dict[str, Any],
-    scenario_styles: Dict[str, Any],
-) -> Optional[Any]:
-    """2×2 reliability-diagram grid — one panel per calibration scenario."""
+    scenario_results: dict[str, Any],
+    scenario_styles: dict[str, Any],
+) -> Any | None:
+    """Reliability-diagram grid — one panel per calibration scenario.
+
+    Grid size is adaptive (not fixed 2×2): a hardcoded 2×2 grid silently
+    dropped any scenario past the fourth via ``zip`` truncation, with no
+    indication in the figure that anything was missing.
+    """
     names = list(scenario_results.keys())
     if not names:
         return None
 
-    fig, axes = plt.subplots(2, 2, figsize=(7.0, 5.25))
+    ncols = 2 if len(names) <= 4 else 3
+    nrows = (len(names) + ncols - 1) // ncols
+    fig, axes = plt.subplots(nrows, ncols, figsize=(7, 7), squeeze=False)
     axes_flat = list(axes.flat)
 
-    for i, (ax, name) in enumerate(zip(axes_flat, names)):
+    for _i, (ax, name) in enumerate(zip(axes_flat, names, strict=False)):
         result = scenario_results[name]
         d = result.details or {}
         expected = d.get("confidence_levels")
@@ -1073,14 +1329,14 @@ def _fig_calibration_curves_all(
             ax.text(
                 0.05, 0.95, f"CE = {ce:.4f}",
                 transform=ax.transAxes, va="top", fontsize=8,
-                bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.5),
+                bbox={"boxstyle": "round", "facecolor": "wheat", "alpha": 0.5},
             )
         ax.set_title(style["label"], fontsize=_RCPARAMS["axes.titlesize"])
         ax.set_xlabel("Expected coverage")
         ax.set_ylabel("Observed coverage")
         ax.set_xlim(0, 1)
         ax.set_ylim(0, 1)
-        ax.grid(True, alpha=0.3)
+        ax.grid(False)
 
     for ax in axes_flat[len(names):]:
         ax.set_visible(False)
@@ -1090,7 +1346,7 @@ def _fig_calibration_curves_all(
 
 
 def _fig_metric_correlations(
-    intermediate_reports: "list[Any]",
+    intermediate_reports: list[Any],
     run_name: str,
 ) -> Any:
     """Matplotlib figure: pairwise correlations of audit check metrics over time.
@@ -1118,7 +1374,7 @@ def _fig_metric_correlations(
     # Extract all check names and their values across stages
     check_names = []
     stage_values: dict[str, list[float]] = {}
-    
+
     for report in intermediate_reports:
         if not hasattr(report, 'results'):
             continue
@@ -1128,19 +1384,33 @@ def _fig_metric_correlations(
                 check_names.append(check_name)
             if check_name not in stage_values:
                 stage_values[check_name] = []
-            
+
             # Use the result value if available, otherwise skip
             if result.value is not None:
                 stage_values[check_name].append(float(result.value))
             else:
                 stage_values[check_name].append(np.nan)
-    
-    # Filter to only checks with data across all or most stages
+
+    # Filter to only checks with enough genuine (non-NaN) values to
+    # correlate. A check that's Skipped at every intermediate stage (e.g. a
+    # final-report-only check like RSE/DUG/AFC, which need kwargs only
+    # available at hook.on_end() -- see check_grid_figures' identical
+    # "trackable vs final-only" split) still appears in every intermediate
+    # report's .results as an AuditResult, just with value=None, so it was
+    # appending np.nan every time rather than being absent. The previous
+    # filter (`len(stage_values[name]) > 0`) is true for ANY such list, NaN
+    # or not, so these checks were silently included as an axis label with
+    # zero real data behind it -- rendered as a blank/zero row rather than
+    # excluded, which looks like "reported but always uncorrelated" instead
+    # of "never had data to correlate in the first place". Requiring >= 3
+    # genuine values matches the >2-valid-points gate the correlation loop
+    # below already needs to compute anything for this check at all.
     available_checks = [
         name for name in check_names
-        if name in stage_values and len(stage_values[name]) > 0
+        if name in stage_values
+        and np.sum(~np.isnan(np.asarray(stage_values[name], dtype=float))) >= 3
     ]
-    
+
     if len(available_checks) < 2:
         return None
 
@@ -1155,7 +1425,7 @@ def _fig_metric_correlations(
     # Compute the correlation matrix between all checks
     n_checks = len(available_checks)
     corr_matrix = np.zeros((n_checks, n_checks))
-    
+
     for i, check1 in enumerate(available_checks):
         for j, check2 in enumerate(available_checks):
             if i == j:
@@ -1163,39 +1433,52 @@ def _fig_metric_correlations(
             else:
                 v1 = np.array(stage_values[check1], dtype=float)
                 v2 = np.array(stage_values[check2], dtype=float)
-                
-                # Only compute if both have sufficient valid data
+
+                # Only compute if both have sufficient valid data, and
+                # neither is constant over that data -- a check that reports
+                # the same value at every snapshot (e.g. a report-only check,
+                # or a trend check pinned at 0) has an undefined rank
+                # correlation with anything; spearmanr would return NaN for
+                # it anyway (handled below), but only after emitting a
+                # ConstantInputWarning on every such pair, so this is
+                # checked directly rather than relying on that fallback.
                 valid = ~(np.isnan(v1) | np.isnan(v2))
-                if valid.sum() > 2:
+                if valid.sum() > 2 and np.std(v1[valid]) > 0 and np.std(v2[valid]) > 0:
                     try:
                         rho, _ = spearmanr(v1[valid], v2[valid])
-                        corr_matrix[i, j] = float(rho) if not np.isnan(rho) else 0.0
+                        corr_matrix[i, j] = np.abs(float(rho)) if not np.isnan(rho) else 0.0
                     except Exception:
                         corr_matrix[i, j] = 0.0
                 else:
                     corr_matrix[i, j] = 0.0
 
     # Create figure
-    fig_size = min(max(5.0, n_checks * 0.6), 12.0)
-    fig, ax = plt.subplots(figsize=(fig_size, fig_size * 0.95))
-    
+   
+    fig, ax = plt.subplots(figsize=(3.5, 3.5))
+
+    mask = np.triu(np.ones_like(corr_matrix, dtype=bool), k=0)
+    masked_data = np.ma.masked_where(mask, corr_matrix)
+
     # Plot heatmap
-    im = ax.imshow(corr_matrix, cmap="RdBu_r", vmin=-1, vmax=1, aspect="auto")
-    
+    im = ax.imshow(masked_data, cmap="Blues", vmin=0, vmax=1, aspect="auto")
+
     # Set ticks and labels
     ax.set_xticks(range(n_checks))
     ax.set_yticks(range(n_checks))
-    
-    # Abbreviate check names for display
-    check_abbrevs = [_CHECK_ABBREV.get(name, name[:12]) for name in available_checks]
+
+    # Abbreviate check names for display. Same fallback as _fig_check_grid
+    # (the bare name) rather than a hard truncation — _CHECK_ABBREV now
+    # covers every shipped check, so this only matters for a future
+    # third-party check with no registered abbreviation.
+    check_abbrevs = [_CHECK_ABBREV.get(name, name) for name in available_checks]
     ax.set_xticklabels(check_abbrevs, rotation=45, ha="right", fontsize=10)
     ax.set_yticklabels(check_abbrevs, fontsize=10)
-    
+
     # Add grid
     ax.set_xticks(np.arange(n_checks) - 0.5, minor=True)
     ax.set_yticks(np.arange(n_checks) - 0.5, minor=True)
-    ax.grid(which="minor", color="gray", linestyle="-", linewidth=0.8, alpha=0.4)
-    
+    ax.grid(False)
+
     ax.set_title(
         f"Audit check correlations — {run_name}\n"
         f"(Spearman ρ across {n_stages} pipeline stages)",
@@ -1203,13 +1486,13 @@ def _fig_metric_correlations(
     )
     ax.set_xlabel("Audit check", fontsize=11, weight="bold")
     ax.set_ylabel("Audit check", fontsize=11, weight="bold")
-    
+
     # Add colorbar
     cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
     cbar.set_label("Spearman ρ", rotation=270, labelpad=18, fontsize=10, weight="bold")
-    
+
     fig.tight_layout()
-    
+
     return fig
 
 
@@ -1218,7 +1501,7 @@ def _fig_metric_correlations(
 # ── Composition-space exploration figure ────────────────────────────────────
 
 #: Pauling electronegativities used to encode binary-compound composition space.
-_EN: Dict[str, float] = {
+_EN: dict[str, float] = {
     "H": 2.20, "Li": 0.98, "Be": 1.57, "B": 2.04, "C": 2.55, "N": 3.04,
     "O": 3.44, "F": 3.98, "Na": 0.93, "Mg": 1.31, "Al": 1.61, "Si": 1.90,
     "P": 2.19, "S": 2.58, "Cl": 3.16, "K": 0.82, "Ca": 1.00, "Sc": 1.36,
@@ -1313,7 +1596,6 @@ def plot_exploration_campaign(
 
         xlabel = "Pauling EN  (electropositive)"
         ylabel = "Pauling EN  (electronegative)"
-        panel_title = "Composition space"
 
     else:
         from sklearn.decomposition import PCA
@@ -1349,7 +1631,6 @@ def plot_exploration_campaign(
 
         xlabel = "PC 1"
         ylabel = "PC 2"
-        panel_title = "Feature space  (PCA)"
 
     xs_q = np.array(xs_q, dtype=float)
     ys_q = np.array(ys_q, dtype=float)
@@ -1388,7 +1669,7 @@ def plot_exploration_campaign(
                          0, _N_BINS - 1)
             yi = np.clip(np.searchsorted(_y_edges, xy[:, 1], side="right") - 1,
                          0, _N_BINS - 1)
-            return set(zip(xi.tolist(), yi.tolist()))
+            return set(zip(xi.tolist(), yi.tolist(), strict=False))
 
         _pool_cells = _cells(coords_all_2d)
         n_pool_cells = max(len(_pool_cells), 1)
@@ -1425,7 +1706,7 @@ def plot_exploration_campaign(
                         facecolors="#2c3e8c", edgecolors="white", linewidths=0.6,
                         zorder=3, label="Seed")
 
-        if len(xs_q):
+        if xs_q:
             sc = ax1.scatter(xs_q, ys_q, c=step_q, cmap="plasma", norm=step_norm,
                              s=20, marker="o", edgecolors="k", linewidths=0.3,
                              alpha=0.85, zorder=4, label="Queried")
@@ -1476,12 +1757,11 @@ def plot_exploration_campaign(
 
         fig.tight_layout()
         _save(fig, out_dir, "fig9_exploration_campaign")
-        print("  Saved fig9_exploration_campaign.png")
 
 
 def plot_discovery_rate(
     y_true_per_batch: list,
-    df_all_target: "np.ndarray",
+    df_all_target: np.ndarray,
     stability_threshold: float,
     model_label: str,
     out_dir: Path,
@@ -1509,7 +1789,6 @@ def plot_discovery_rate(
     model_label, out_dir :
         Forwarded to title and ``_save``.
     """
-    import matplotlib.ticker as mticker
 
     n_pool = len(df_all_target)
     n_stable_total = int((np.asarray(df_all_target) <= stability_threshold).sum())
@@ -1537,7 +1816,7 @@ def plot_discovery_rate(
     rand_std = np.sqrt(cum_q_arr * stable_frac * (1.0 - stable_frac))
 
     with plt.rc_context(_RCPARAMS):
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7.0, 3.0))
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7.0, 3.5))
 
         # ── Left: absolute count ────────────────────────────────────────────
         ax1.plot(cum_q_arr, cum_found_arr, color="C0", lw=1.5, label=model_label)
@@ -1579,7 +1858,6 @@ def plot_discovery_rate(
 
         fig.tight_layout()
         _save(fig, out_dir, "fig11_discovery_rate")
-        print("  Saved fig11_discovery_rate.png")
 
 
 # ── Convenience runner ──────────────────────────────────────────────────────
@@ -1633,7 +1911,7 @@ def run_lyapunov_analysis(
             "model":        model_label,
             "op_point_idx": i,
             "lambda_max":   stab["lambda_max"],
-            "gp_std":       gp_std,
+            "gp_std_at_op_point": gp_std,
             "is_stable":    stab["is_stable"],
             "n_unstable":   stab["n_unstable"],
         })
@@ -1660,7 +1938,7 @@ def run_lyapunov_analysis(
     plot_stability_vs_uncertainty(lambda_max_arr, gp_std_arr, model_label, out_dir)
 
     csv_path = out_dir / "lyapunov_stability.csv"
-    with open(csv_path, "w", newline="") as fh:
+    with open(csv_path, "w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
         writer.writeheader()
         writer.writerows(rows)
@@ -1726,6 +2004,7 @@ def run_dmdc_lyapunov_analysis(
     ``P``, ``A_r``, ``B_r``, ``U_r``, ``csv_path``.
     """
     import csv as _csv
+
     from traits_audit import dmdc as dm
 
     aug_states = np.asarray(aug_states, dtype=np.float64)
@@ -1758,14 +2037,14 @@ def run_dmdc_lyapunov_analysis(
     else:
         print("  Lyapunov solve failed — P omitted from contour plot")
 
-    # Projected states for contour (r-dimensional reduced space)
-    op_states_r = aug_states @ U_r
-
     print(f"  Running DMDc Lyapunov analysis — T={T} steps, "
           f"D={aug_states.shape[1]} → r={A_r.shape[0]} …")
 
     plot_poles(eigs, model_label, out_dir)
-    plot_stability_contours(P, op_states_r, lm_filled, model_label, out_dir)
+    # Use raw aug_states for the scatter so the 2-D PCA reflects the true
+    # trajectory geometry. Pass P=None since P lives in the r-dim DMDc space,
+    # not the original D-dim space, so the contour overlay would be invalid.
+    plot_stability_contours(None, aug_states, lm_filled, model_label, out_dir)
     if gp_std_seq is not None:
         std_arr = np.asarray(gp_std_seq, dtype=float)
         n = min(len(lm_filled), len(std_arr))
@@ -1782,7 +2061,7 @@ def run_dmdc_lyapunov_analysis(
         for i in range(T)
     ]
     csv_path = out_dir / "lyapunov_stability.csv"
-    with open(csv_path, "w", newline="") as fh:
+    with open(csv_path, "w", newline="", encoding="utf-8") as fh:
         writer = _csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
         writer.writeheader()
         writer.writerows(rows)

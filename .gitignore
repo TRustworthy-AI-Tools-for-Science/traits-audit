@@ -34,6 +34,8 @@ mlartifacts/
 figures/
 _results/
 runs/
+results/
+_nb_results/
 
 # Editor
 .vscode/
