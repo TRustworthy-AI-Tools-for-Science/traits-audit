@@ -73,10 +73,9 @@ def test_score_trace_matches_direct_reward_call():
     np.testing.assert_allclose(scored["CRPS"], np.asarray(expected), atol=1e-10)
 
 
-# MahalanobisOOD also reads the extras but is left out: its check draws an
-# unseeded bootstrap (random_state=None) for the OOD threshold, so two calls on
-# the same data need not agree exactly.
-@pytest.mark.parametrize("name", ["UncertaintyEvolution", "UncertaintyAnomaly"])
+@pytest.mark.parametrize(
+    "name", ["UncertaintyEvolution", "UncertaintyAnomaly", "MahalanobisOOD"],
+)
 def test_score_trace_reproduces_env_reward_for_signal_rewards(name):
     """Offline scoring of the signal-based rewards must match what env.step()
     returned at training time. They read x / sigma-series extras, so a
@@ -90,10 +89,15 @@ def test_score_trace_reproduces_env_reward_for_signal_rewards(name):
     env.reset(seed=11)
     rng = np.random.default_rng(11)
     online, x_q = [], []
-    for _ in range(40):
-        _obs, r, _term, _trunc, info = env.step(rng.uniform(0.0, 1.0, size=1))
+    for t in range(40):
+        # 30 queries bunched in [0, 0.2], then 10 jumps to x=1 so MahalanobisOOD
+        # actually fires (under uniform queries its reward is almost always 0).
+        action = rng.uniform(0.0, 0.2, size=1) if t < 30 else np.array([1.0])
+        _obs, r, _term, _trunc, info = env.step(action)
         online.append(r)
         x_q.append(info["x_q"])
+    if name == "MahalanobisOOD":
+        assert np.count_nonzero(online) > 0
 
     trace = RolloutTrace(
         x_obs=env.x_obs,

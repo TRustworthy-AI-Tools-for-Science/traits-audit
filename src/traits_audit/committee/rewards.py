@@ -296,13 +296,19 @@ class UncertaintyAnomalyReward(_SignalDeltaReward):
 class MahalanobisOODReward(_SignalDeltaReward):
     """Personality: reward keeping queries in-distribution wrt the queried-x
     manifold. value = OOD fraction over the trailing window; lower is better.
-    Below MahalanobisOODCheck's min_history (default 20) the check returns
-    value=None → reward 0.0 until the buffer fills.
+    The env's 20-point warm start already meets the check's min_history (20),
+    so it scores from step 0.
+
+    n_bootstrap=20 (check default 200): the bootstrap only sets the OOD
+    threshold, re-estimated on every call — twice per env step. 200 made it
+    ~80 ms/call (~22 h per 500k-step training run); 20 is ~9 ms/call with
+    identical OOD fractions in testing. Seeding makes the threshold, and so
+    the reward, deterministic for a given query history.
     """
     def __init__(self):
         super().__init__(
             name="MahalanobisOOD",
-            check=MahalanobisOODCheck(),
+            check=MahalanobisOODCheck(n_bootstrap=20, random_state=0),
             sign=-1.0,
         )
 
