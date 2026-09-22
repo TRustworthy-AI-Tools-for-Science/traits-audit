@@ -165,6 +165,7 @@ def score_trace(trace: RolloutTrace) -> dict[str, np.ndarray]:
     """
     out: dict[str, np.ndarray] = {}
     w = trace.warmstart_n
+    x = trace.x_obs
     y = trace.y_obs
     mu = trace.mu_hist
     sigma = trace.sigma_hist
@@ -175,9 +176,15 @@ def score_trace(trace: RolloutTrace) -> dict[str, np.ndarray]:
         rewards = np.zeros(n_steps, dtype=float)
         for t in range(n_steps):
             i = w + t
+            # Same extras env.step() forwards; the signal-based rewards
+            # (UncertaintyEvolution/Anomaly, MahalanobisOOD) score 0 without them.
             rewards[t] = rc.reward(
                 y[:i], mu[:i], sigma[:i],
                 y[:i + 1], mu[:i + 1], sigma[:i + 1],
+                x_before=x[:i],
+                x_after=x[:i + 1],
+                sigma_series_before=sigma[:i],
+                sigma_series_after=sigma[:i + 1],
             )
         out[name] = rewards
     return out
