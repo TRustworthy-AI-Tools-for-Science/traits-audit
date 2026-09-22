@@ -333,3 +333,47 @@ def test_surface3d_renders_for_2d_and_rejects_other_dims(tmp_path):
         with pytest.raises(ValueError, match="2-D"):
             render_surface3d(_result(get_problem(name).dim),
                              tmp_path / "x.png", problem=name)
+
+
+# ---------------------------------------------------------------------------
+# Figure styling: 15 agents exceed the 8 Okabe-Ito hues, and a silent colour
+# fallback previously painted seven of them the same blue.
+# ---------------------------------------------------------------------------
+
+def test_every_registry_agent_has_a_unique_style():
+    """No two agents may share both colour and linestyle."""
+    import matplotlib.colors as mcolors
+    from traits_audit.committee.analysis import style as st
+    from traits_audit.committee.rewards import REWARD_REGISTRY
+
+    pairs = {}
+    for agent in REWARD_REGISTRY:
+        pairs.setdefault(st.agent_style(agent), []).append(agent)
+    clashes = {k: v for k, v in pairs.items() if len(v) > 1}
+    assert not clashes, f"agents sharing a (colour, linestyle): {clashes}"
+
+    # ...and none may collide with a comparator line.
+    comparators = {
+        (st.NEUTRAL_FAINT, ":"), (st.NEUTRAL_LIGHT, "--"), (st.BLACK, "-"),
+    }
+    for agent in REWARD_REGISTRY:
+        c, ls = st.agent_style(agent)
+        norm = (mcolors.to_hex(c), ls)
+        assert norm not in {(mcolors.to_hex(cc), ll) for cc, ll in comparators}, \
+            f"{agent} collides with a baseline comparator"
+
+
+def test_agent_style_rejects_unknown_agents():
+    """A silent default is what let six agents share one colour."""
+    from traits_audit.committee.analysis import style as st
+
+    with pytest.raises(KeyError):
+        st.agent_style("NotARealMetric")
+
+
+def test_policy_color_routes_solo_agents_through_agent_style():
+    from traits_audit.committee.analysis import style as st
+
+    assert st.policy_color("solo:ENCE") == st.agent_style("ENCE")[0]
+    assert st.policy_color("best-solo:MahalanobisOOD") == \
+        st.agent_style("MahalanobisOOD")[0]

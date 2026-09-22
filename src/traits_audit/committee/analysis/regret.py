@@ -253,7 +253,7 @@ def render_regret_figure(result: RegretResult, output_path: Path) -> None:
     import matplotlib.pyplot as plt
     from traits_audit.committee.analysis import style as st
 
-    fig, ax = plt.subplots(figsize=(10, 6.2))
+    fig, ax = plt.subplots(figsize=(12.5, 6.2))   # extra width for the legend
     xs = np.arange(result.episode_length)
 
     def _band(arr, label, color, lw=1.6, ls="-", alpha=1.0,
@@ -267,11 +267,12 @@ def render_regret_figure(result: RegretResult, output_path: Path) -> None:
                             color=color, alpha=alpha_band,
                             zorder=zorder - 1)
 
-    # Solo agents in the Okabe-Ito palette, no CI band.
+    # Solo agents: colour AND linestyle, since 15 agents exceed the 8
+    # Okabe-Ito hues and hue alone leaves several curves identical.
     for agent in AGENT_NAMES:
+        color, ls = st.agent_style(agent)
         _band(result.per_policy[f"solo:{agent}"], f"solo:{agent}",
-              color=st.policy_color(f"solo:{agent}"),
-              lw=1.8, zorder=1)
+              color=color, ls=ls, lw=1.6, zorder=1)
 
     # Baselines muted + dashed, no band.
     _band(result.per_policy["random"], "random",
@@ -287,9 +288,12 @@ def render_regret_figure(result: RegretResult, output_path: Path) -> None:
     ax.set_ylabel("simple regret", fontsize=st.LABEL_FS)
     ax.set_title(f"Simple regret ({len(result.seeds)} episode seeds)",
                  fontsize=st.TITLE_FS)
-    ax.legend(fontsize=st.LEGEND_FS, ncol=2, loc="lower left",
-              framealpha=0.92)
-    st.style_axes(ax, xlim=(0, 100), ylog=True)
+    # 19 entries (15 agents + 4 comparators): a 2-column legend inside the
+    # axes covers the curves, so it goes beside the plot in 1 column.
+    ax.legend(fontsize=st.LEGEND_FS - 2, ncol=1,
+              loc="center left", bbox_to_anchor=(1.01, 0.5),
+              framealpha=0.92, handlelength=2.6)
+    st.style_axes(ax, xlim=(0, result.episode_length), ylog=True)
     fig.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=140)

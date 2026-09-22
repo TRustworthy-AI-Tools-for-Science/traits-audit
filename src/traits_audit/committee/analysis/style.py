@@ -75,16 +75,6 @@ POLICY_COLOR: dict[str, str] = {
     "random": NEUTRAL_FAINT,
     "max-sigma": NEUTRAL_LIGHT,
     "LCB": BLACK,
-    # v0 solo agents
-    "solo:CRPS":              SKY_BLUE,
-    "solo:NLL":               ORANGE,
-    "solo:IntervalScore":     BLUISH_GREEN,
-    "solo:CalibrationError":  YELLOW,
-    "solo:ConformalCoverage": BLUE,
-    "solo:PITUniformity":     VERMILLION,
-    "solo:IntervalCoverage":  REDDISH_PURPLE,
-    "solo:VarianceAlignment": "#777777",
-    "solo:VarErrCorrelation": "#117733",
     # v0 best-solo (also alias for the line in Thread A)
     "best-solo:PITUniformity": VERMILLION,
     # v0 committee + v1 aggregators
@@ -100,8 +90,71 @@ POLICY_COLOR: dict[str, str] = {
 }
 
 
+# --- Solo agents: colour AND linestyle ------------------------------------
+#
+# The registry has 15 agents and Okabe-Ito has 8 hues, so hue alone cannot
+# separate them -- the previous dict covered only the original 9 and let
+# `policy_color`'s fallback paint the other six the same blue, which made
+# seven curves in the regret figure indistinguishable.
+#
+# Each agent therefore gets (hue, linestyle). Agents sharing a hue are
+# deliberately from different metric families, so a hue collision is never
+# also a semantic collision, and the two members of a pair are always
+# solid vs dashed. 8 hues x 2 styles = 16 slots for 15 agents.
+_AGENT_STYLE: dict[str, tuple[str, str]] = {
+    # Proper scoring rules
+    "CRPS":                 (SKY_BLUE,       "-"),
+    "NLL":                  (ORANGE,         "-"),
+    "IntervalScore":        (BLUISH_GREEN,   "-"),
+    # Calibration diagnostics. Okabe-Ito's YELLOW (#F0E442) is designed for
+    # fills and is too faint as a thin line on white, so these use a darker
+    # gold of the same hue family.
+    "CalibrationError":     ("#B8860B",      "-"),
+    "CalibrationError1Std": ("#B8860B",      "--"),
+    "KuleshovCalibration":  (BLUE,           "-"),
+    "ENCE":                 (BLUE,           "--"),
+    "PITUniformity":        ("#AA4499",      "-"),   # magenta
+    # Coverage
+    "ConformalCoverage":    (REDDISH_PURPLE, "-"),
+    "IntervalCoverage":     (REDDISH_PURPLE, "--"),
+    # Variance alignment
+    "VarianceAlignment":    (SKY_BLUE,       "--"),
+    "VarErrCorrelation":    (BLUISH_GREEN,   "--"),
+    # Signal-based. Deliberately NOT black: LCB is drawn in black and the
+    # grey baselines are dashed, so an agent in black/grey would collide
+    # with a comparator rather than with another agent.
+    "UncertaintyEvolution": ("#117733",      "-"),   # dark green
+    "UncertaintyAnomaly":   ("#882255",      "-"),   # wine
+    "MahalanobisOOD":       (VERMILLION,     "--"),
+}
+
+
+def agent_style(name: str) -> tuple[str, str]:
+    """(colour, linestyle) for an agent, with or without a ``solo:`` prefix.
+
+    Raises for an unknown agent rather than silently returning a default:
+    a fallback colour is how fifteen agents ended up sharing one blue.
+    """
+    key = name[5:] if name.startswith("solo:") else name
+    if key not in _AGENT_STYLE:
+        raise KeyError(
+            f"No style for agent {key!r}. Add it to _AGENT_STYLE in "
+            f"style.py -- known: {sorted(_AGENT_STYLE)}"
+        )
+    return _AGENT_STYLE[key]
+
+
 def policy_color(name: str) -> str:
-    """Stable colour lookup for a policy. Falls back to BLUE if unknown."""
+    """Stable colour lookup for a policy.
+
+    Solo agents resolve through :data:`_AGENT_STYLE`, so every agent has a
+    distinct (colour, linestyle) pair; see :func:`agent_style` for the
+    linestyle. Non-agent policies come from :data:`POLICY_COLOR`.
+    """
+    if name.startswith("solo:") or name in _AGENT_STYLE:
+        return agent_style(name)[0]
+    if name.startswith("best-solo:"):
+        return agent_style(name.split(":", 1)[1])[0]
     return POLICY_COLOR.get(name, BLUE)
 
 
