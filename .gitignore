@@ -32,10 +32,35 @@ mlartifacts/
 
 # Generated outputs
 figures/
-_results/
 runs/
 results/
 _nb_results/
+
+# _results/ is generated too (~115 MB: figures, pooled-query CSVs, model
+# zips) and stays out of git -- EXCEPT the two small text files that are
+# inputs to a later analysis stage rather than just outputs:
+#
+#   regret_test.json        solo terminal SR per agent; thread-a reads it to
+#                           pick its best-solo reference and build the
+#                           inverse-regret weights.
+#   correlation_trained.csv thread-a's independence weights come from this.
+#
+# ~12 KB total, and versioning them means `git log` explains why a figure's
+# numbers moved. It also means `git pull` delivers them to the cluster, so
+# the thread array jobs need no separate file transfer.
+#
+# Re-including files under an ignored directory needs the directory itself
+# un-ignored first, hence the /* + negation pattern rather than `_results/`.
+_results/*
+!_results/*/
+_results/*/*
+!_results/*/regret_test.json
+!_results/*/correlation_trained.csv
+
+# The manuscript source itself -- plain text, and the one file here that is
+# authored rather than generated. Its build products (.pdf/.aux/.out/
+# .synctex.gz) stay ignored by the rule above.
+!_results/story.tex
 
 # Editor
 .vscode/

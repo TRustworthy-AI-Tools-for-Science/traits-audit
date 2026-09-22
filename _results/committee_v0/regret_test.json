@@ -1,0 +1,18 @@
+{
+  "best_solo": "solo:PITUniformity",
+  "committee_mean": 0.1223016187082436,
+  "best_solo_mean": 0.006966312644892936,
+  "p_value": 3.62396240234375e-05,
+  "stat": 7.0,
+  "solo_means": {
+    "solo:CRPS": 0.5199217486566774,
+    "solo:NLL": 0.45431715504508735,
+    "solo:IntervalScore": 0.69914389481694,
+    "solo:CalibrationError": 0.3161938501127095,
+    "solo:ConformalCoverage": 0.10610363380971273,
+    "solo:PITUniformity": 0.006966312644892936,
+    "solo:IntervalCoverage": 0.12557192064586564,
+    "solo:VarianceAlignment": 0.41974720113541314,
+    "solo:VarErrCorrelation": 0.04921076954000072
+  }
+}

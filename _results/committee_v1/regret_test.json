@@ -1,0 +1,24 @@
+{
+  "best_solo": "solo:MahalanobisOOD",
+  "committee_mean": 0.1191033431582825,
+  "best_solo_mean": 0.005196590439188764,
+  "p_value": 6.29425048828125e-05,
+  "stat": 9.0,
+  "solo_means": {
+    "solo:CRPS": 0.5199206670424166,
+    "solo:NLL": 0.4294670923587548,
+    "solo:IntervalScore": 0.6991438957930647,
+    "solo:CalibrationError": 0.3161756661617655,
+    "solo:KuleshovCalibration": 0.4683372256546649,
+    "solo:ENCE": 0.3999740048432514,
+    "solo:CalibrationError1Std": 0.4117418948112874,
+    "solo:ConformalCoverage": 0.09772438041465917,
+    "solo:PITUniformity": 0.012795007879473764,
+    "solo:IntervalCoverage": 0.118287617346299,
+    "solo:VarianceAlignment": 0.4197844878321395,
+    "solo:VarErrCorrelation": 0.04151676029621636,
+    "solo:UncertaintyEvolution": 0.022165649003150722,
+    "solo:UncertaintyAnomaly": 0.10181215272871684,
+    "solo:MahalanobisOOD": 0.005196590439188764
+  }
+}

@@ -1,0 +1,239 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{float}
+\usepackage{subcaption}
+\usepackage{placeins}
+\hypersetup{colorlinks=true, linkcolor=blue, urlcolor=blue}
+
+\title{The Committee-RL experiments}
+\author{Luke Menezes}
+\date{June 2026}
+
+\begin{document}
+\maketitle
+
+% ===========================================================================
+\section{Methods}
+% ===========================================================================
+
+\subsection{RL agent objectives}
+
+The agent's job each step is: \emph{``Pick a number $x$ in $[0,1]$. The oracle will tell you the (noisy) value $f(x)$. Now pick another.''} The agent does this 100 times per episode. That is the task.
+
+During reinforcement learning, the agent is not told what is ``right''; instead it gets a scalar reward, $R$, each step and has to figure out an acquisition policy that maximizes total reward.
+
+In this setup the reward is not ``did you accurately map out the Forrester function?'' It is ``did your surrogate model's uncertainty audit improve?'' After every query, we refit a small polynomial surrogate (\texttt{BootstrapSurrogate}) to all the data that has been seen so far. That surrogate gives a predicted mean $\mu(x)$ and a predicted uncertainty $\sigma(x)$ over the whole interval. We then run an \emph{audit metric} on the surrogate. E.g.\ ``is your $\sigma$ well-calibrated with the observed error in the data?'' The agent then receives a reward if its query made the audit score better than it was in the last step.
+
+The principle behind this RL formulation is that the agent is not trying to create a surrogate that is identical to the Forrester function, rather it is trying to make its surrogate's uncertainty estimate look good according to a particular yardstick. Different yardsticks reward different querying behavior, so we train 9 agents with 9 different yardsticks to get 9 different ``personalities'' in the committee. The 9 agents share the same network architecture, the same state representation, the same Soft Actor-Critic (SAC) algorithm, and 500K training steps. Only the reward function differs.
+
+\subsection{Sampling the Forrester function as a sequential decision problem}
+
+To train an RL agent, we formulate ``query the Forrester function 100 times'' as a Markov Decision Process (MDP). An MDP is a tuple $(S, A, P, R, \gamma)$: a state space, an action space, a transition rule, a reward function, and a discount. Each feature of the MDP maps to a concrete object in this experiment.
+
+The state $S$ is a fixed-dimensional summary of everything the agent sees in its environment: the surrogate's predicted mean $\mu$ on a $200$-point grid over $[0,1]$, its predicted $\sigma$ on the same grid, the normalized step count $t/100$, the running mean and variance of observed $y$, the current best $y$, and a 10-bin histogram of where the agent has already queried. That is a $414$-dimensional vector ($2 \times 200 + 4 + 10$). The action $A$ is a single scalar $x \in [0, 1]$, identifying the next query point. The agent's policy is a function $\pi(x \mid s)$ that maps a state to a distribution over query points. The transition $P$ takes the current state $s_t$ and action $x_t$, samples $y_t = f(x_t) + \varepsilon_t$ from the noisy Forrester oracle, appends $(x_t, y_t)$ to the dataset, refits the bootstrap surrogate, and recomputes the state summary. Transitions are stochastic because the oracle is noisy and the surrogate is a bootstrap.
+
+The reward $R$ is the only thing that differs between the 9 agents during training and is the sole influence on the ``personalities'' of the different agents. Each agent has an audit metric $\text{check}(y, \mu, \sigma)$ that scores how well the surrogate explains the data, and the reward at step $t$ is
+\[
+r_t = \text{sign} \cdot [\text{check}(t+1) - \text{check}(t)],
+\]
+i.e.\ how much the audit improved this step. For losses that ought to be minimized (CRPS, NLL, IntervalScore, CalibrationError, ConformalCoverage) the sign is $-1$, and for goodness-of-fit measures (PITUniformity, IntervalCoverage, VarianceAlignment, VarErrCorrelation) the sign is $+1$. Rewards are then per-agent z-score normalized so the SAC algorithm sees a roughly unit-scale signal. An episode is 100 queries, the SAC discount is $\gamma = 0.99$, and each episode starts with 20 random warm-start points drawn from a fresh oracle. We use SAC with a separate actor, critic, and replay buffer per agent, 500K training steps, and 5 seeds, with the same hyperparameters across all 9 agents.
+
+\subsection{The 9 reward functions}
+
+\begin{center}
+\small
+\begin{tabular}{p{0.18\textwidth} p{0.24\textwidth} p{0.18\textwidth} p{0.30\textwidth}}
+\toprule
+\textbf{Agent} & \textbf{Check equation} & \textbf{Reward equation} & \textbf{Expected behavior} \\
+\midrule
+CRPS & $\mathrm{CRPS}(y, \mu, \sigma)$ & $-\Delta \mathrm{CRPS}$ & Exploit low-$\sigma$ regions. \\
+\midrule
+NLL & $\tfrac{1}{2}\log(2\pi\sigma^2) + \tfrac{(y-\mu)^2}{2\sigma^2}$ & $-\Delta \mathrm{NLL}$ & Query where $\mu$ is already accurate. \\
+\midrule
+IntervalScore & $\mathrm{IS}_\alpha(y, L, U)$, $\alpha=0.1$ & $-\Delta \mathrm{IS}$ & Focus on regions with moderate-$\sigma$. \\
+\midrule
+CalibrationError & $\frac{1}{B} \sum_b |\hat p_b - p_b|$ & $-\Delta \mathrm{CE}$ & Fix the worst miscalibrated bins. \\
+\midrule
+ConformalCoverage & \shortstack[l]{\(q_{1-\alpha}(|y-\mu|/\sigma)\)\\ratio} & $-\Delta q_\text{ratio}$ & Avoid possible outliers, i.e.\ adding high-residual queries. \\
+\midrule
+PITUniformity & KS p-value of $\Phi((y-\mu)/\sigma)$ vs $U(0,1)$ & $+\Delta p_\text{KS}$ & Diverse sampling to cover gaps. \\
+\midrule
+IntervalCoverage & observed fraction $\hat c$ in $[\mu \pm \sigma]$ & $-\Delta\, |\hat c - 0.683|$ & Regime-dependent; nudge coverage to 68.3\%. \\
+\midrule
+VarianceAlignment & $\overline{\sigma^2} / \overline{(y-\mu)^2}$ & $-\Delta\, |\text{ratio} - 1|$ & Push the global $\sigma^2$/MSE ratio to 1. \\
+\midrule
+VarErrCorrelation & Spearman $\rho(\sigma, |y - \mu|)$ & $+\Delta \rho$ & Align the surrogate's $\sigma$ with error. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Scoring policies with simple regret}
+
+When you are trying to minimize a function $f$, \textbf{simple regret} at the end of a run is the gap between the surrogates minimum and the true minimum of $f$. Ideally the simple regret is as low as possible. For each policy we run 20 random episode seeds and take the mean simple regret across them. That single number is the headline score for that committee member.
+
+% ===========================================================================
+\section{Results and Discussion}
+% ===========================================================================
+
+\subsection{Learning curves}
+
+Figure \ref{fig:learning_curves} shows smoothed per-agent training reward over the 500K-step run, averaged across seeds, with shaded band indicating the seed spread. The agents split into three families by curve shape. CRPS, NLL, IntervalScore, and CalibrationError all rise sharply in the first $\sim 100$K steps and then decline gradually. The early rewards are gained quickly because any sensible query improves the surrogate from a cold start, but later in training the agent's exploit-low-$\sigma$ policy starts repeating itself leading to anti-exploratory behavior. ConformalCoverage and IntervalCoverage learn steadily with no late decline, suggesting a stable policy. PITUniformity, VarianceAlignment, and VarErrCorrelation all hover near a fixed level with high variance. Their rewards are p-values, ratios, or rank correlations, which barely move per step, so SAC receives a near-zero gradient most of the time.
+
+The most interesting single observation: PITUniformity hovers around $0$ return throughout training but ends up with the best solo regret of any agent. Therefore, ``trains cleanly'' and ``performs well'' are not the same thing.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.95\textwidth]{committee_v0/learning_curves.png}
+    \caption{Smoothed training reward vs.\ training steps for each of the 9 agents, averaged across five seeds (shaded band = seed spread).}
+    \label{fig:learning_curves}
+\end{figure}
+
+\subsection{Query densities}
+
+Figure \ref{fig:query_density} is a $3 \times 3$ grid of histograms, one per agent. The $x$-axis of each subplot is the input space $[0, 1]$ i.e. where on the Forrester curve the agent prefers to query. The $y$-axis is how often it chose that region across many rollouts. Tall, narrow peaks indicate the agent has learned to focus it's queries around one region. Flat, broad shapes mean the agent is exploring the breadth of the Forrester function. The agents whose reward pushes them to exploit low-$\sigma$ regions concentrate on the left half of the interval where noise is small but the true optimum is not. The agents whose reward pushes them to cover quantile gaps or align $\sigma$ with error spread their queries further right, into the noisy half where the true minimum lives.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.95\textwidth]{committee_v0/query_density_headline.png}
+    \caption{Query-density histograms for all 9 agents, one panel per agent. Each panel shows how often the agent chose to query each region of $[0,1]$ across many rollouts.}
+    \label{fig:query_density}
+\end{figure}
+
+\subsection{Reward correlation between agents}
+
+A correlation matrix is a square matrix which quantifies how similar agent $i$'s behavior is to agent $j$'s. Numbers run from $-1$ (perfectly opposite) through $0$ (unrelated) to $+1$ (identical). The diagonal is always $1$ because every agent is identical to itself.
+
+Both matrices in Figure \ref{fig:corr_pair} are computed the same way: roll out a policy on the environment, log the per-step reward for each of the 9 audit metrics, then compute the Pearson correlation of those 9 reward streams across all steps. The trained matrix (left) pools traces from every agent and every seed: 9 agents $\times$ 5 seeds $\times$ 50 episodes = 2250 episode-traces. The random matrix (right) samples $x$ uniformly at random from $[0,1]$. Since there is no agent or seed to vary over, we run 50 episodes of that random policy. 
+
+Since there is similiar structure in the trained and random policy matrices, that structure cannot have come from learning. It comes from the metrics themselves: several of the audit checks tend to move together purely because they are mathematically related. Two tight pairs emerge in the random and trained policies. In the random policy, CRPS$\leftrightarrow$IntervalScore at $+0.91$, CalibrationError$\leftrightarrow$IntervalCoverage at $+0.90$. In the trained policies CRPS$\leftrightarrow$IntervalScore at $+0.93$, CalibrationError$\leftrightarrow$IntervalCoverage at $+0.90$. The random control proves most of the structure comes from the mathematical similarity in the audits and that training only amplifies tendencies that exist in the metrics rather than creating the personalities out of nothing.
+
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}[t]{0.49\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{committee_v0/correlation_trained.png}
+        \label{fig:corr_trained}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[t]{0.49\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{committee_v0/correlation_random.png}
+        \label{fig:corr_random}
+    \end{subfigure}
+    \caption{Reward correlations between the 9 audit metrics. Left: the correlation of the rewards for the trained policies querying the Forrester function. Right: the correlation in rewards of the baseline policy that queries the Forrester function on the [0,1] interval randomly. The similiar structures emerge from the mathematical similarities in the reward metrics and not after training policies.}
+    \label{fig:corr_pair}
+\end{figure}
+
+\subsection{Simple regret across solo agents and the uniform committee}
+
+Figure \ref{fig:regret_v0} ranks the policies by simple regret. The best individual agent is solo:PITUniformity with mean regret $0.0070$. The worst is solo:IntervalScore at $0.70$. This agent's querying behavior is actively bad and off in the wrong region, with solo:CRPS not far behind at $0.52$. The uniform-pick committee (each step, pick a random committee member of the 9 equally weighted frozen agents and use its query) lands at $0.122$. The committee vs best-solo PITUniformity comparison gives a tiny p-value ($p = 3.6 \times 10^{-5}$), but in the wrong direction. The committee is significantly worse than just using PITUniformity alone and equivalent to a policy of sampling $x$ randomly.
+
+The failure mechanism results from agent policies that have learned behaviors that exploit low-$\sigma$ regions and actively avoid the gloabal minimum of the Forrester function. Therefore, valuing their picks equally among all committee members at the uniform weight of $1/9$ is enough to tank the committee's performance. This finding motivates the work of the following sections: how can we weight the opinions of the pretrained RL policies more intelligently than blindly rotating through them.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.85\textwidth]{committee_v0/regret.png}
+    \caption{Mean simple regret per policy (lower is better). Each curve is the mean of 20 episode seeds. Same 20 seeds across every policy. PITUniformity solo wins; the uniform-pick committee is significantly worse and performs equivalently to the baseline random selection policy.}
+    \label{fig:regret_v0}
+\end{figure}
+
+\subsection{Committee votes as features in the AL State-Space}
+
+
+Before introducing the votes of the comittee members, the active learning (AL) state space, consists of uncertainty metrics of all the points queried up to that point. To build upon this formulation, we query the 9 RL agents at each step and ask ``where would you query?''. We collect their 9 answers and append them as a 9-dimensional vector to the original AL state. We then feed the feature vector containing uncertainty metrics + committee votes to a classical Bayseian-optimization (BO) rule that makes the final decision of where to sample. We test two sampling rules: LCB, the standard BO aquisition policy that balances exploration and exploitation by picking picks the $x$ that minimizes $\mu(x) - k \cdot \sigma(x)$, and max-$\sigma$ which purely focusses of exploration of the uncertain regions. For each rule we comapre the simple regret of the AL aquisition policies with and without the appended committee member votes.
+
+\begin{center}
+\begin{tabular}{lccc}
+\toprule
+Rule & Without votes & With votes & Verdict \\
+\midrule
+LCB & 0.053 & 0.064 & No significant gain \\
+max-$\sigma$ & 0.135 & 0.011 & Big, significant win \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Figure \ref{fig:b1} shows the paired comparison. The simple regret of the Max-$\sigma$ policy collapses dramatically when given the votes, while the simple regret of LCB barely moves. The lesson is that the votes help a simple base rule a lot but do not help a smart one. LCB already balances exploration and exploitation from $\mu$ and $\sigma$ directly, so adding 9 noisy ``personality opinions'' supplies no new information and just adds bias from overfitting coming from the pretrained RL policies. Max-$\sigma$, by contrast, is deliberately dumb leading it to waste queries on irrelevant high-$\sigma$ regions because it has no notion of which high-$\sigma$ region is actually worth visiting. The committee votes inform that prior by pointing the aquisition towards valuable high-$\sigma$ regions.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.85\textwidth]{committee_v1_threadB/b1_regret_paired.png}
+    \caption{Paired regret comparison. Each curve is the mean of 20 episode seeds. The same 20 seeds are used across all five policies. For each base rule (LCB, max-$\sigma$), one box shows regret without committee votes and one with. Max-$\sigma$ collapses dramatically when given the votes; LCB barely moves.}
+    \label{fig:b1}
+\end{figure}
+
+The leave-one-out ablation in Figure \ref{fig:b2_pair} isolates which agent's vote matters most for each base rule by dropping each agent in turn from the feature vector. The ablation studies reveal different utility in the committee member's picks. The LCB aquisition policy is hurt by removing the votes from the agent's that exploit low-$\sigma$ regions (CRPS, NLL, and IntervalScore), whereas removing the votes of members that have policies that are exploratory improve the final simple regret score of the LCB aquisition policy. For the max-$\sigma$ policy the final simple regret is improved removing the votes of the CRPS. Likewise, for max-$\sigma$ the simple regret improves when VarErrCorrelation is excluded since that policy prioritizes sampling the left side of the noisy Forrester function where the $\sigma$ is the lowest and is far from the global minimum. 
+
+
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}[t]{0.49\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{committee_v1_threadB/b2_ablation_lcb.png}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[t]{0.49\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{committee_v1_threadB/b2_ablation_maxsigma.png}
+    \end{subfigure}
+    \caption{Leave-one-out ablation for the two votes-as-features rules. Each bar is the mean terminal simple regret over 20 episode seeds. Both runs dropped each agent (k) in turn from the feature vector and report the resulting regret relative to the regret obtained from the full committee.}
+    \label{fig:b2_pair}
+\end{figure}
+
+\subsection{Aggregation rules over the committee}
+
+Instead of feeding votes plainly as features to an LCB or max-$\sigma$ rule, we can try smarter ways of to combine their picks. Here we return to using the 9 members of the committee as the policy. In the following table we describe a handful of alternative ways that the votes can be combined rather than valuaing all of their opinions equally.  
+
+\begin{center}
+\begin{tabular}{llc}
+\toprule
+Aggregator & What it does & Mean regret \\
+\midrule
+\textbf{weighted-invreg} & Weight each agent by $1/$(its solo regret). & \textbf{0.00070} \\
+disagree & Pick the point the agents disagree about the most. & 0.033 \\
+random (baseline) & Pick a random point in $[0,1]$. & 0.018 \\
+uniform & Pick one of 9 agents at random and use its choice. & 0.122 \\
+weighted-indep & Weight by how independent the agent's behavior is. & 0.643 \\
+agree & Average all 9 agents' picks. & 0.649 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The headline finding (Figure \ref{fig:a1}) is that weighted-invreg ($0.00070$) beats best-solo PITUniformity ($0.0070$) by an order of magnitude. It is the only aggregator that genuinely improved on the best aquisition policy so far. It's worth pointing out that PITUniformity gets an inverse-regret weight of $143.5$ while CRPS gets $1.9$, so the weighted-invreg policy is essentially ``use PITUniformity, with the others as tiebreakers.'' It is worth emphasizing that this policy is only possible retrospectively, after having already measured the regret scores of the solo agents. This kind of labelled validation pass would not be available in a real deployment without a known oracle. The method works; it just requires an evaluation budget the original training did not.
+
+At the other end of the table, two aggregators are catastrophic. The ``agree'' rule averages all 9 picks, and when agents disagree the mean lands in a region none of them wanted to query, which is qualitatively worse than just picking one of them. The ``weighted-indep'' rule up-weights agents whose behavior is most independent of the others; the most independent agent is VarianceAlignment (independence score $0.98$), whose solo regret is $0.42$. Up-weighting it produces regret $0.643$. ``Different'' does not mean ``good'', so the diverse axis is basically the does-nothing-useful axis.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.85\textwidth]{committee_v1_threadA/a1_aggregator_bakeoff.png}
+    \caption{Each curve is the mean of 20 episode seeds, paired across all seven policies.Weighted-invreg is the only scheme that improves on the best-solo policy; agree and weighted-indep are catastrophic.}
+    \label{fig:a1}
+\end{figure}
+
+Figure \ref{fig:a2} makes the committee behaviors transparent. Each panel scatters (weight assigned to an agent) against (that agent's solo regret) for the independence-weighted and inverse-regret-weighted aggregation strategies. For the inverse-regret weighting the behavior proves the claim made above; ``use PITUniformity, with the others as tiebreakers.'' For independence weighting the weights remain close to the uniform 1/9 weights ($\pm$0.01), yet the final simple regret manages to be worse than the uniform weighted committee.
+
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.85\textwidth]{committee_v1_threadA/a2_weight_vs_regret.png}
+    \caption{Weight assigned to each agent vs.\ that agent's solo regret, one panel per weighting scheme.}
+    \label{fig:a2}
+\end{figure}
+
+% ===========================================================================
+\section{Conclusion}
+% ===========================================================================
+
+Reward-shaping produces stylistically distinct agents, but on roughly 3--4 independent axes rather than 9, and the random-control matrix shows most of that structure is intrinsic to the metric definitions rather than emerge during training. The single best individual is PITUniformity, the agent with the noisiest reward signal. A key insight when training RL committee members --- training stability and downstream performance are not the same property.
+
+The only committee scheme that strictly outperforms the best solo is inverse-regret weighting, which requires a labelled validation pass to compute the weights and which is essentially ``use PITUniformity, with the others as tiebreakers.'' Most other ways of combining the specialists fail: uniform random pick over the 9 agents is significantly worse than the best solo; averaging agents' picks is catastrophic; and weighting by behavioural independence is catastrophic because ``independent'' does not mean ``useful.''
+
+From the AL arc the most valuable insight we gleamed was that a committee of reward-specialized agents is most valuable as a feature source for a downstream policy that is otherwise informationally hungry: the votes rescued a pure-exploration max-$\sigma$ rule from terrible to excellent, while the same votes hurt the already-strong LCB. The committee is not a stand-in policy and not a free lunch for strong base methods; it is a way of injecting diverse priors into a weak one. The most reliable way to use a committee of reward-specialized agents in this study was either to weight them by their proven solo performance, or to hand their votes to a deliberately under-informed acquisition rule. 
+
+\end{document}

@@ -1,0 +1,24 @@
+{
+  "best_solo": "solo:UncertaintyAnomaly",
+  "committee_mean": 0.40581148073337125,
+  "best_solo_mean": 0.23469785475122099,
+  "p_value": 0.22738526970373263,
+  "stat": 51.0,
+  "solo_means": {
+    "solo:CRPS": 0.8821326423121258,
+    "solo:NLL": 0.31088416266823427,
+    "solo:IntervalScore": 0.4382384946630796,
+    "solo:CalibrationError": 0.3348971974802392,
+    "solo:KuleshovCalibration": 0.4691700778743647,
+    "solo:ENCE": 0.4169740436949282,
+    "solo:CalibrationError1Std": 0.3861469447313661,
+    "solo:ConformalCoverage": 0.41551978099640285,
+    "solo:PITUniformity": 0.9528357178126384,
+    "solo:IntervalCoverage": 0.3970066055578754,
+    "solo:VarianceAlignment": 0.3715722966811327,
+    "solo:VarErrCorrelation": 0.28192366800315305,
+    "solo:UncertaintyEvolution": 0.3071634755888285,
+    "solo:UncertaintyAnomaly": 0.23469785475122099,
+    "solo:MahalanobisOOD": 0.6774457990091203
+  }
+}
