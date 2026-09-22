@@ -270,8 +270,7 @@ def _run_density(args) -> None:
         result,
         output_path=out / "query_density_headline.png",
         n_bins=args.n_bins,
-        dim=problem.dim,
-        dim_labels=list(problem.input_names),
+        problem=problem,
     )
     print(f"[density] wrote outputs to {out}/")
 

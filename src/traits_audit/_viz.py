@@ -362,6 +362,75 @@ def plot_pareto_frontier(
     _save(fig, out_dir, "fig7_pareto_frontier")
 
 
+# ── CIE 1931 chromaticity diagram constants (shared with the committee
+#    density figure, which overlays query points on the same background) ──
+
+# Spectral locus xy (380-780 nm, 10 nm steps).
+CIE_LOCUS_X = np.array([
+    0.17411, 0.17396, 0.17383, 0.17367, 0.17343,
+    0.16892, 0.16437, 0.15659, 0.14399, 0.12413,
+    0.09136, 0.04539, 0.00823, 0.01385, 0.07420,
+    0.15464, 0.22952, 0.30162, 0.37291, 0.44420,
+    0.51259, 0.57536, 0.62704, 0.66575, 0.69149,
+    0.70888, 0.72367, 0.73480, 0.74302, 0.74862,
+    0.75138, 0.75368, 0.75518, 0.75636, 0.75718,
+    0.75775, 0.75814, 0.75841, 0.75860, 0.75874,
+    0.75883,
+])
+CIE_LOCUS_Y = np.array([
+    0.00496, 0.00494, 0.00481, 0.00476, 0.00482,
+    0.00810, 0.01086, 0.01765, 0.02975, 0.05782,
+    0.13279, 0.29505, 0.53837, 0.75016, 0.83380,
+    0.81604, 0.75430, 0.69232, 0.62488, 0.55093,
+    0.48633, 0.42384, 0.37283, 0.33370, 0.30807,
+    0.29083, 0.27597, 0.26516, 0.25704, 0.25161,
+    0.24899, 0.24682, 0.24531, 0.24413, 0.24327,
+    0.24279, 0.24234, 0.24216, 0.24197, 0.24186,
+    0.24176,
+])
+
+# sRGB gamut primaries + white point (D65).
+CIE_SRGB_R = (0.6400, 0.3300)
+CIE_SRGB_G = (0.3000, 0.6000)
+CIE_SRGB_B = (0.1500, 0.0600)
+CIE_D65    = (0.3127, 0.3290)
+
+# sRGB -> XYZ (D65) matrix.
+_SRGB_TO_XYZ = np.array([
+    [0.4124564, 0.3575761, 0.1804375],
+    [0.2126729, 0.7151522, 0.0721750],
+    [0.0193339, 0.1191920, 0.9503041],
+])
+
+
+def rgb_norm_to_cie_xy(rgb_norm: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Convert (N, 3) normalised RGB in [0, 1] to CIE 1931 xy chromaticity
+    via the sRGB/D65 matrix."""
+    rgb = np.clip(rgb_norm, 0, 1)
+    XYZ = rgb @ _SRGB_TO_XYZ.T          # (N, 3)
+    s = XYZ.sum(axis=1, keepdims=True)
+    s = np.where(s < 1e-9, 1.0, s)
+    xy = XYZ[:, :2] / s
+    return xy[:, 0], xy[:, 1]
+
+
+def draw_cie_background(ax, gamut_label: bool = True) -> None:
+    """Draw the CIE 1931 horseshoe spectral locus + sRGB gamut triangle +
+    D65 white point onto ``ax``. Shared by :func:`plot_cie_trajectory` and
+    the committee density figure's colour-matching panels."""
+    lx = np.append(CIE_LOCUS_X, CIE_LOCUS_X[0])
+    ly = np.append(CIE_LOCUS_Y, CIE_LOCUS_Y[0])
+    ax.plot(lx, ly, color="k", lw=0.8, zorder=1)
+    ax.plot([CIE_LOCUS_X[-1], CIE_LOCUS_X[0]], [CIE_LOCUS_Y[-1], CIE_LOCUS_Y[0]],
+            color="k", lw=0.8, ls="--", zorder=1)
+
+    gx = [CIE_SRGB_R[0], CIE_SRGB_G[0], CIE_SRGB_B[0], CIE_SRGB_R[0]]
+    gy = [CIE_SRGB_R[1], CIE_SRGB_G[1], CIE_SRGB_B[1], CIE_SRGB_R[1]]
+    ax.plot(gx, gy, color="gray", lw=0.8, ls=":", zorder=2,
+            label="sRGB gamut" if gamut_label else None)
+    ax.scatter(*CIE_D65, marker="+", s=60, color="gray", zorder=3)
+
+
 def plot_cie_trajectory(
     lhs_points: np.ndarray,
     al_points: np.ndarray,
@@ -392,74 +461,17 @@ def plot_cie_trajectory(
     model_label : str
         Figure title.
     """
-    # ── CIE 1931 spectral locus xy (380–780 nm, 10 nm steps) ─────────────────
-    _locus_x = np.array([
-        0.17411, 0.17396, 0.17383, 0.17367, 0.17343,
-        0.16892, 0.16437, 0.15659, 0.14399, 0.12413,
-        0.09136, 0.04539, 0.00823, 0.01385, 0.07420,
-        0.15464, 0.22952, 0.30162, 0.37291, 0.44420,
-        0.51259, 0.57536, 0.62704, 0.66575, 0.69149,
-        0.70888, 0.72367, 0.73480, 0.74302, 0.74862,
-        0.75138, 0.75368, 0.75518, 0.75636, 0.75718,
-        0.75775, 0.75814, 0.75841, 0.75860, 0.75874,
-        0.75883,
-    ])
-    _locus_y = np.array([
-        0.00496, 0.00494, 0.00481, 0.00476, 0.00482,
-        0.00810, 0.01086, 0.01765, 0.02975, 0.05782,
-        0.13279, 0.29505, 0.53837, 0.75016, 0.83380,
-        0.81604, 0.75430, 0.69232, 0.62488, 0.55093,
-        0.48633, 0.42384, 0.37283, 0.33370, 0.30807,
-        0.29083, 0.27597, 0.26516, 0.25704, 0.25161,
-        0.24899, 0.24682, 0.24531, 0.24413, 0.24327,
-        0.24279, 0.24234, 0.24216, 0.24197, 0.24186,
-        0.24176,
-    ])
-
-    # sRGB gamut primaries + white point (D65)
-    _srgb_r = (0.6400, 0.3300)
-    _srgb_g = (0.3000, 0.6000)
-    _srgb_b = (0.1500, 0.0600)
-    _d65    = (0.3127, 0.3290)
-
-    # sRGB → XYZ (D65) matrix
-    _M = np.array([
-        [0.4124564, 0.3575761, 0.1804375],
-        [0.2126729, 0.7151522, 0.0721750],
-        [0.0193339, 0.1191920, 0.9503041],
-    ])
-
-    def _to_xy(rgb_norm: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Convert (N, 3) normalised RGB to CIE xy chromaticity."""
-        rgb = np.clip(rgb_norm, 0, 1)
-        XYZ = rgb @ _M.T                   # (N, 3)
-        s = XYZ.sum(axis=1, keepdims=True)
-        s = np.where(s < 1e-9, 1.0, s)
-        xy = XYZ[:, :2] / s
-        return xy[:, 0], xy[:, 1]
-
     lhs = np.asarray(lhs_points, dtype=float)
     al  = np.asarray(al_points,  dtype=float)
-    xl, yl = _to_xy(lhs)
-    xa, ya = _to_xy(al)
+    xl, yl = rgb_norm_to_cie_xy(lhs)
+    xa, ya = rgb_norm_to_cie_xy(al)
 
     all_y = np.concatenate([np.asarray(y_lhs), np.asarray(y_al)]).astype(float)
     vmin, vmax = float(np.nanmin(all_y)), float(np.nanmax(all_y))
 
     fig, ax = plt.subplots(figsize=(3.5, 3.5))
 
-    # Spectral locus + purple line
-    lx = np.append(_locus_x, _locus_x[0])
-    ly = np.append(_locus_y, _locus_y[0])
-    ax.plot(lx, ly, color="k", lw=0.8, zorder=1)
-    ax.plot([_locus_x[-1], _locus_x[0]], [_locus_y[-1], _locus_y[0]],
-            color="k", lw=0.8, ls="--", zorder=1)
-
-    # sRGB gamut triangle
-    gx = [_srgb_r[0], _srgb_g[0], _srgb_b[0], _srgb_r[0]]
-    gy = [_srgb_r[1], _srgb_g[1], _srgb_b[1], _srgb_r[1]]
-    ax.plot(gx, gy, color="gray", lw=0.8, ls=":", zorder=2, label="sRGB gamut")
-    ax.scatter(*_d65, marker="+", s=60, color="gray", zorder=3)
+    draw_cie_background(ax)
 
     cmap = plt.cm.viridis_r
 

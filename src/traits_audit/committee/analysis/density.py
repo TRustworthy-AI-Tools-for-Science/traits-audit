@@ -17,11 +17,11 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Union
+from typing import Union
 
 import numpy as np
 
-from traits_audit.committee.problems import Problem
+from traits_audit.committee.problems import ForresterProblem, Problem, get_problem
 from traits_audit.committee.rewards import REWARD_REGISTRY
 from traits_audit.committee.analysis.rollouts import (
     run_rollout,
@@ -140,32 +140,62 @@ def render_headline_figure(
     result: DensityResult,
     output_path: Path,
     n_bins: int = 30,
-    dim: int = 1,
-    dim_labels: Optional[list[str]] = None,
+    problem: Union[Problem, str, None] = None,
 ) -> None:
     """Render the per-agent query-density headline figure.
 
-    Each panel: histogram of queries pooled across seeds, with per-seed
-    histograms overlaid as thin lines (so you can see seed-to-seed spread).
+    Each panel shows one agent's pooled queries (5 seeds), with context that
+    depends on the benchmark:
 
-    ``dim=1`` (Forrester): pre-registered signature as sub-title, and the
+    ``forrester`` (1-D): pre-registered signature as sub-title, and the
     clean Forrester oracle overlaid on a twin axis so query densities can
-    be read against the function landscape — exactly the original figure.
+    be read against the function landscape — exactly the original figure
+    (histogram + per-seed step overlay, ``C0``/black/gray colours).
 
-    ``dim>1`` (Branin-Currin, color): one input dimension has no single
-    landscape to overlay against, so each panel instead overlays one
-    marginal histogram per input dimension (``dim_labels``, e.g. R/G/B).
+    ``branin-currin`` (2-D): a shaded contour of the true (noise-free)
+    Branin surface — the objective the audit rewards actually score — with
+    each agent's pooled queries scattered on top as semi-transparent ``C0``
+    dots, so query placement can be read against the landscape the same way
+    the Forrester panels do.
+
+    ``color`` (3-D): the CIE 1931 xy chromaticity diagram (spectral locus +
+    sRGB gamut triangle) that Ashley's ``plot_cie_trajectory`` draws for the
+    SDL demo (``traits_audit._viz``), with each agent's normalised (R, G, B)
+    queries projected to CIE xy and scattered on top in the same ``C0``
+    style — reusing her exact background rather than inventing a new one.
+
+    Any other/future problem without a bespoke panel falls back to one
+    marginal histogram per input dimension (the original placeholder).
     """
     import matplotlib.pyplot as plt
+
+    if isinstance(problem, str):
+        problem = get_problem(problem)
+    if problem is None:
+        problem = ForresterProblem()
+    dim = problem.dim
 
     n_agents = len(AGENT_NAMES)
     fig, axes, nrows, ncols = _panel_grid(n_agents)
     edges = np.linspace(0.0, 1.0, n_bins + 1)
+
     if dim == 1:
         x_grid = np.linspace(0.0, 1.0, 400)
         f_grid = _forrester(x_grid)
+    elif problem.name == "branin-currin":
+        # Fresh, finer-than-state grid just for this contour (the env's own
+        # problem.grid is only 15/dim -- too coarse to look like a surface).
+        axis = np.linspace(0.0, 1.0, 60)
+        GX, GY = np.meshgrid(axis, axis, indexing="ij")
+        grid_pts = np.stack([GX.ravel(), GY.ravel()], axis=1)
+        Z = problem.clean(grid_pts)[:, 0].reshape(GX.shape)
+        # Log-spaced levels: Branin spans ~0.4-308 with three sharp minima,
+        # so linear levels wash out the basins that matter for this figure.
+        levels = np.geomspace(max(float(Z.min()), 1e-3), float(Z.max()), 12)
+    elif problem.name == "color":
+        from traits_audit._viz import draw_cie_background, rgb_norm_to_cie_xy
     else:
-        labels = dim_labels or [f"x{i}" for i in range(dim)]
+        labels = list(problem.input_names)
         colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
 
     for ax, agent in zip(axes, AGENT_NAMES):
@@ -179,18 +209,9 @@ def render_headline_figure(
                 counts, _ = np.histogram(qs, bins=edges, density=True)
                 ax.step(edges[:-1], counts, where="post",
                         color="black", alpha=0.25, linewidth=0.7)
-        else:
-            for d in range(dim):
-                ax.hist(pooled[:, d], bins=edges, density=True, alpha=0.4,
-                        color=colors[d % len(colors)], label=labels[d])
-            ax.legend(fontsize=7, loc="upper right")
-        ax.set_xlim(0.0, 1.0)
-        ax.set_title(agent, fontsize=13)
-        ax.set_ylabel("density", fontsize=11)
-        ax.tick_params(axis="both", labelsize=9)
-        ax.grid(alpha=0.3)
+            ax.set_xlim(0.0, 1.0)
+            ylabel = "density"
 
-        if dim == 1:
             ax2 = ax.twinx()
             ax2.plot(x_grid, f_grid, color="0.55", linewidth=1.0, alpha=0.6,
                      label="Forrester f(x)")
@@ -200,11 +221,54 @@ def render_headline_figure(
                             left=False, right=False,
                             labelleft=False, labelright=False)
 
+        elif problem.name == "branin-currin":
+            ax.contourf(GX, GY, Z, levels=levels, cmap="Greys", alpha=0.55,
+                        zorder=1)
+            ax.contour(GX, GY, Z, levels=levels, colors="0.5",
+                       linewidths=0.4, alpha=0.6, zorder=1)
+            ax.scatter(pooled[:, 0], pooled[:, 1], s=9, color="C0",
+                       alpha=0.35, edgecolors="none", zorder=2,
+                       label="pooled (5 seeds)")
+            ax.set_xlim(0.0, 1.0)
+            ax.set_ylim(0.0, 1.0)
+            ylabel = problem.input_names[1]
+
+        elif problem.name == "color":
+            draw_cie_background(ax, gamut_label=False)
+            xa, ya = rgb_norm_to_cie_xy(pooled)
+            ax.scatter(xa, ya, s=7, color="C0", alpha=0.35,
+                       edgecolors="none", zorder=4, label="pooled (5 seeds)")
+            ax.set_xlim(0.0, 0.80)
+            ax.set_ylim(0.0, 0.90)
+            ylabel = "CIE y"
+
+        else:
+            for d in range(dim):
+                ax.hist(pooled[:, d], bins=edges, density=True, alpha=0.4,
+                        color=colors[d % len(colors)], label=labels[d])
+            ax.legend(fontsize=7, loc="upper right")
+            ax.set_xlim(0.0, 1.0)
+            ylabel = "density"
+
+        ax.set_title(agent, fontsize=13)
+        ax.set_ylabel(ylabel, fontsize=11)
+        ax.tick_params(axis="both", labelsize=9)
+        ax.grid(alpha=0.3)
+
+    if dim == 1:
+        bottom_label = "x (acquisition query)"
+    elif problem.name == "branin-currin":
+        bottom_label = f"{problem.input_names[0]}  (shading: Branin surface)"
+    elif problem.name == "color":
+        bottom_label = "CIE x"
+    else:
+        bottom_label = "x (acquisition query)"
+
     # Bottom-row-only xlabel assumes the grid divides evenly (true today:
     # 15 agents / 5 cols = 3 full rows). A future registry size that leaves
     # a partial last row would need per-column "last visible axis" logic.
     for ax in axes[-ncols:]:
-        ax.set_xlabel("x (acquisition query)", fontsize=11)
+        ax.set_xlabel(bottom_label, fontsize=11)
     fig.tight_layout(rect=(0, 0, 1, 0.97))
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=140)
