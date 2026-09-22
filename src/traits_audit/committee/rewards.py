@@ -317,7 +317,7 @@ class MahalanobisOODReward(_SignalDeltaReward):
         sigma_series = extras.get(f"sigma_series_{when}")
         if x is None or len(x) < 2:
             return None
-        op_states = np.asarray(x, dtype=float).reshape(-1, 1)
+        op_states = np.asarray(x, dtype=float).reshape(len(x), -1)  # (n,) -> (n, 1); (n, d) kept
         kwargs = {"op_states": op_states}
         if sigma_series is not None and len(sigma_series) == op_states.shape[0]:
             kwargs["uncertainties"] = np.asarray(sigma_series, dtype=float)

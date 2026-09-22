@@ -1,4 +1,4 @@
-"""Solo training entry point — trains all 9 committee agents in parallel.
+"""Solo training entry point — trains the committee agents in parallel.
 
 Each agent gets its own SAC instance, its own env (with its own reward
 function), and its own running z-score normalizer. No shared trajectory.
@@ -17,6 +17,10 @@ Two usage patterns:
       ta-committee-train --agents CRPS NLL --seeds 0 1 2 \\
           --episodes 500 --log-dir _results/committee_v0/run01
 
+  Another benchmark (default: forrester; see committee/problems.py):
+      ta-committee-train --problem branin-currin --agents CRPS --seeds 0 --serial \\
+          --episodes 5000 --log-dir $SCRATCH/committee_branin-currin
+
 Output layout for ``--log-dir <D>``:
     D/models/{agent}.zip                   final model (single-seed mode)
     D/models/{agent}_seed{i}.zip           final model (multi-seed mode)
@@ -33,6 +37,7 @@ from typing import Optional
 
 from traits_audit.committee.agents import CommitteeAgent, make_agent
 from traits_audit.committee.env import DEFAULT_EPISODE_LENGTH
+from traits_audit.committee.problems import PROBLEMS
 from traits_audit.committee.rewards import REWARD_REGISTRY
 
 
@@ -46,6 +51,7 @@ def train_one_agent(
     sac_kwargs: Optional[dict] = None,
     ckpt_freq: int = 0,
     ckpt_dir: Optional[Path] = None,
+    env_kwargs: Optional[dict] = None,
 ) -> tuple[str, Path]:
     """Worker function: build, train, and save a single agent.
 
@@ -71,6 +77,8 @@ def train_one_agent(
         If > 0, save a checkpoint every ``ckpt_freq`` timesteps.
     ckpt_dir : Path, optional
         Checkpoint root. Required if ``ckpt_freq > 0``.
+    env_kwargs : dict, optional
+        Forwarded to ``CommitteeEnv`` (e.g. ``problem``, ``episode_length``).
 
     Designed to be called via ProcessPoolExecutor; instantiates SB3 lazily
     so we don't pickle SAC across the process boundary.
@@ -79,6 +87,7 @@ def train_one_agent(
         name=name,
         seed=seed,
         tensorboard_log=tensorboard_log,
+        env_kwargs=env_kwargs,
     )
     agent.build_model(verbose=0, **(sac_kwargs or {}))
 
@@ -131,6 +140,12 @@ def main() -> None:
         help="Steps per episode (default: 100).",
     )
     parser.add_argument(
+        "--problem",
+        default="forrester",
+        choices=list(PROBLEMS),
+        help="Benchmark to train on (default: forrester).",
+    )
+    parser.add_argument(
         "--log-dir",
         type=Path,
         default=Path("_results/committee_v0/run"),
@@ -175,7 +190,7 @@ def main() -> None:
         nargs="+",
         default=None,
         choices=list(REWARD_REGISTRY),
-        help="Subset of agents to train (default: all 9).",
+        help="Subset of agents to train (default: all in the registry).",
     )
     parser.add_argument(
         "--max-workers",
@@ -235,6 +250,9 @@ def main() -> None:
         ]
         seed_msg = f"base seed={args.seed} (single-seed mode)"
 
+    # episode_length is forwarded too: without it the env truncated at its
+    # default 100 steps whatever --episode-length said.
+    env_kwargs = dict(problem=args.problem, episode_length=args.episode_length)
     sac_kwargs = dict(
         learning_rate=args.learning_rate,
         buffer_size=args.buffer_size,
@@ -247,7 +265,7 @@ def main() -> None:
           f"{len(args.seeds) if args.seeds else 1} seed(s)) · "
           f"{args.episodes} episodes × {args.episode_length} steps = "
           f"{total_timesteps:,} timesteps each")
-    print(f"  {seed_msg}")
+    print(f"  problem={args.problem}  {seed_msg}")
     print(f"  SAC: lr={args.learning_rate}, buffer={args.buffer_size:,}, "
           f"batch={args.batch_size}, learning_starts={args.learning_starts}, "
           f"gamma={args.gamma}")
@@ -277,6 +295,7 @@ def main() -> None:
                 sac_kwargs=sac_kwargs,
                 ckpt_freq=args.ckpt_freq,
                 ckpt_dir=ckpt_dir,
+                env_kwargs=env_kwargs,
             )
             print(f"  [{i+1}/{len(jobs)}] {label} saved")
         return
@@ -295,6 +314,7 @@ def main() -> None:
                 sac_kwargs=sac_kwargs,
                 ckpt_freq=args.ckpt_freq,
                 ckpt_dir=ckpt_dir,
+                env_kwargs=env_kwargs,
             ): f"{name}{suffix}"
             for (name, seed, suffix) in jobs
         }
