@@ -119,6 +119,25 @@ def _forrester(x: np.ndarray) -> np.ndarray:
     return (6.0 * x - 2.0) ** 2 * np.sin(12.0 * x - 4.0)
 
 
+def _scatter_alpha(n_points: int, reference: int = 25_000,
+                   reference_alpha: float = 0.06) -> float:
+    """Per-point alpha for a dense scatter panel, scaled by point count.
+
+    Tuned so the current run (5 seeds x 50 episodes x 100 steps = 25k
+    queries per agent) lands at ``reference_alpha``, which keeps the
+    Branin contours and the CIE D65 marker legible underneath. Scaling
+    as 1/n holds the accumulated opacity of an equally dense patch
+    roughly constant, so re-running with more or fewer episodes doesn't
+    silently go back to a solid blue block. Clamped to a visible range.
+
+    ponytail: linear 1/n, not a true alpha-compositing inversion --
+    swap in 1-(1-a)^n if panels ever differ wildly in density.
+    """
+    if n_points <= 0:
+        return reference_alpha
+    return float(np.clip(reference_alpha * reference / n_points, 0.02, 0.5))
+
+
 def _panel_grid(n_panels: int, ncols: int = 5):
     """rows/cols for a panel-per-agent figure — scales with the registry
     size instead of assuming 9 (the original 3x3 hardcode silently dropped
@@ -222,21 +241,30 @@ def render_headline_figure(
                             labelleft=False, labelright=False)
 
         elif problem.name == "branin-currin":
+            # 25k pooled queries per panel saturate at any appreciable
+            # alpha, so the scatter is kept faint and the contour lines are
+            # drawn *over* it -- otherwise the Branin surface this panel
+            # exists to read against disappears under solid blue.
             ax.contourf(GX, GY, Z, levels=levels, cmap="Greys", alpha=0.55,
                         zorder=1)
-            ax.contour(GX, GY, Z, levels=levels, colors="0.5",
-                       linewidths=0.4, alpha=0.6, zorder=1)
-            ax.scatter(pooled[:, 0], pooled[:, 1], s=9, color="C0",
-                       alpha=0.35, edgecolors="none", zorder=2,
+            ax.scatter(pooled[:, 0], pooled[:, 1], s=4, color="C0",
+                       alpha=_scatter_alpha(len(pooled)),
+                       edgecolors="none", zorder=2,
                        label="pooled (5 seeds)")
+            ax.contour(GX, GY, Z, levels=levels, colors="0.25",
+                       linewidths=0.6, alpha=0.9, zorder=3)
             ax.set_xlim(0.0, 1.0)
             ax.set_ylim(0.0, 1.0)
             ylabel = problem.input_names[1]
 
         elif problem.name == "color":
-            draw_cie_background(ax, gamut_label=False)
+            # D65 lifted above the scatter and reddened: at these point
+            # counts the default grey cross sits invisibly underneath.
+            draw_cie_background(ax, gamut_label=False,
+                                d65_color="red", d65_zorder=5)
             xa, ya = rgb_norm_to_cie_xy(pooled)
-            ax.scatter(xa, ya, s=7, color="C0", alpha=0.35,
+            ax.scatter(xa, ya, s=4, color="C0",
+                       alpha=_scatter_alpha(len(pooled)),
                        edgecolors="none", zorder=4, label="pooled (5 seeds)")
             ax.set_xlim(0.0, 0.80)
             ax.set_ylim(0.0, 0.90)

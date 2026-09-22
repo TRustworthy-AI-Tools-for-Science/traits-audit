@@ -414,10 +414,20 @@ def rgb_norm_to_cie_xy(rgb_norm: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return xy[:, 0], xy[:, 1]
 
 
-def draw_cie_background(ax, gamut_label: bool = True) -> None:
+def draw_cie_background(
+    ax,
+    gamut_label: bool = True,
+    d65_color: str = "gray",
+    d65_zorder: float = 3,
+) -> None:
     """Draw the CIE 1931 horseshoe spectral locus + sRGB gamut triangle +
     D65 white point onto ``ax``. Shared by :func:`plot_cie_trajectory` and
-    the committee density figure's colour-matching panels."""
+    the committee density figure's colour-matching panels.
+
+    ``d65_color``/``d65_zorder`` let a caller lift the white-point marker
+    above a dense overlay — the committee density panels scatter tens of
+    thousands of queries over it, which buries the default grey cross.
+    """
     lx = np.append(CIE_LOCUS_X, CIE_LOCUS_X[0])
     ly = np.append(CIE_LOCUS_Y, CIE_LOCUS_Y[0])
     ax.plot(lx, ly, color="k", lw=0.8, zorder=1)
@@ -428,7 +438,7 @@ def draw_cie_background(ax, gamut_label: bool = True) -> None:
     gy = [CIE_SRGB_R[1], CIE_SRGB_G[1], CIE_SRGB_B[1], CIE_SRGB_R[1]]
     ax.plot(gx, gy, color="gray", lw=0.8, ls=":", zorder=2,
             label="sRGB gamut" if gamut_label else None)
-    ax.scatter(*CIE_D65, marker="+", s=60, color="gray", zorder=3)
+    ax.scatter(*CIE_D65, marker="+", s=60, color=d65_color, zorder=d65_zorder)
 
 
 def plot_cie_trajectory(
