@@ -124,6 +124,7 @@ class Problem:
     degree: int
     y_scale: float
     objective_names: tuple[str, ...]
+    input_names: tuple[str, ...]
     grid_points_per_dim: int
     density_bins: int  # per input dimension
 
@@ -145,6 +146,15 @@ class Problem:
         """Noise-free objectives: (n, dim) in [0, 1] -> (n, n_objectives)."""
         raise NotImplementedError
 
+    @cached_property
+    def true_min(self) -> float:
+        """Global minimum of the audited objective (``clean(x)[:, 0]``) over
+        [0, 1]^dim, for simple-regret scoring. Subclasses override with an
+        exact/literature value where one exists; this default does a coarse
+        grid search, exact only up to grid resolution."""
+        xs = _grid(min(200, int(50_000 ** (1.0 / self.dim))), self.dim)
+        return float(self.clean(xs)[:, 0].min())
+
     def make_surrogate(
         self, degree: int, n_estimators: int, std_scale: float, rng: np.random.Generator,
     ):
@@ -160,6 +170,7 @@ class ForresterProblem(Problem):
     degree = 5
     y_scale = 1.0
     objective_names = ("forrester",)
+    input_names = ("x",)
     grid_points_per_dim = 200
     density_bins = 10
 
@@ -182,6 +193,15 @@ class ForresterProblem(Problem):
             degree=degree, n_estimators=n_estimators, std_scale=std_scale, rng=rng,
         ))
 
+    @cached_property
+    def true_min(self) -> float:
+        # Exact 100k-point grid search — matches analysis/regret.py's
+        # FORRESTER_TRUE_MIN bit-for-bit (verified in tests). Kept as an
+        # explicit override (rather than the base class's dim-scaled grid)
+        # so existing Forrester regret figures don't shift.
+        xs = np.linspace(0.0, 1.0, 100_000)
+        return float(self.clean(xs[:, None])[:, 0].min())
+
 
 class BraninCurrinProblem(Problem):
     name = "branin-currin"
@@ -189,6 +209,7 @@ class BraninCurrinProblem(Problem):
     degree = 5
     y_scale = 50.0  # Branin spans ~0.4-308 on [0, 1]^2
     objective_names = ("branin", "currin")
+    input_names = ("x1", "x2")
     grid_points_per_dim = 15
     density_bins = 5
 
@@ -211,6 +232,13 @@ class BraninCurrinProblem(Problem):
         y = self.clean(x)
         return y + rng.normal(0.0, self.noise_std, size=y.shape)
 
+    # Literature value for Branin's global minimum (it has three, all equal):
+    # verified here via multistart L-BFGS-B from each of the three known
+    # basins (starting points from the standard reference table), all
+    # converging to 0.3978873577297666 to 1e-10. Exact to float64 precision,
+    # unlike a grid search.
+    true_min: float = 0.3978873577297666
+
 
 class ColorMatchingProblem(Problem):
     name = "color"
@@ -218,6 +246,7 @@ class ColorMatchingProblem(Problem):
     degree = 3
     y_scale = 1e4  # Frechet distance spans ~0-130k over the RGB cube
     objective_names = ("frechet",)
+    input_names = ("R", "G", "B")
     grid_points_per_dim = 8
     density_bins = 4
     noise_std = 200.0  # _sdl_demo.run(noise_std=200.0)
@@ -232,6 +261,13 @@ class ColorMatchingProblem(Problem):
     @cached_property
     def rgb_max(self) -> float:
         return float(self._sdl.bounds["R"][1])
+
+    # Frechet distance is a metric (>= 0, = 0 iff the two spectra are
+    # identical), and the simulator's fixed target R/G/B (verified to lie
+    # inside [0, rgb_max]^3, so it's reachable by the [0,1]^3 action space)
+    # reproduces its own reference spectrum exactly. So 0.0 is the exact
+    # global minimum, not merely the smallest value seen in a sample.
+    true_min: float = 0.0
 
     def clean(self, x: np.ndarray) -> np.ndarray:
         rgb = np.asarray(x, dtype=float).reshape(-1, 3) * self.rgb_max

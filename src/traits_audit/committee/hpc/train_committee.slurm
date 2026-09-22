@@ -73,6 +73,12 @@ export NUMEXPR_NUM_THREADS=1
 # CPU-only (SAC on Box(1,) actions doesn't benefit from GPU).
 export CUDA_VISIBLE_DEVICES=""
 
+# From here on, any failure fails the task (so SLURM reports FAILED, not
+# COMPLETED, and --dependency=afterok holds dependent jobs back). Added
+# after a missing-command failure and a missing-dependency crash both
+# silently reported COMPLETED here — see train_committee_problem.slurm.
+set -eo pipefail
+
 # ---------------------------------------------------------------------------
 # Training budget — production scale (override on the sbatch command line if
 # needed, e.g. `sbatch --export=EPISODES=2000 hpc/train_committee.slurm`)

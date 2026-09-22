@@ -1,15 +1,21 @@
-"""3x3 learning-curve figure for the 9 SAC committee members.
+"""Learning-curve figure for the SAC committee members.
 
 For each agent: load ``rollout/ep_rew_mean`` from the TensorBoard event file
 of every (agent, seed) run, apply a light EMA (alpha=0.6, TB-style),
-interpolate to a shared step grid, and plot median + IQR band across the
-5 seeds. Styling matches :mod:`density.py` (3x3 grid, title 15, label 13,
-tick 11).
+interpolate to a shared step grid, and plot median + IQR band across seeds.
+Styling matches :mod:`density.py` (panel grid, title 15, label 13, tick 11).
+Dimension-agnostic: TB scalar logs carry no reference to input dimension, so
+this file needs no problem-specific handling — it works unchanged for any
+benchmark trained via ``ta-committee-train --problem ...``.
 
 Each agent's reward stream was z-scored on its own running statistics during
 training, so absolute reward magnitudes are NOT comparable across panels.
 The figure answers "is this agent learning?" per panel, not "which agent
 earned more."
+
+Missing (agent, seed) logs — e.g. a still-running or since-failed HPC task —
+are skipped with a printed warning rather than crashing the whole figure;
+an agent with zero available seeds is dropped from the figure entirely.
 """
 from __future__ import annotations
 
@@ -89,32 +95,41 @@ def load_learning_curves(
     smoothing_alpha: float = 0.6,
     n_grid: int = 500,
 ) -> LearningCurveResult:
-    """Load and align every (agent, seed) curve.
+    """Load and align every (agent, seed) curve that's actually available.
 
-    The shared step grid spans the intersection of all observed step ranges
+    The shared step grid spans the intersection of all *loaded* step ranges
     so we never extrapolate. Linear interpolation onto ``n_grid`` evenly
     spaced points within that intersection.
     """
-    raw: dict[str, dict[int, tuple[np.ndarray, np.ndarray]]] = {
-        a: {} for a in AGENT_NAMES
-    }
-    smoothed_per_seed: dict[str, dict[int, np.ndarray]] = {
-        a: {} for a in AGENT_NAMES
-    }
+    raw: dict[str, dict[int, tuple[np.ndarray, np.ndarray]]] = {}
     s_min = -np.inf
     s_max = np.inf
     for agent in AGENT_NAMES:
+        agent_raw: dict[int, tuple[np.ndarray, np.ndarray]] = {}
         for s in seeds:
             run_dir = tb_dir / f"{agent}_seed{s}"
-            steps, values = _load_scalar(run_dir, tag)
-            raw[agent][s] = (steps, values)
+            try:
+                steps, values = _load_scalar(run_dir, tag)
+            except (FileNotFoundError, KeyError) as exc:
+                print(f"[learning-curves] skipping {agent} seed={s}: {exc}")
+                continue
+            agent_raw[s] = (steps, values)
             s_min = max(s_min, float(steps.min()))
             s_max = min(s_max, float(steps.max()))
+        if agent_raw:
+            raw[agent] = agent_raw
+    if not raw:
+        raise FileNotFoundError(f"No (agent, seed) TB logs found under {tb_dir}")
+    if s_min > s_max:
+        raise ValueError(
+            f"Loaded runs' step ranges don't overlap (max start {s_min:.0f} > "
+            f"min end {s_max:.0f}) — likely a still-running or partial job."
+        )
 
     grid = np.linspace(s_min, s_max, n_grid)
-    for agent in AGENT_NAMES:
-        for s in seeds:
-            steps, values = raw[agent][s]
+    smoothed_per_seed: dict[str, dict[int, np.ndarray]] = {a: {} for a in raw}
+    for agent, agent_raw in raw.items():
+        for s, (steps, values) in agent_raw.items():
             smooth = _ema(values, smoothing_alpha)
             smoothed_per_seed[agent][s] = np.interp(grid, steps, smooth)
 
@@ -130,41 +145,48 @@ def render_learning_curves_figure(
     output_path: Path,
     title_tag: str = "rollout/ep_rew_mean",
 ) -> None:
-    """3x3 panel grid: median + IQR band across seeds per agent.
+    """Panel grid: median + IQR band across seeds per agent.
 
-    Styling mirrors :func:`density.render_headline_figure` — same figsize,
-    same title/label/tick fontsizes, light grid.
+    Styling mirrors :func:`density.render_headline_figure` — same panel
+    sizing (scales with agent count, not a hardcoded 3x3), same
+    title/label/tick fontsizes, light grid. Only agents with at least one
+    loaded seed appear (see ``load_learning_curves``).
     """
     import matplotlib.pyplot as plt
     from traits_audit.committee.analysis import style as st
+    from traits_audit.committee.analysis.density import _panel_grid
+
+    agents = list(result.smoothed_by_agent_seed.keys())
 
     # Project font: serif (matches traits_audit._viz._RCPARAMS). Scoped to
     # this figure via rc_context so we don't mutate global rcParams.
     with plt.rc_context({"font.family": "serif"}):
-        fig, axes = plt.subplots(3, 3, figsize=(14, 11), sharex=True)
-        # Scale step axis to thousands: 100, 200, 300, 400, 500.
+        fig, axes, nrows, ncols = _panel_grid(len(agents))
+        # Scale step axis to thousands.
         grid_K = result.step_grid / 1e3
+        x_max = float(grid_K.max())
 
-        for ax, agent in zip(axes.ravel(), AGENT_NAMES):
+        for ax, agent in zip(axes, agents):
             per_seed = result.smoothed_by_agent_seed[agent]
             stacked = np.stack(list(per_seed.values()), axis=0)   # (n_seeds, G)
             median = np.median(stacked, axis=0)
             q25 = np.quantile(stacked, 0.25, axis=0)
             q75 = np.quantile(stacked, 0.75, axis=0)
 
+            n_seeds = len(per_seed)
             ax.fill_between(grid_K, q25, q75, color=st.BLUE, alpha=0.22,
-                            label="IQR (5 seeds)")
+                            label=f"IQR ({n_seeds} seed{'s' if n_seeds != 1 else ''})")
             ax.plot(grid_K, median, color=st.BLUE, lw=2.2,
                     label="median")
             ax.axhline(0.0, color=st.NEUTRAL_LIGHT, lw=0.9, ls=":")
-            ax.set_xlim(0, 500)
-            ax.set_xticks([100, 200, 300, 400, 500])
+            ax.set_xlim(0, x_max)
             ax.set_title(agent, fontsize=st.TITLE_FS)
             ax.set_ylabel("smoothed reward", fontsize=st.LABEL_FS)
             ax.tick_params(axis="both", labelsize=st.TICK_FS)
             ax.grid(alpha=0.3)
 
-        for ax in axes[-1]:
+        # See density.py's _panel_grid caller for the same even-grid caveat.
+        for ax in axes[-ncols:]:
             ax.set_xlabel("training steps (K)", fontsize=st.LABEL_FS)
 
         fig.tight_layout()

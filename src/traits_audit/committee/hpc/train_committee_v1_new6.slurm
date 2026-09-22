@@ -59,6 +59,12 @@ export OPENBLAS_NUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
 export CUDA_VISIBLE_DEVICES=""
 
+# From here on, any failure fails the task (so SLURM reports FAILED, not
+# COMPLETED, and --dependency=afterok holds dependent jobs back). Added
+# after a missing-command failure and a missing-dependency crash both
+# silently reported COMPLETED here — see train_committee_problem.slurm.
+set -eo pipefail
+
 # ---------------------------------------------------------------------------
 # Training budget — matches v0 for direct comparability.
 # ---------------------------------------------------------------------------

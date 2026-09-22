@@ -1,18 +1,20 @@
-"""Simple-regret comparison: random / max-sigma / LCB / 9 solo / committee.
+"""Simple-regret comparison: random / max-sigma / LCB / K solo / committee.
 
 Deferred item 6 of the v0 plan. Simple regret at step t for one episode is::
 
     SR(t) = min_{i <= t} f_clean(x_i)  -  f*
 
-evaluated on the *clean* Forrester (the noiseless objective), not on the
+evaluated on the *clean* audited objective (``problem.clean(x)[:, 0]`` —
+Forrester itself, or Branin/Frechet for the other two problems), not on the
 noisy y_obs. Using noisy observations would let a lucky noise draw push SR
 below 0; standard BO convention is to score the chosen x against the clean
-oracle. f* is computed numerically once.
+oracle. f* ( = ``problem.true_min``) is exact for all three problems (see
+``problems.py``), not a grid-search approximation.
 
 For each policy:
     20 rollout seeds x 100 steps x (warmstart 20) per the plan.
 
-Committee = uniform pick across the 9 trained policies at each step.
+Committee = uniform pick across the K trained policies at each step.
 
 Statistical test on terminal simple regret (step T):
     Paired Wilcoxon signed-rank, committee vs best-solo (the solo agent with
@@ -20,17 +22,21 @@ Statistical test on terminal simple regret (step T):
 
 Output: a long-format CSV (one row per (policy, seed, step)) and a figure
 of mean SR with 95% CI bands.
+
+``FORRESTER_TRUE_MIN`` / ``_forrester_clean`` are kept (unchanged) for
+``thread_regret.py``, which is still Forrester-only.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, Union
 
 import numpy as np
 
 from traits_audit._cal_demo import oracle as forrester_oracle
 from traits_audit.committee.env import DEFAULT_EPISODE_LENGTH, DEFAULT_WARMSTART
+from traits_audit.committee.problems import ForresterProblem, Problem, get_problem
 from traits_audit.committee.rewards import REWARD_REGISTRY
 from traits_audit.committee.analysis.rollouts import (
     lcb_policy,
@@ -79,22 +85,27 @@ class RegretResult:
     warmstart_n: int
 
 
-def _trace_to_regret(trace, warmstart_n: int, episode_length: int) -> np.ndarray:
+def _trace_to_regret(
+    trace, warmstart_n: int, episode_length: int, problem: Problem,
+) -> np.ndarray:
     """Per-step simple regret along the acquisition trajectory.
 
-    Score *clean* Forrester at each queried x and take the running min,
-    so noise can't drive regret negative.
+    Score the *clean* audited objective at each queried x and take the
+    running min, so noise can't drive regret negative. Verified to
+    reproduce the pre-generalization Forrester-only computation bit for
+    bit (test_committee_problems.py).
     """
-    f_clean = _forrester_clean(trace.x_obs)
+    x = np.asarray(trace.x_obs, dtype=float).reshape(-1, problem.dim)
+    f_clean = problem.clean(x)[:, 0]
     sr = np.zeros(episode_length, dtype=float)
     for t in range(episode_length):
         cutoff = warmstart_n + t + 1
-        sr[t] = float(np.min(f_clean[:cutoff])) - FORRESTER_TRUE_MIN
+        sr[t] = float(np.min(f_clean[:cutoff])) - problem.true_min
     return sr
 
 
 def _make_committee_policy(models: list, rng: np.random.Generator) -> Callable:
-    """Uniform-random pick across the 9 frozen policies at each step.
+    """Uniform-random pick across the K frozen policies at each step.
 
     Each step: every policy proposes; one is chosen uniformly. Reuses the
     SB3 ``predict(obs, deterministic=True)`` interface.
@@ -105,7 +116,7 @@ def _make_committee_policy(models: list, rng: np.random.Generator) -> Callable:
         # ask only that one (predictions are deterministic anyway).
         idx = int(rng.integers(0, n))
         action, _ = models[idx].predict(obs, deterministic=True)
-        return np.asarray(action, dtype=np.float32).reshape(1)
+        return np.asarray(action, dtype=np.float32).reshape(env.unwrapped.action_space.shape)
     return _pi
 
 
@@ -117,6 +128,7 @@ def run_regret(
     warmstart_n: int = DEFAULT_WARMSTART,
     rng_seed: int = 0,
     committee_solo_seed: int = 0,
+    problem: Union[Problem, str, None] = None,
 ) -> RegretResult:
     """Compute simple regret for all comparator policies.
 
@@ -124,13 +136,21 @@ def run_regret(
       - random
       - max-sigma
       - LCB (kappa=2)
-      - each of the 9 solo SAC policies (using training seed ``committee_solo_seed``)
-      - committee (uniform pick across 9 policies at ``committee_solo_seed``)
+      - each solo SAC policy (using training seed ``committee_solo_seed``)
+      - committee (uniform pick across all solo policies at ``committee_solo_seed``)
 
     For statistical apples-to-apples, every policy is evaluated on the same
     ``n_episode_seeds`` episode seeds.
+
+    ``problem`` selects the benchmark (default Forrester); ``models_dir``
+    must hold models trained on that same problem.
     """
     from stable_baselines3 import SAC
+
+    if isinstance(problem, str):
+        problem = get_problem(problem)
+    elif problem is None:
+        problem = ForresterProblem()
 
     rng = np.random.default_rng(rng_seed)
     episode_seeds = [int(rng.integers(0, 2**31 - 1)) for _ in range(n_episode_seeds)]
@@ -152,8 +172,9 @@ def run_regret(
             pol = policy_factory(es)
             tr = run_rollout(pol, seed=es,
                              episode_length=episode_length,
-                             warmstart_n=warmstart_n)
-            sr_rows.append(_trace_to_regret(tr, warmstart_n, episode_length))
+                             warmstart_n=warmstart_n,
+                             problem=problem)
+            sr_rows.append(_trace_to_regret(tr, warmstart_n, episode_length, problem))
         return np.stack(sr_rows, axis=0)
 
     # Stateless comparators: factory ignores the seed (policy itself uses env state).

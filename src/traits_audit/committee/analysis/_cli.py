@@ -3,21 +3,29 @@
 Subcommands:
 
     corr-random
-        9x9 reward correlation matrix on uniform-random rollouts.
+        KxK reward correlation matrix on uniform-random rollouts.
         No trained models needed — fast sanity check / baseline.
 
     corr-trained
-        Same matrix but on rollouts from each trained policy (all 9 agents
-        x N seeds). The "9 wearing 3-4 costumes" test lives here.
+        Same matrix but on rollouts from each trained policy (all K agents
+        x N seeds). The "K wearing 3-4 costumes" test lives here.
 
     density
-        Headline 9-panel query-density figure vs predicted_styles.md.
+        Headline per-agent query-density figure vs predicted_styles.md
+        (Forrester only) or per-dimension marginals (other problems).
 
     regret
         Simple-regret curves + paired Wilcoxon test vs best-solo.
 
+``corr-random``, ``corr-trained``, ``density`` and ``regret`` take
+``--problem`` (default: ``forrester``; see ``committee/problems.py`` for the
+others) to run on a different benchmark. ``thread-a``/``thread-b`` and
+``learning-curves`` remain Forrester-only for now.
+
 Default output directory: ``_results/committee_v0/`` to live alongside
-``predicted_styles.md``.
+``predicted_styles.md``. For another problem, pass a different
+``--output-dir`` (e.g. ``_results/committee_branin-currin``) — nothing here
+does that for you automatically.
 """
 from __future__ import annotations
 
@@ -26,15 +34,18 @@ from pathlib import Path
 
 import numpy as np
 
+from traits_audit.committee.problems import PROBLEMS
+
 
 def _add_corr_random(sub):
     p = sub.add_parser(
         "corr-random",
-        help="9x9 reward correlation matrix on uniform-random rollouts.",
+        help="KxK reward correlation matrix on uniform-random rollouts.",
     )
     p.add_argument("--n-episodes", type=int, default=50)
     p.add_argument("--episode-length", type=int, default=100)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--problem", choices=list(PROBLEMS), default="forrester")
     p.add_argument("--output-dir", type=Path,
                    default=Path("_results/committee_v0"))
     p.add_argument("--cluster-threshold", type=float, default=0.5,
@@ -44,7 +55,7 @@ def _add_corr_random(sub):
 def _add_corr_trained(sub):
     p = sub.add_parser(
         "corr-trained",
-        help="9x9 reward correlation matrix on trained-policy rollouts.",
+        help="KxK reward correlation matrix on trained-policy rollouts.",
     )
     p.add_argument("--models-dir", type=Path,
                    default=Path("runs/committee_v0_5M/models"))
@@ -54,6 +65,8 @@ def _add_corr_trained(sub):
     p.add_argument("--episode-length", type=int, default=100)
     p.add_argument("--seed", type=int, default=0,
                    help="RNG seed for episode seed selection.")
+    p.add_argument("--problem", choices=list(PROBLEMS), default="forrester",
+                   help="Must match what --models-dir was trained on.")
     p.add_argument("--output-dir", type=Path,
                    default=Path("_results/committee_v0"))
     p.add_argument("--cluster-threshold", type=float, default=0.5)
@@ -71,6 +84,8 @@ def _add_density(sub):
     p.add_argument("--episode-length", type=int, default=100)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--n-bins", type=int, default=30)
+    p.add_argument("--problem", choices=list(PROBLEMS), default="forrester",
+                   help="Must match what --models-dir was trained on.")
     p.add_argument("--output-dir", type=Path,
                    default=Path("_results/committee_v0"))
 
@@ -87,6 +102,8 @@ def _add_regret(sub):
     p.add_argument("--n-episode-seeds", type=int, default=20)
     p.add_argument("--episode-length", type=int, default=100)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--problem", choices=list(PROBLEMS), default="forrester",
+                   help="Must match what --models-dir was trained on.")
     p.add_argument("--output-dir", type=Path,
                    default=Path("_results/committee_v0"))
 
@@ -152,12 +169,13 @@ def _run_corr_random(args) -> None:
         write_csv,
     )
 
-    print(f"[corr-random] {args.n_episodes} episodes x {args.episode_length} steps "
-          f"(seed={args.seed})")
+    print(f"[corr-random] problem={args.problem} {args.n_episodes} episodes x "
+          f"{args.episode_length} steps (seed={args.seed})")
     result = random_rollout_correlation(
         n_episodes=args.n_episodes,
         episode_length=args.episode_length,
         seed=args.seed,
+        problem=args.problem,
     )
     labels, n_clusters = cluster_agents(result.matrix, threshold=args.cluster_threshold)
     print(f"[corr-random] clusters at threshold={args.cluster_threshold}: "
@@ -191,14 +209,16 @@ def _run_corr_trained(args) -> None:
         write_csv,
     )
 
-    print(f"[corr-trained] models={args.models_dir} seeds={args.seeds} "
-          f"{args.n_episodes_per_seed} ep/seed x {args.episode_length} steps")
+    print(f"[corr-trained] problem={args.problem} models={args.models_dir} "
+          f"seeds={args.seeds} {args.n_episodes_per_seed} ep/seed x "
+          f"{args.episode_length} steps")
     result = trained_policy_correlation(
         models_dir=args.models_dir,
         seeds=args.seeds,
         n_episodes_per_seed=args.n_episodes_per_seed,
         episode_length=args.episode_length,
         rng_seed=args.seed,
+        problem=args.problem,
     )
     labels, n_clusters = cluster_agents(result.matrix, threshold=args.cluster_threshold)
     print(f"[corr-trained] clusters at threshold={args.cluster_threshold}: "
@@ -230,22 +250,28 @@ def _run_density(args) -> None:
         run_density_rollouts,
         write_density_csv,
     )
+    from traits_audit.committee.problems import get_problem
 
-    print(f"[density] models={args.models_dir} seeds={args.seeds} "
-          f"{args.n_episodes_per_seed} ep/seed x {args.episode_length} steps")
+    problem = get_problem(args.problem)
+    print(f"[density] problem={args.problem} models={args.models_dir} "
+          f"seeds={args.seeds} {args.n_episodes_per_seed} ep/seed x "
+          f"{args.episode_length} steps")
     result = run_density_rollouts(
         models_dir=args.models_dir,
         seeds=args.seeds,
         n_episodes_per_seed=args.n_episodes_per_seed,
         episode_length=args.episode_length,
         rng_seed=args.seed,
+        problem=problem,
     )
     out = args.output_dir
-    write_density_csv(result, out / "query_density.csv")
+    write_density_csv(result, out / "query_density.csv", dim=problem.dim)
     render_headline_figure(
         result,
         output_path=out / "query_density_headline.png",
         n_bins=args.n_bins,
+        dim=problem.dim,
+        dim_labels=list(problem.input_names),
     )
     print(f"[density] wrote outputs to {out}/")
 
@@ -259,7 +285,8 @@ def _run_regret(args) -> None:
         write_regret_csv,
     )
 
-    print(f"[regret] models={args.models_dir} solo-seed={args.committee_solo_seed} "
+    print(f"[regret] problem={args.problem} models={args.models_dir} "
+          f"solo-seed={args.committee_solo_seed} "
           f"{args.n_episode_seeds} ep-seeds x {args.episode_length} steps")
     result = run_regret(
         models_dir=args.models_dir,
@@ -268,6 +295,7 @@ def _run_regret(args) -> None:
         episode_length=args.episode_length,
         rng_seed=args.seed,
         committee_solo_seed=args.committee_solo_seed,
+        problem=args.problem,
     )
     test = paired_test(result)
     print(f"[regret] committee vs best-solo ({test['best_solo']}): "

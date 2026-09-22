@@ -15,16 +15,20 @@ Why one env instance per rollout: BootstrapSurrogate is stateful (it refits
 on every step). Sharing across rollouts would leak; we re-instantiate via
 ``env.reset(seed=...)``.
 
-The policy is a callable ``obs -> action (np.ndarray shape (1,))``:
-  * ``random_policy(rng)``  — uniform on [0, 1]
+The policy is a callable ``obs, env -> action (np.ndarray shape (dim,))``:
+  * ``random_policy(rng)``  — uniform on [0, 1]^dim
   * ``sac_policy(model)``   — model.predict(obs, deterministic=True)
-  * ``lcb_policy()``        — argmin(mu - kappa*sigma) over a fixed grid
-  * ``max_sigma_policy()``  — argmax(sigma) over a fixed grid
+  * ``lcb_policy()``        — argmin(mu - kappa*sigma) over the problem's grid
+  * ``max_sigma_policy()``  — argmax(sigma) over the problem's grid
+
+All four work unchanged on any problem (Forrester, Branin-Currin, color) —
+they read the action dimension and the acquisition grid off ``env`` at call
+time rather than assuming 1-D.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable, Optional
+from typing import Callable, Optional, Union
 
 import numpy as np
 
@@ -33,10 +37,27 @@ from traits_audit.committee.env import (
     DEFAULT_EPISODE_LENGTH,
     DEFAULT_WARMSTART,
 )
+from traits_audit.committee.problems import Problem
 from traits_audit.committee.rewards import REWARD_REGISTRY
 
 
 Policy = Callable[[np.ndarray, "CommitteeEnv"], np.ndarray]
+
+
+def _acquisition_grid(env: CommitteeEnv, grid_size: int) -> np.ndarray:
+    """(n, dim) candidate points for a grid-search baseline policy.
+
+    1-D: a fresh ``grid_size``-point grid (unchanged from the original
+    Forrester-only implementation, so existing LCB/max-sigma regret curves
+    don't shift). 2-D/3-D: ``grid_size`` points per axis would be far too
+    many candidates (300^3), so we reuse the problem's own state-grid
+    instead — already sized to stay tractable (15/dim for Branin-Currin,
+    8/dim for color).
+    """
+    problem = env.unwrapped.problem
+    if problem.dim == 1:
+        return np.linspace(0.0, 1.0, grid_size).reshape(-1, 1)
+    return problem.grid
 
 
 @dataclass
@@ -45,15 +66,17 @@ class RolloutTrace:
 
     Attributes
     ----------
-    x_obs : np.ndarray, shape (warmstart_n + episode_length,)
-        Full history of queried x's.
+    x_obs : np.ndarray, shape (warmstart_n + episode_length,) or (..., dim)
+        Full history of queried x's. 1-D for Forrester, (n, dim) otherwise
+        (same convention as ``CommitteeEnv.x_obs``).
     y_obs : np.ndarray, shape (warmstart_n + episode_length,)
-        Full history of observed y's.
+        Full history of the audited objective, divided by the problem's
+        y_scale (same convention as ``CommitteeEnv.y_obs``).
     mu_hist : np.ndarray, shape (warmstart_n + episode_length,)
         Surrogate mean at each queried point, *as seen at query time*.
     sigma_hist : np.ndarray, shape (warmstart_n + episode_length,)
         Surrogate std at each queried point, as seen at query time.
-    x_queries : np.ndarray, shape (episode_length,)
+    x_queries : np.ndarray, shape (episode_length,) or (episode_length, dim)
         The acquisition queries (warm-start excluded). For density plots.
     warmstart_n : int
         How many initial points are warm-start vs acquisition.
@@ -75,34 +98,35 @@ class RolloutTrace:
 
 def random_policy(rng: np.random.Generator) -> Policy:
     def _pi(obs: np.ndarray, env: CommitteeEnv) -> np.ndarray:
-        return np.array([rng.uniform(0.0, 1.0)], dtype=np.float32)
+        dim = env.unwrapped.problem.dim
+        return rng.uniform(0.0, 1.0, size=dim).astype(np.float32)
     return _pi
 
 
 def sac_policy(model) -> Policy:
     def _pi(obs: np.ndarray, env: CommitteeEnv) -> np.ndarray:
         action, _ = model.predict(obs, deterministic=True)
-        return np.asarray(action, dtype=np.float32).reshape(1)
+        return np.asarray(action, dtype=np.float32).reshape(env.unwrapped.action_space.shape)
     return _pi
 
 
 def lcb_policy(kappa: float = 2.0, grid_size: int = 300) -> Policy:
-    grid = np.linspace(0.0, 1.0, grid_size)
     def _pi(obs: np.ndarray, env: CommitteeEnv) -> np.ndarray:
         surrogate = env.unwrapped.surrogate
+        grid = _acquisition_grid(env, grid_size)
         mu, sigma = surrogate.predict(grid)
         idx = int(np.argmin(mu - kappa * sigma))
-        return np.array([grid[idx]], dtype=np.float32)
+        return grid[idx].astype(np.float32)
     return _pi
 
 
 def max_sigma_policy(grid_size: int = 300) -> Policy:
-    grid = np.linspace(0.0, 1.0, grid_size)
     def _pi(obs: np.ndarray, env: CommitteeEnv) -> np.ndarray:
         surrogate = env.unwrapped.surrogate
+        grid = _acquisition_grid(env, grid_size)
         _mu, sigma = surrogate.predict(grid)
         idx = int(np.argmax(sigma))
-        return np.array([grid[idx]], dtype=np.float32)
+        return grid[idx].astype(np.float32)
     return _pi
 
 
@@ -113,12 +137,16 @@ def run_rollout(
     seed: int,
     episode_length: int = DEFAULT_EPISODE_LENGTH,
     warmstart_n: int = DEFAULT_WARMSTART,
+    problem: Union[Problem, str, None] = None,
 ) -> RolloutTrace:
     """Walk the env one episode under ``policy`` and return the trace.
 
     The reward computer attached to the env is irrelevant — we discard the
     scalar reward and score the trajectory offline with every reward
     computer in :func:`score_trace`.
+
+    ``problem`` : a Problem instance, a name from ``problems.PROBLEMS``, or
+    None (default Forrester) — forwarded to ``CommitteeEnv``.
     """
     # Reward computer here is a dummy; we don't use the scalar reward path.
     dummy_reward = REWARD_REGISTRY["CRPS"]()
@@ -126,9 +154,10 @@ def run_rollout(
         reward_computer=dummy_reward,
         episode_length=episode_length,
         warmstart_n=warmstart_n,
+        problem=problem,
     )
     obs, _ = env.reset(seed=seed)
-    x_q_list: list[float] = []
+    x_q_list: list[np.ndarray] = []
     for _ in range(episode_length):
         action = policy(obs, env)
         obs, _reward, terminated, truncated, info = env.step(action)
