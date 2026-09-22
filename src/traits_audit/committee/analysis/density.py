@@ -171,11 +171,13 @@ def render_headline_figure(
     be read against the function landscape — exactly the original figure
     (histogram + per-seed step overlay, ``C0``/black/gray colours).
 
-    ``branin-currin`` (2-D): a shaded contour of the true (noise-free)
+    ``branin-currin`` (2-D): unfilled contours of the true (noise-free)
     Branin surface — the objective the audit rewards actually score — with
     each agent's pooled queries scattered on top as semi-transparent ``C0``
     dots, so query placement can be read against the landscape the same way
-    the Forrester panels do.
+    the Forrester panels do. The contours are a reference frame only; the
+    surface's shape is shown properly by the 3-D companion figure in
+    :mod:`.surface3d`.
 
     ``color`` (3-D): the CIE 1931 xy chromaticity diagram (spectral locus +
     sRGB gamut triangle) that ``plot_cie_trajectory`` draws for the SDL demo
@@ -249,18 +251,17 @@ def render_headline_figure(
                             labelleft=False, labelright=False)
 
         elif problem.name == "branin-currin":
-            # 25k pooled queries per panel saturate at any appreciable
-            # alpha, so the scatter is kept faint and the contour lines are
-            # drawn *over* it -- otherwise the Branin surface this panel
-            # exists to read against disappears under solid blue.
-            ax.contourf(GX, GY, Z, levels=levels, cmap="Greys", alpha=0.55,
-                        zorder=1)
+            # Unfilled contours only. A grey contourf underneath darkened
+            # the whole panel and made the queries read as washed out; the
+            # 3-D companion figure (surface3d.py) is where the surface's
+            # *shape* is shown, so here the landscape only needs to be a
+            # reference frame for the query positions.
+            cs = ax.contour(GX, GY, Z, levels=levels, cmap="viridis",
+                            linewidths=0.8, alpha=0.85, zorder=1)
             ax.scatter(pooled[:, 0], pooled[:, 1], s=4, color="C0",
-                       alpha=_scatter_alpha(len(pooled)),
-                       edgecolors="none", zorder=2,
+                       alpha=_scatter_alpha(len(pooled)) * 2.0,
+                       edgecolors="none", zorder=3,
                        label="pooled (5 seeds)")
-            ax.contour(GX, GY, Z, levels=levels, colors="0.25",
-                       linewidths=0.6, alpha=0.9, zorder=3)
             ax.set_xlim(0.0, 1.0)
             ax.set_ylim(0.0, 1.0)
             ylabel = problem.input_names[1]
@@ -324,7 +325,7 @@ def render_headline_figure(
     if dim == 1:
         bottom_label = "x (acquisition query)"
     elif problem.name == "branin-currin":
-        bottom_label = f"{problem.input_names[0]}  (shading: Branin surface)"
+        bottom_label = f"{problem.input_names[0]}  (contours: Branin surface)"
     elif problem.name == "color":
         bottom_label = "CIE x"
     else:
