@@ -52,7 +52,7 @@ mlflow  = ["mlflow", "plotly", "matplotlib"]
 sdl     = ["self-driving-lab-demo", "ax-platform>=1.3.0"]
 camd    = ["camd==2022.8.24", "scikit-learn", "pandas", "pymatgen", "matminer", "django", "PuLP"]
 pybamm  = ["pybamm", "scikit-learn"]
-committee = ["stable-baselines3>=2.3", "gymnasium>=0.29", "torch>=2.1", "tensorboard"]
+committee = ["stable-baselines3>=2.3", "gymnasium>=0.29", "torch>=2.1", "tensorboard", "self-driving-lab-demo"]
 docs = [
     "sphinx>=7",
     "furo",
