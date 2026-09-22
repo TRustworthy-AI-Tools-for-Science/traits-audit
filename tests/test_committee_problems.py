@@ -136,8 +136,8 @@ def test_true_min_exact_values():
 
 def test_forrester_true_min_matches_regret_module_constant():
     """ForresterProblem.true_min must stay bit-identical to regret.py's
-    module-level FORRESTER_TRUE_MIN, which thread_regret.py still imports
-    directly and independently."""
+    module-level FORRESTER_TRUE_MIN, the independently-derived constant the
+    pre-generalization Forrester regret figures were computed against."""
     from traits_audit.committee.analysis.regret import FORRESTER_TRUE_MIN
     from traits_audit.committee.problems import ForresterProblem
 

@@ -3,8 +3,15 @@
 Both threads share the same evaluation harness:
     - 20 episode seeds, paired across all policies.
     - 100 acquisition steps per episode, warm-start 20.
-    - Clean-Forrester simple regret (matches v0 regret.py).
+    - Clean simple regret on the problem's audited objective (shares
+      ``regret._trace_to_regret``, so it matches the v0 regret curves).
     - Paired Wilcoxon signed-rank at terminal step against a chosen reference.
+
+Both run on any benchmark in ``committee/problems.py`` — pass ``problem=``.
+The committee's preferred actions are vectors throughout (see
+:mod:`.votes`), so 1-D Forrester, 2-D Branin-Currin and 3-D colour matching
+all go through the same code path, and the best-solo reference is read from
+the problem's own ``regret_test.json`` rather than assumed.
 
 Per-step diagnostics also captured for the A3 / B3 figures:
     - committee_action_std[t]   — std of the 9 preferred actions at obs_t,
@@ -19,7 +26,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Iterable, Optional
+from typing import Callable, Iterable, Optional, Union
 
 import numpy as np
 
@@ -28,11 +35,10 @@ from traits_audit.committee.env import (
     DEFAULT_EPISODE_LENGTH,
     DEFAULT_WARMSTART,
 )
+from traits_audit.committee.problems import ForresterProblem, Problem, get_problem
 from traits_audit.committee.rewards import REWARD_REGISTRY
 from traits_audit.committee.analysis.regret import (
     AGENT_NAMES,
-    FORRESTER_TRUE_MIN,
-    _forrester_clean,
     _trace_to_regret,
 )
 from traits_audit.committee.analysis.rollouts import (
@@ -61,6 +67,15 @@ from traits_audit.committee.analysis.policies_ext import (
 # committee action-std per step (needed for the disagreement diagnostic).
 # ---------------------------------------------------------------------------
 
+def _resolve_problem(problem: Union[Problem, str, None]) -> Problem:
+    """Accept a Problem, a registry name, or None (-> Forrester)."""
+    if isinstance(problem, str):
+        return get_problem(problem)
+    if problem is None:
+        return ForresterProblem()
+    return problem
+
+
 @dataclass
 class DiagnosticRolloutTrace:
     trace: RolloutTrace
@@ -73,27 +88,35 @@ def _run_rollout_with_diagnostics(
     seed: int,
     episode_length: int = DEFAULT_EPISODE_LENGTH,
     warmstart_n: int = DEFAULT_WARMSTART,
+    problem: Union[Problem, str, None] = None,
 ) -> DiagnosticRolloutTrace:
-    """Run policy; per step record committee std of preferred actions at obs.
+    """Run policy; per step record committee spread of preferred actions at obs.
 
     Mirrors :func:`traits_audit.committee.analysis.rollouts.run_rollout` but
     intercepts the obs after each step. If ``voter`` is None, action-std is
     filled with NaN (still legal for plotting; A3 will skip it).
+
+    The recorded spread is the root-mean-square per-axis std of the (K, dim)
+    preferred actions — identical to ``np.std(prefs)`` when dim == 1, and in
+    higher dimensions the square root of the same trace-of-covariance that
+    :func:`~.policies_ext.committee_disagree_policy` maximises, so the A3
+    diagnostic and the disagree aggregator measure the same quantity.
     """
     dummy_reward = REWARD_REGISTRY["CRPS"]()
     env = CommitteeEnv(
         reward_computer=dummy_reward,
         episode_length=episode_length,
         warmstart_n=warmstart_n,
+        problem=problem,
     )
     obs, _ = env.reset(seed=seed)
-    x_q_list: list[float] = []
+    x_q_list: list[np.ndarray] = []
     action_std = np.full(episode_length, np.nan, dtype=np.float64)
 
     for t in range(episode_length):
         if voter is not None:
-            prefs = voter.preferred_actions(obs)
-            action_std[t] = float(np.std(prefs))
+            prefs = np.atleast_2d(voter.preferred_actions(obs))
+            action_std[t] = float(np.sqrt(prefs.var(axis=0).sum()))
         action = policy(obs, env)
         obs, _r, terminated, truncated, info = env.step(action)
         x_q_list.append(info["x_q"])
@@ -141,6 +164,7 @@ def _bakeoff(
     episode_length: int,
     warmstart_n: int,
     rng_seed: int,
+    problem: Problem,
 ) -> ThreadResult:
     """Run every policy in ``policy_specs`` on the same episode seeds.
 
@@ -162,8 +186,11 @@ def _bakeoff(
             diag = _run_rollout_with_diagnostics(
                 pol, voter, seed=es,
                 episode_length=episode_length, warmstart_n=warmstart_n,
+                problem=problem,
             )
-            sr_rows.append(_trace_to_regret(diag.trace, warmstart_n, episode_length))
+            sr_rows.append(
+                _trace_to_regret(diag.trace, warmstart_n, episode_length, problem)
+            )
             std_rows.append(diag.committee_action_std)
         per_regret[name] = np.stack(sr_rows, axis=0)
         per_std[name] = np.stack(std_rows, axis=0)
@@ -189,6 +216,7 @@ def run_thread_b(
     rng_seed: int = 0,
     committee_solo_seed: int = 0,
     vote_weight: float = 1.0,
+    problem: Union[Problem, str, None] = None,
 ) -> tuple[ThreadResult, CommitteeVoter]:
     """Paired regret bake-off for vote-augmented baselines.
 
@@ -197,7 +225,11 @@ def run_thread_b(
 
     Returns (result, voter). The voter is returned so the caller can re-use
     it for ablation runs (Thread B's permutation-importance figure).
+
+    ``problem`` selects the benchmark (default Forrester); ``models_dir``
+    must hold models trained on that same problem.
     """
+    problem = _resolve_problem(problem)
     voter = CommitteeVoter(models_dir=Path(models_dir),
                           committee_solo_seed=committee_solo_seed)
 
@@ -218,6 +250,7 @@ def run_thread_b(
         episode_length=episode_length,
         warmstart_n=warmstart_n,
         rng_seed=rng_seed,
+        problem=problem,
     )
     return result, voter
 
@@ -230,6 +263,7 @@ def run_thread_b_ablation(
     rng_seed: int = 0,
     vote_weight: float = 1.0,
     policy: str = "LCB+votes",
+    problem: Union[Problem, str, None] = None,
 ) -> dict[str, np.ndarray]:
     """Leave-one-agent-out ablation for a vote-augmented policy.
 
@@ -242,6 +276,7 @@ def run_thread_b_ablation(
 
     Returns dict[agent_name] -> terminal_regret_array (shape n_episode_seeds).
     """
+    problem = _resolve_problem(problem)
     rng = np.random.default_rng(rng_seed)
     seeds = [int(rng.integers(0, 2**31 - 1)) for _ in range(n_episode_seeds)]
 
@@ -255,8 +290,10 @@ def run_thread_b_ablation(
         @property
         def n_agents(self): return self._base.n_agents - 1
         def preferred_actions(self, obs):
+            # axis=0 drops the agent's row; without it np.delete would
+            # flatten the (K, dim) array and remove a single coordinate.
             prefs = self._base.preferred_actions(obs)
-            return np.delete(prefs, self._mask)
+            return np.delete(prefs, self._mask, axis=0)
 
     if policy == "LCB+votes":
         make_policy = lambda sub: lcb_with_votes_policy(
@@ -280,8 +317,11 @@ def run_thread_b_ablation(
             diag = _run_rollout_with_diagnostics(
                 pol, voter=None, seed=es,
                 episode_length=episode_length, warmstart_n=warmstart_n,
+                problem=problem,
             )
-            sr[i] = _trace_to_regret(diag.trace, warmstart_n, episode_length)[-1]
+            sr[i] = _trace_to_regret(
+                diag.trace, warmstart_n, episode_length, problem
+            )[-1]
         terminal[name] = sr
     return terminal
 
@@ -299,35 +339,53 @@ def run_thread_a(
     warmstart_n: int = DEFAULT_WARMSTART,
     rng_seed: int = 0,
     committee_solo_seed: int = 0,
-) -> tuple[ThreadResult, CommitteeVoter, dict[str, float], dict[str, float]]:
+    problem: Union[Problem, str, None] = None,
+) -> tuple[ThreadResult, CommitteeVoter, dict[str, float], dict[str, float], str]:
     """Aggregator bake-off.
 
     Policies:
-        random, best-solo (PITUniformity), committee-uniform (v0 baseline),
+        random, best-solo, committee-uniform (v0 baseline),
         committee-agree, committee-disagree,
         committee-weighted-by-independence, committee-weighted-by-inv-regret.
 
-    Returns (result, voter, indep_weights, invreg_weights). The weight dicts
-    are returned so the A2 figure can plot them against solo regret without
-    re-reading the source files.
+    The best-solo reference is whichever agent has the lowest mean terminal
+    SR in ``regret_json`` — it is *not* PITUniformity in general. It wins on
+    Forrester but is among the worst agents on Branin-Currin, so hardcoding
+    it would silently compare every aggregator against a poor baseline.
+
+    Returns (result, voter, indep_weights, invreg_weights, best_solo_agent).
+    The weight dicts are returned so the A2 figure can plot them against solo
+    regret without re-reading the source files; the agent name is returned so
+    the A1 figure can label and test against the right reference.
     """
+    import json
+
     from stable_baselines3 import SAC
 
+    problem = _resolve_problem(problem)
     voter = CommitteeVoter(models_dir=Path(models_dir),
                           committee_solo_seed=committee_solo_seed)
     indep_w = independence_weights(correlation_csv, voter.agent_names)
     invreg_w = inverse_regret_weights(regret_json, voter.agent_names)
 
-    # Best-solo (PITUniformity, from v0 results). Skip the replay buffer at
-    # load time — same reason as in CommitteeVoter.
+    solo_means = json.loads(Path(regret_json).read_text())["solo_means"]
+    # Restrict to agents this committee actually holds, then take the best.
+    best_solo = min(
+        voter.agent_names,
+        key=lambda a: float(solo_means.get(f"solo:{a}", np.inf)),
+    )
+    print(f"[thread-a] best-solo reference: {best_solo} "
+          f"(terminal SR {float(solo_means[f'solo:{best_solo}']):.4g})")
+
+    # Skip the replay buffer at load time — same reason as in CommitteeVoter.
     best_solo_model = SAC.load(
-        str(Path(models_dir) / f"PITUniformity_seed{committee_solo_seed}.zip"),
+        str(Path(models_dir) / f"{best_solo}_seed{committee_solo_seed}.zip"),
         custom_objects={"buffer_size": 1},
     )
 
     specs: dict[str, Callable[[int], Policy]] = {
         "random": lambda es: random_policy(np.random.default_rng(es + 1)),
-        "best-solo:PITUniformity": lambda es: sac_policy(best_solo_model),
+        f"best-solo:{best_solo}": lambda es: sac_policy(best_solo_model),
         "committee:uniform": lambda es: committee_uniform_policy(
             voter, np.random.default_rng(es + 999),
         ),
@@ -346,8 +404,9 @@ def run_thread_a(
         episode_length=episode_length,
         warmstart_n=warmstart_n,
         rng_seed=rng_seed,
+        problem=problem,
     )
-    return result, voter, indep_w, invreg_w
+    return result, voter, indep_w, invreg_w, best_solo
 
 
 # ---------------------------------------------------------------------------

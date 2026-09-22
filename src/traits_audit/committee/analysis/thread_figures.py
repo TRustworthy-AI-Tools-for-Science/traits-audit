@@ -98,7 +98,7 @@ def render_b1(result: ThreadResult, output_path: Path) -> dict:
     ax.title.set_multialignment("center")
 
     ax.legend(fontsize=st.LEGEND_FS, loc="lower left", framealpha=0.92)
-    st.style_axes(ax, xlim=(0, 100), ylog=True)
+    st.style_axes(ax, xlim=(0, result.episode_length), ylog=True)
     fig.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=140)
@@ -166,6 +166,10 @@ def render_a1(
     reference: str = "best-solo:PITUniformity",
 ) -> dict:
     """A1: regret curves for all aggregators; paired Wilcoxon p in subheader.
+
+    ``reference`` is the best-solo policy key as it appears in ``result``.
+    It varies by problem (PITUniformity on Forrester, UncertaintyAnomaly on
+    Branin-Currin, ...), so it is a parameter rather than a constant.
 
     Returns dict mapping aggregator -> paired test against ``reference``.
     """
@@ -236,7 +240,7 @@ def render_a1(
     ax.title.set_multialignment("center")
     ax.legend(fontsize=st.LEGEND_FS, loc="lower left", ncol=2,
               framealpha=0.92)
-    st.style_axes(ax, xlim=(0, 100), ylog=True)
+    st.style_axes(ax, xlim=(0, result.episode_length), ylog=True)
     fig.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=140)
@@ -324,11 +328,11 @@ def render_a3(
     ax1.plot(xs, std_mean, color=st.BLUE, lw=2.2,
              label="mean committee action-std")
     ax1.set_xlabel("acquisition step", fontsize=st.LABEL_FS)
-    ax1.set_ylabel("std of 9 preferred actions",
+    ax1.set_ylabel("spread of committee preferred actions",
                    color=st.BLUE, fontsize=st.LABEL_FS)
     ax1.tick_params(axis="y", labelcolor=st.BLUE, labelsize=st.TICK_FS)
     ax1.tick_params(axis="x", labelsize=st.TICK_FS)
-    ax1.set_xlim(0, 100)
+    ax1.set_xlim(0, result.episode_length)
     ax1.grid(alpha=0.3)
 
     ax2 = ax1.twinx()

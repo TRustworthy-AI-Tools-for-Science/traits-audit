@@ -23,8 +23,8 @@ Statistical test on terminal simple regret (step T):
 Output: a long-format CSV (one row per (policy, seed, step)) and a figure
 of mean SR with 95% CI bands.
 
-``FORRESTER_TRUE_MIN`` / ``_forrester_clean`` are kept (unchanged) for
-``thread_regret.py``, which is still Forrester-only.
+``_trace_to_regret`` is shared with ``thread_regret.py``, which takes the
+same ``problem`` argument.
 """
 from __future__ import annotations
 

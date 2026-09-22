@@ -1,14 +1,18 @@
 """Committee-vote primitive shared by Thread B (votes-as-features) and Thread A (aggregators).
 
-A `CommitteeVoter` wraps the 9 frozen SAC seed-0 policies and exposes two views:
+A `CommitteeVoter` wraps the K frozen SAC seed-0 policies and exposes two views:
 
-- ``preferred_actions(obs)`` — length-9 vector of each agent's deterministic
-  preferred x at the current acquisition state. Cheap (one SB3 predict per
-  policy, batched is not supported across distinct policies).
-- ``votes_for(obs, x_candidates)`` — (K, 9) matrix where entry [i, k] is
-  ``|x_candidates[i] - pi_k(obs)|``. Small distance = "agent k endorses this
-  candidate." This is the vote shape Thread B feeds into augmented surrogates
-  and Thread A's QBC aggregators consume.
+- ``preferred_actions(obs)`` — (K, dim) array of each agent's deterministic
+  preferred query point at the current acquisition state. Cheap (one SB3
+  predict per policy, batched is not supported across distinct policies).
+- ``votes_for(obs, x_candidates)`` — (n_candidates, K) matrix where entry
+  [i, k] is ``||x_candidates[i] - pi_k(obs)||``. Small distance = "agent k
+  endorses this candidate." This is the vote shape Thread B feeds into
+  augmented surrogates and Thread A's QBC aggregators consume.
+
+Actions are vectors throughout so the same committee works on any benchmark
+(1-D Forrester, 2-D Branin-Currin, 3-D colour matching); the 1-D case is the
+degenerate ``dim == 1`` column and reduces to the original scalar formulas.
 
 Action-distance was chosen over Q-value votes because:
   1. SAC critics on this env give scores in z-scored-reward units that differ
@@ -78,24 +82,31 @@ class CommitteeVoter:
     def preferred_actions(self, obs: np.ndarray) -> np.ndarray:
         """Deterministic preferred x for each committee member at obs.
 
-        Returns a length-``n_agents`` vector of floats in [0, 1].
+        Returns an ``(n_agents, dim)`` array of points in [0, 1]^dim, where
+        ``dim`` is read off the models' own action shape. Callers that want
+        the 1-D Forrester view can squeeze the trailing axis.
         """
-        prefs = np.empty(self.n_agents, dtype=np.float64)
-        for k, model in enumerate(self._models):
-            action, _ = model.predict(obs, deterministic=True)
-            prefs[k] = float(np.clip(np.asarray(action).reshape(-1)[0], 0.0, 1.0))
-        return prefs
+        prefs = [
+            np.clip(
+                np.asarray(model.predict(obs, deterministic=True)[0],
+                           dtype=np.float64).reshape(-1),
+                0.0, 1.0,
+            )
+            for model in self._models
+        ]
+        return np.stack(prefs, axis=0)
 
     def votes_for(
         self, obs: np.ndarray, x_candidates: np.ndarray
     ) -> np.ndarray:
-        """Action-distance vote vector per candidate.
+        """Action-distance vote matrix per candidate.
 
-        Returns a (K, n_agents) matrix where entry [i, k] is
-        ``|x_candidates[i] - pi_k(obs)|``. Smaller = stronger endorsement.
+        Returns a (K, n_agents) matrix where entry [i, k] is the Euclidean
+        distance ``||x_candidates[i] - pi_k(obs)||``. Smaller = stronger
+        endorsement. In 1-D this is exactly the previous ``|x - pi_k|``.
         The preferred-action call is made once per agent and broadcast across
         candidates — votes for K candidates cost the same K=1 SB3 predicts.
         """
-        prefs = self.preferred_actions(obs)
-        x = np.asarray(x_candidates, dtype=np.float64).reshape(-1)
-        return np.abs(x[:, None] - prefs[None, :])
+        prefs = self.preferred_actions(obs)                       # (n_agents, dim)
+        x = np.asarray(x_candidates, dtype=np.float64).reshape(-1, prefs.shape[1])
+        return np.linalg.norm(x[:, None, :] - prefs[None, :, :], axis=2)

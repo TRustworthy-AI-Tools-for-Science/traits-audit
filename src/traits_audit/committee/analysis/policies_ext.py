@@ -31,6 +31,7 @@ from typing import Callable, Optional
 
 import numpy as np
 
+from traits_audit.committee.analysis.rollouts import _acquisition_grid
 from traits_audit.committee.analysis.votes import CommitteeVoter
 
 
@@ -42,11 +43,12 @@ Policy = Callable[[np.ndarray, "object"], np.ndarray]
 # ---------------------------------------------------------------------------
 
 def _mean_vote_distance(grid: np.ndarray, prefs: np.ndarray) -> np.ndarray:
-    """Mean |grid - prefs[k]| across the 9 committee members.
+    """Mean ||grid - prefs[k]|| across the K committee members.
 
-    grid: shape (G,). prefs: shape (9,). Returns shape (G,).
+    grid: shape (G, dim). prefs: shape (K, dim). Returns shape (G,).
+    In 1-D this is the original ``mean_k |x - pi_k|``.
     """
-    return np.abs(grid[:, None] - prefs[None, :]).mean(axis=1)
+    return np.linalg.norm(grid[:, None, :] - prefs[None, :, :], axis=2).mean(axis=1)
 
 
 def lcb_with_votes_policy(
@@ -57,22 +59,24 @@ def lcb_with_votes_policy(
 ) -> Policy:
     """LCB acquisition with a soft committee-distance penalty.
 
-    score(x) = mu(x) - kappa * sigma(x) + vote_weight * mean_k |x - pi_k(s)|
+    score(x) = mu(x) - kappa * sigma(x) + vote_weight * mean_k ||x - pi_k(s)||
 
     Defaults: ``vote_weight=1.0`` makes the committee term comparable in
     magnitude to the LCB term on Forrester (mu in roughly [-6, 15]; mean
     distance bounded by 1). Higher weight => more committee influence.
-    """
-    grid = np.linspace(0.0, 1.0, grid_size)
 
+    The candidate set comes from :func:`~.rollouts._acquisition_grid`, so
+    this matches whatever the plain LCB baseline searches over on the same
+    problem (a 300-point line in 1-D, the problem's own state-grid in 2-D/3-D).
+    """
     def _pi(obs: np.ndarray, env) -> np.ndarray:
         surrogate = env.unwrapped.surrogate
+        grid = _acquisition_grid(env, grid_size)
         mu, sigma = surrogate.predict(grid)
         prefs = voter.preferred_actions(obs)
         dist = _mean_vote_distance(grid, prefs)
         score = mu - kappa * sigma + vote_weight * dist
-        idx = int(np.argmin(score))
-        return np.array([grid[idx]], dtype=np.float32)
+        return grid[int(np.argmin(score))].astype(np.float32)
 
     return _pi
 
@@ -84,18 +88,16 @@ def max_sigma_with_votes_policy(
 ) -> Policy:
     """max-sigma with a soft committee-distance penalty.
 
-    score(x) = -sigma(x) + vote_weight * mean_k |x - pi_k(s)|
+    score(x) = -sigma(x) + vote_weight * mean_k ||x - pi_k(s)||
     """
-    grid = np.linspace(0.0, 1.0, grid_size)
-
     def _pi(obs: np.ndarray, env) -> np.ndarray:
         surrogate = env.unwrapped.surrogate
+        grid = _acquisition_grid(env, grid_size)
         _mu, sigma = surrogate.predict(grid)
         prefs = voter.preferred_actions(obs)
         dist = _mean_vote_distance(grid, prefs)
         score = -sigma + vote_weight * dist
-        idx = int(np.argmin(score))
-        return np.array([grid[idx]], dtype=np.float32)
+        return grid[int(np.argmin(score))].astype(np.float32)
 
     return _pi
 
@@ -114,22 +116,24 @@ def committee_uniform_policy(
     def _pi(obs: np.ndarray, env) -> np.ndarray:
         prefs = voter.preferred_actions(obs)
         idx = int(rng.integers(0, n))
-        return np.array([prefs[idx]], dtype=np.float32)
+        return prefs[idx].astype(np.float32)
 
     return _pi
 
 
 def committee_agree_policy(voter: CommitteeVoter) -> Policy:
-    """Pick the centroid (mean) of the 9 preferred actions.
+    """Pick the centroid (mean) of the K preferred actions.
 
     Mirrors `agree=True` mode in [src/policies/qbc.py]: when the committee
     converges on a region, exploit there. When they disagree, this falls back
     to the average which may be a no-man's-land between modes — exactly the
-    failure mode worth flagging.
+    failure mode worth flagging. In d dimensions the centroid can land
+    further from every member than it can on a line, so this failure mode
+    gets *worse* with dimension, not better.
     """
     def _pi(obs: np.ndarray, env) -> np.ndarray:
         prefs = voter.preferred_actions(obs)
-        return np.array([float(np.mean(prefs))], dtype=np.float32)
+        return prefs.mean(axis=0).astype(np.float32)
 
     return _pi
 
@@ -139,30 +143,38 @@ def committee_disagree_policy(
     grid_size: int = 300,
     bandwidth: float = 0.05,
 ) -> Policy:
-    """Pick the grid x with maximum local committee disagreement.
+    """Pick the grid point with maximum local committee disagreement.
 
-    For each grid x, compute the variance of preferred actions whose distance
-    to x is below ``bandwidth``. The candidate with the highest local-cluster
-    spread is the most-contested neighborhood.
+    For each candidate x, weight each agent by a Gaussian on its distance to
+    x and compute the weighted spread of the preferred actions around their
+    local weighted centroid. The candidate with the highest local spread is
+    the most-contested neighborhood.
 
-    Falls back to the max-distance candidate if no agents are within
-    bandwidth of any grid point (degenerate cases on very tight committees).
+    In d dimensions "spread" is the trace of the weighted covariance, i.e.
+    the sum of the per-axis weighted variances. That is the direct
+    generalization of the 1-D weighted variance and reduces to it exactly
+    when dim == 1, so Forrester numbers are unchanged. It is isotropic:
+    a committee split along any single axis scores the same as one split
+    along another.
+
+    ponytail: trace, not the top covariance eigenvalue -- the leading
+    eigenvalue would flag anisotropic splits specifically, but it is noisy
+    at K=15 and breaks 1-D bit-compatibility. Swap it in if the isotropic
+    score turns out to hide a directional split worth acting on.
     """
-    grid = np.linspace(0.0, 1.0, grid_size)
-
     def _pi(obs: np.ndarray, env) -> np.ndarray:
-        prefs = voter.preferred_actions(obs)
-        # For each grid x, weight each agent by a Gaussian on |x - pref|
-        # and compute the weighted variance of prefs. Smooth differentiable
-        # version of "what's the spread of agents near x?".
-        dx = grid[:, None] - prefs[None, :]                    # (G, K)
-        w = np.exp(-(dx ** 2) / (2.0 * bandwidth ** 2))         # (G, K)
+        grid = _acquisition_grid(env, grid_size)               # (G, dim)
+        prefs = voter.preferred_actions(obs)                   # (K, dim)
+        d2 = ((grid[:, None, :] - prefs[None, :, :]) ** 2).sum(axis=2)   # (G, K)
+        w = np.exp(-d2 / (2.0 * bandwidth ** 2))               # (G, K)
         w_sum = w.sum(axis=1, keepdims=True)
         w_sum = np.where(w_sum < 1e-12, 1.0, w_sum)
-        mean = (w * prefs[None, :]).sum(axis=1, keepdims=True) / w_sum
-        var = (w * (prefs[None, :] - mean) ** 2).sum(axis=1) / w_sum.squeeze(1)
-        idx = int(np.argmax(var))
-        return np.array([grid[idx]], dtype=np.float32)
+        # Weighted centroid per candidate, then trace of the weighted
+        # covariance about it -- summed over axes, so (G,).
+        mean = (w[:, :, None] * prefs[None, :, :]).sum(axis=1) / w_sum   # (G, dim)
+        dev2 = ((prefs[None, :, :] - mean[:, None, :]) ** 2).sum(axis=2)  # (G, K)
+        spread = (w * dev2).sum(axis=1) / w_sum.squeeze(1)
+        return grid[int(np.argmax(spread))].astype(np.float32)
 
     return _pi
 
@@ -185,8 +197,8 @@ def committee_weighted_policy(
     w = w / total
 
     def _pi(obs: np.ndarray, env) -> np.ndarray:
-        prefs = voter.preferred_actions(obs)
-        return np.array([float(np.dot(w, prefs))], dtype=np.float32)
+        prefs = voter.preferred_actions(obs)                   # (K, dim)
+        return (w @ prefs).astype(np.float32)
 
     return _pi
 

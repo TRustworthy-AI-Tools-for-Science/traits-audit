@@ -17,10 +17,10 @@ Subcommands:
     regret
         Simple-regret curves + paired Wilcoxon test vs best-solo.
 
-``corr-random``, ``corr-trained``, ``density`` and ``regret`` take
-``--problem`` (default: ``forrester``; see ``committee/problems.py`` for the
-others) to run on a different benchmark. ``thread-a``/``thread-b`` and
-``learning-curves`` remain Forrester-only for now.
+Every subcommand except ``learning-curves`` (which just reads TensorBoard
+scalars, and so is problem-agnostic anyway) takes ``--problem`` (default:
+``forrester``; see ``committee/problems.py`` for the others) to run on a
+different benchmark. It must match what ``--models-dir`` was trained on.
 
 Default output directory: ``_results/committee_v0/`` to live alongside
 ``predicted_styles.md``. For another problem, pass a different
@@ -120,6 +120,8 @@ def _add_thread_b(sub):
     p.add_argument("--episode-length", type=int, default=100)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--vote-weight", type=float, default=1.0)
+    p.add_argument("--problem", choices=list(PROBLEMS), default="forrester",
+                   help="Must match what --models-dir was trained on.")
     p.add_argument("--output-dir", type=Path,
                    default=Path("_results/committee_v1_threadB"))
     p.add_argument("--skip-ablation", action="store_true",
@@ -157,6 +159,8 @@ def _add_thread_a(sub):
     p.add_argument("--n-episode-seeds", type=int, default=20)
     p.add_argument("--episode-length", type=int, default=100)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--problem", choices=list(PROBLEMS), default="forrester",
+                   help="Must match what --models-dir was trained on.")
     p.add_argument("--output-dir", type=Path,
                    default=Path("_results/committee_v1_threadA"))
 
@@ -339,7 +343,8 @@ def _run_thread_b(args) -> None:
         render_ablation, render_b1,
     )
 
-    print(f"[thread-b] models={args.models_dir} solo-seed={args.committee_solo_seed} "
+    print(f"[thread-b] problem={args.problem} models={args.models_dir} "
+          f"solo-seed={args.committee_solo_seed} "
           f"{args.n_episode_seeds} ep-seeds x {args.episode_length} steps "
           f"vote_weight={args.vote_weight}")
     result, voter = run_thread_b(
@@ -349,6 +354,7 @@ def _run_thread_b(args) -> None:
         rng_seed=args.seed,
         committee_solo_seed=args.committee_solo_seed,
         vote_weight=args.vote_weight,
+        problem=args.problem,
     )
     out = args.output_dir
     write_thread_csv(result, out / "thread_b_regret.csv")
@@ -371,6 +377,7 @@ def _run_thread_b(args) -> None:
                 rng_seed=args.seed,
                 vote_weight=args.vote_weight,
                 policy=target_policy,
+                problem=args.problem,
             )
             baseline_terminal = result.per_policy_regret[target_policy][:, -1]
             render_ablation(
@@ -396,9 +403,10 @@ def _run_thread_a(args) -> None:
         render_a1, render_a2, render_a3,
     )
 
-    print(f"[thread-a] models={args.models_dir} corr={args.correlation_csv} "
+    print(f"[thread-a] problem={args.problem} models={args.models_dir} "
+          f"corr={args.correlation_csv} "
           f"regret={args.regret_json} {args.n_episode_seeds} ep-seeds")
-    result, voter, indep_w, invreg_w = run_thread_a(
+    result, voter, indep_w, invreg_w, best_solo = run_thread_a(
         models_dir=args.models_dir,
         correlation_csv=args.correlation_csv,
         regret_json=args.regret_json,
@@ -406,10 +414,12 @@ def _run_thread_a(args) -> None:
         episode_length=args.episode_length,
         rng_seed=args.seed,
         committee_solo_seed=args.committee_solo_seed,
+        problem=args.problem,
     )
     out = args.output_dir
     write_thread_csv(result, out / "thread_a_regret.csv")
-    tests = render_a1(result, out / "a1_aggregator_bakeoff.png")
+    tests = render_a1(result, out / "a1_aggregator_bakeoff.png",
+                      reference=f"best-solo:{best_solo}")
     (out / "thread_a_tests.json").write_text(json.dumps(tests, indent=2) + "\n")
 
     # Pull solo terminal SR from the same regret_json used for inv-reg weights.
