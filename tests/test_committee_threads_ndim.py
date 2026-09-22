@@ -306,3 +306,30 @@ def test_color_target_is_read_from_the_simulator():
     assert np.all((target >= 0.0) & (target <= 1.0))
     # The optimum really is the optimum.
     assert problem.clean(target.reshape(1, 3))[0, 0] == problem.true_min == 0.0
+
+
+def test_surface3d_renders_for_2d_and_rejects_other_dims(tmp_path):
+    import matplotlib
+    matplotlib.use("Agg")
+    from traits_audit.committee.analysis.surface3d import render_surface3d
+    from traits_audit.committee.analysis.density import AGENT_NAMES, DensityResult
+
+    def _result(dim):
+        rng = np.random.default_rng(0)
+        pooled = {a: rng.uniform(0, 1, size=(80, dim)) for a in AGENT_NAMES}
+        return DensityResult(
+            queries_by_agent=pooled,
+            queries_by_agent_seed={a: {0: v} for a, v in pooled.items()},
+            n_episodes_per_seed=1,
+        )
+
+    out = tmp_path / "surface.png"
+    render_surface3d(_result(2), out, problem="branin-currin",
+                     grid_n=20, max_points=40)
+    assert out.exists() and out.stat().st_size > 0
+
+    # 1-D and 3-D have no surface to draw; fail loudly rather than emit junk.
+    for name in ("forrester", "color"):
+        with pytest.raises(ValueError, match="2-D"):
+            render_surface3d(_result(get_problem(name).dim),
+                             tmp_path / "x.png", problem=name)

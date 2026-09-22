@@ -109,6 +109,11 @@ def main() -> None:
                     help="Also write query_channels.png, the per-channel "
                          "marginals (shows bound-saturation the CIE "
                          "projection hides). Multi-dimensional problems only.")
+    ap.add_argument("--surface3d", action="store_true",
+                    help="Also write query_surface3d.png, queries drawn on "
+                         "the true surface in 3-D. 2-D problems only.")
+    ap.add_argument("--max-points", type=int, default=1500,
+                    help="Markers per panel for --surface3d.")
     args = ap.parse_args()
 
     root = Path(__file__).resolve().parents[1]
@@ -135,6 +140,18 @@ def main() -> None:
         ch_path = results_dir / "query_channels.png"
         render_channel_marginals(result, ch_path, problem=problem)
         print(f"[replot] wrote {ch_path}")
+
+    if args.surface3d:
+        if problem.dim != 2:
+            raise SystemExit(
+                f"--surface3d needs a 2-D problem; {args.problem} is "
+                f"{problem.dim}-D."
+            )
+        from traits_audit.committee.analysis.surface3d import render_surface3d
+        s3_path = results_dir / "query_surface3d.png"
+        render_surface3d(result, s3_path, problem=problem,
+                         max_points=args.max_points)
+        print(f"[replot] wrote {s3_path}")
 
 
 if __name__ == "__main__":
