@@ -6,6 +6,42 @@
   = 45 tasks). Calls `ta-committee-train` once per (agent, seed) tuple. Edit
   `--account`, `PROJECT_DIR`, `VENV_ACTIVATE`, and `LOG_DIR` at the top for
   your cluster. Submit with `sbatch hpc/train_committee.slurm`.
+- **`train_committee_problem.slurm`** — the same for Branin-Currin / colour
+  (15 agents × 5 seeds = 75 tasks); takes the problem name as `$1`.
+- **`analyze_committee_problem.slurm`** — the serial figure set for one
+  problem (correlation, density, regret, learning curves, and — since the
+  threads were generalized — thread-a/thread-b too).
+- **`threads_committee_problem.slurm`** + **`gather_threads.slurm`** — the
+  *parallel* path for the threads specifically. See below.
+
+## Running the Thread A/B bake-offs in parallel
+
+Serially the threads dominate the analysis: thread-b alone is 5 policies ×
+20 seeds × 100 steps plus two 15-agent leave-one-out ablations (~7k
+rollouts, each refitting a bootstrap surrogate at every step). Hours per
+problem. The work splits cleanly by policy and by ablated agent:
+
+```bash
+P=color   # or forrester, branin-currin
+ARRAY=$(sbatch --parsable src/traits_audit/committee/hpc/threads_committee_problem.slurm $P)
+sbatch --dependency=afterok:$ARRAY src/traits_audit/committee/hpc/gather_threads.slurm $P
+```
+
+17 tasks: task 0 is the thread-b policy bake-off, task 1 is thread-a, and
+tasks 2–16 are one leave-one-out ablation shard per agent. Each writes its
+own CSV shard; `gather_threads.slurm` merges them and renders the figures
+(no models loaded, seconds to run).
+
+**Run `regret` first.** thread-a reads `regret_test.json` to pick its
+best-solo reference, so that file must exist before the array starts.
+
+**Sharding is exact.** Episode seeds are drawn *before* policies are
+filtered, so every shard evaluates the same 20 episodes and the merged
+result is byte-identical to a single-process run. This is what keeps the
+paired Wilcoxon tests valid; `read_thread_csv` refuses to merge shards whose
+seeds disagree rather than silently producing an invalid comparison.
+`afterok` is deliberate — a failed shard blocks the gather instead of
+yielding a figure with a missing policy or ablation bar.
 
 ## How a single array task works
 

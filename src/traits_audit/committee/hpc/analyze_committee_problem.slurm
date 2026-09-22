@@ -8,10 +8,13 @@
 #     sbatch --dependency=afterok:<TRAIN_ARRAY_JOBID> \
 #            src/traits_audit/committee/hpc/analyze_committee_problem.slurm branin-currin
 #
-# Runs scripts/make_problem_figures.sh, which chains the four
-# ta-committee-analyze subcommands generalized to take --problem:
-# corr-random, corr-trained, density, regret, learning-curves.
-# thread-a/thread-b are NOT run here — see make_problem_figures.sh.
+# Runs scripts/make_problem_figures.sh, which chains every
+# ta-committee-analyze subcommand for this problem: corr-random,
+# corr-trained, density, regret, learning-curves, thread-b, thread-a.
+#
+# The two thread steps dominate the runtime. To run them as a parallel
+# array instead, use threads_committee_problem.slurm + gather_threads.slurm
+# (see README.md) and drop them from make_problem_figures.sh.
 # =============================================================================
 
 #SBATCH --job-name=committee_analyze_problem
@@ -19,7 +22,8 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=8G
-#SBATCH --time=10:00:00
+#SBATCH --time=24:00:00   # thread-a/thread-b dominate; see README for the
+                          # parallel array alternative if this is too long
 #SBATCH --output=logs/slurm/analyze_problem_%j.out
 #SBATCH --error=logs/slurm/analyze_problem_%j.err
 
