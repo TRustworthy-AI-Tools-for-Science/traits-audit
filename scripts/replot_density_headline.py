@@ -105,6 +105,10 @@ def main() -> None:
                     help="Override the default results directory.")
     ap.add_argument("--n-bins", type=int, default=30)
     ap.add_argument("--episode-length", type=int, default=100)
+    ap.add_argument("--channels", action="store_true",
+                    help="Also write query_channels.png, the per-channel "
+                         "marginals (shows bound-saturation the CIE "
+                         "projection hides). Multi-dimensional problems only.")
     args = ap.parse_args()
 
     root = Path(__file__).resolve().parents[1]
@@ -112,12 +116,25 @@ def main() -> None:
     csv_path = results_dir / "query_density.csv"
     png_path = results_dir / "query_density_headline.png"
 
+    problem = get_problem(args.problem)
     result = load_density_csv(csv_path, episode_length=args.episode_length)
     render_headline_figure(
-        result, png_path, n_bins=args.n_bins,
-        problem=get_problem(args.problem),
+        result, png_path, n_bins=args.n_bins, problem=problem,
     )
     print(f"[replot] wrote {png_path}")
+
+    if args.channels:
+        if problem.dim == 1:
+            raise SystemExit(
+                "--channels needs a multi-dimensional problem; the 1-D "
+                "headline figure is already a marginal."
+            )
+        from traits_audit.committee.analysis.channel_marginals import (
+            render_channel_marginals,
+        )
+        ch_path = results_dir / "query_channels.png"
+        render_channel_marginals(result, ch_path, problem=problem)
+        print(f"[replot] wrote {ch_path}")
 
 
 if __name__ == "__main__":

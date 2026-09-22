@@ -265,3 +265,44 @@ def test_merging_shards_with_mismatched_seeds_is_rejected(tmp_path):
 
     with pytest.raises(ValueError, match="paired"):
         read_thread_csv(sorted(tmp_path.glob("thread_b_regret_*.csv")))
+
+
+# ---------------------------------------------------------------------------
+# Channel-marginal figure: the colour panels' CIE projection hides queries
+# pinned against a channel bound, which is the whole point of this figure.
+# ---------------------------------------------------------------------------
+
+def test_channel_marginals_renders_for_each_multidim_problem(tmp_path):
+    import matplotlib
+    matplotlib.use("Agg")
+    from traits_audit.committee.analysis.channel_marginals import (
+        render_channel_marginals,
+    )
+    from traits_audit.committee.analysis.density import AGENT_NAMES, DensityResult
+
+    for name, dim in [("branin-currin", 2), ("color", 3)]:
+        rng = np.random.default_rng(0)
+        pooled = {a: rng.uniform(0, 1, size=(200, dim)) for a in AGENT_NAMES}
+        result = DensityResult(
+            queries_by_agent=pooled,
+            queries_by_agent_seed={a: {0: v} for a, v in pooled.items()},
+            n_episodes_per_seed=2,
+        )
+        out = tmp_path / f"{name}.png"
+        render_channel_marginals(result, out, problem=name)
+        assert out.exists() and out.stat().st_size > 0
+
+
+def test_color_target_is_read_from_the_simulator():
+    """ColorMatchingProblem.target must come from the SDL, not a literal.
+
+    frechet is 0 there by definition, which is what makes true_min = 0.0
+    exact rather than a grid-search approximation.
+    """
+    problem = get_problem("color")
+    target = problem.target
+    assert target is not None
+    assert target.shape == (3,)
+    assert np.all((target >= 0.0) & (target <= 1.0))
+    # The optimum really is the optimum.
+    assert problem.clean(target.reshape(1, 3))[0, 0] == problem.true_min == 0.0
