@@ -279,8 +279,11 @@ def render_headline_figure(
                        alpha=_scatter_alpha(len(pooled)),
                        edgecolors="none", zorder=4, label="pooled (5 seeds)")
             if target_xy is not None:
-                ax.scatter(*target_xy, marker="*", s=150, color="red",
-                           edgecolors="black", linewidths=0.5, zorder=6)
+                # Same s=60 as the D65 cross: a filled star reads larger
+                # than a stroked plus at equal area, but matching the
+                # areas keeps neither marker looking like the emphasis.
+                ax.scatter(*target_xy, marker="*", s=60, color="red",
+                           edgecolors="none", zorder=6)
             ax.set_xlim(0.0, 0.80)
             ax.set_ylim(0.0, 0.90)
             ylabel = "CIE y"
@@ -307,7 +310,7 @@ def render_headline_figure(
         fig.legend(
             handles=[
                 Line2D([], [], marker="*", color="none", markerfacecolor="red",
-                       markeredgecolor="black", markersize=13,
+                       markeredgecolor="none", markersize=9,
                        label="target spectrum (frechet = 0)"),
                 Line2D([], [], marker="+", color="red", linestyle="none",
                        markersize=9, label="D65 illuminant (reference only)"),
