@@ -165,14 +165,32 @@ def _bakeoff(
     warmstart_n: int,
     rng_seed: int,
     problem: Problem,
+    only: Optional[Iterable[str]] = None,
 ) -> ThreadResult:
     """Run every policy in ``policy_specs`` on the same episode seeds.
 
     Each spec maps name -> factory(episode_seed) -> Policy. Episode seeds
     are sampled deterministically from ``rng_seed`` so reruns are paired.
+
+    ``only`` restricts the run to a subset of the policy names — one shard
+    of an HPC array job. The episode seeds do not depend on it, so shards
+    recombine (see :func:`read_thread_csv`) into the same paired result a
+    single process would have produced.
     """
+    # Seeds are drawn before any policy filtering, so a sharded run and a
+    # whole run see byte-identical episode seeds and stay paired.
     rng = np.random.default_rng(rng_seed)
     seeds = [int(rng.integers(0, 2**31 - 1)) for _ in range(n_episode_seeds)]
+
+    if only is not None:
+        wanted = list(only)
+        unknown = [n for n in wanted if n not in policy_specs]
+        if unknown:
+            raise KeyError(
+                f"unknown policy name(s) {unknown}; "
+                f"available: {sorted(policy_specs)}"
+            )
+        policy_specs = {n: policy_specs[n] for n in wanted}
 
     per_regret: dict[str, np.ndarray] = {}
     per_std: dict[str, np.ndarray] = {}
@@ -217,6 +235,7 @@ def run_thread_b(
     committee_solo_seed: int = 0,
     vote_weight: float = 1.0,
     problem: Union[Problem, str, None] = None,
+    only: Optional[Iterable[str]] = None,
 ) -> tuple[ThreadResult, CommitteeVoter]:
     """Paired regret bake-off for vote-augmented baselines.
 
@@ -251,6 +270,7 @@ def run_thread_b(
         warmstart_n=warmstart_n,
         rng_seed=rng_seed,
         problem=problem,
+        only=only,
     )
     return result, voter
 
@@ -264,6 +284,7 @@ def run_thread_b_ablation(
     vote_weight: float = 1.0,
     policy: str = "LCB+votes",
     problem: Union[Problem, str, None] = None,
+    only_agents: Optional[Iterable[str]] = None,
 ) -> dict[str, np.ndarray]:
     """Leave-one-agent-out ablation for a vote-augmented policy.
 
@@ -306,8 +327,17 @@ def run_thread_b_ablation(
     else:
         raise ValueError(f"Unknown ablation target policy: {policy!r}")
 
+    # The mask index must stay the agent's position in the *full* committee,
+    # so filter the loop rather than the committee itself.
+    wanted = set(voter.agent_names) if only_agents is None else set(only_agents)
+    unknown = wanted - set(voter.agent_names)
+    if unknown:
+        raise KeyError(f"unknown agent(s) to ablate: {sorted(unknown)}")
+
     terminal: dict[str, np.ndarray] = {}
     for k, name in enumerate(voter.agent_names):
+        if name not in wanted:
+            continue
         print(f"[ablation:{policy}] drop {name} ...")
         sub = _MaskedVoter(voter, k)
         pol_factory = lambda es, _sub=sub: make_policy(_sub)
@@ -340,6 +370,7 @@ def run_thread_a(
     rng_seed: int = 0,
     committee_solo_seed: int = 0,
     problem: Union[Problem, str, None] = None,
+    only: Optional[Iterable[str]] = None,
 ) -> tuple[ThreadResult, CommitteeVoter, dict[str, float], dict[str, float], str]:
     """Aggregator bake-off.
 
@@ -405,6 +436,7 @@ def run_thread_a(
         warmstart_n=warmstart_n,
         rng_seed=rng_seed,
         problem=problem,
+        only=only,
     )
     return result, voter, indep_w, invreg_w, best_solo
 
@@ -436,6 +468,75 @@ def paired_terminal_test(
         "a_mean": float(av.mean()), "b_mean": float(bv.mean()),
         "p_value": float(p), "stat": float(stat),
     }
+
+
+def read_thread_csv(paths: Iterable[Path]) -> ThreadResult:
+    """Rebuild a :class:`ThreadResult` from one or more shard CSVs.
+
+    Inverse of :func:`write_thread_csv`. Reading several paths merges their
+    policies into one result, which is how the HPC path works: each array
+    task bakes off a subset of the policies onto the *same* episode seeds
+    and writes its own CSV, then a gather step gets back exactly the result
+    a single-process run would have produced.
+
+    Raises if the shards disagree on the episode seeds or their order —
+    every figure here is a *paired* comparison, so silently merging shards
+    run on different seeds would invalidate every Wilcoxon test.
+    """
+    import csv as _csv
+
+    per_regret: dict[str, dict[int, dict[int, float]]] = {}
+    per_std: dict[str, dict[int, dict[int, float]]] = {}
+    seed_order: list[int] = []
+    seen: set[int] = set()
+
+    for path in paths:
+        with Path(path).open() as fh:
+            for row in _csv.DictReader(fh):
+                policy = row["policy"]
+                es, t = int(row["episode_seed"]), int(row["step"])
+                if es not in seen:
+                    seen.add(es)
+                    seed_order.append(es)
+                per_regret.setdefault(policy, {}).setdefault(es, {})[t] = \
+                    float(row["simple_regret"])
+                std_raw = row.get("action_std", "")
+                per_std.setdefault(policy, {}).setdefault(es, {})[t] = (
+                    float(std_raw) if std_raw else np.nan
+                )
+    if not per_regret:
+        raise ValueError("no rows found in the given thread CSV(s)")
+
+    # Every policy must cover the same seeds; pin the order from first sight
+    # so row i of one policy's array is the same episode as row i of another.
+    episode_length = 1 + max(
+        t for pol in per_regret.values() for row in pol.values() for t in row
+    )
+    for policy, by_seed in per_regret.items():
+        missing = set(seed_order) - set(by_seed)
+        if missing:
+            raise ValueError(
+                f"policy {policy!r} is missing episode seeds {sorted(missing)}; "
+                "shards must be run on the same seeds to stay paired"
+            )
+
+    def _stack(src: dict[str, dict[int, dict[int, float]]]) -> dict[str, np.ndarray]:
+        out = {}
+        for policy, by_seed in src.items():
+            arr = np.full((len(seed_order), episode_length), np.nan)
+            for i, es in enumerate(seed_order):
+                for t, v in by_seed[es].items():
+                    arr[i, t] = v
+            out[policy] = arr
+        return out
+
+    return ThreadResult(
+        per_policy_regret=_stack(per_regret),
+        per_policy_action_std=_stack(per_std),
+        seeds=seed_order,
+        episode_length=episode_length,
+        warmstart_n=DEFAULT_WARMSTART,
+    )
 
 
 def write_thread_csv(result: ThreadResult, output_path: Path) -> None:

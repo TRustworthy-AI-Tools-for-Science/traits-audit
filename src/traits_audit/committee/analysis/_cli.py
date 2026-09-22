@@ -125,7 +125,14 @@ def _add_thread_b(sub):
     p.add_argument("--output-dir", type=Path,
                    default=Path("_results/committee_v1_threadB"))
     p.add_argument("--skip-ablation", action="store_true",
-                   help="Skip leave-one-out ablation (9x extra rollouts).")
+                   help="Skip leave-one-out ablation (15x extra rollouts).")
+    p.add_argument("--only", nargs="+", metavar="POLICY",
+                   help="Run only these policies (one shard of an array job).")
+    p.add_argument("--ablate-agents", nargs="+", metavar="AGENT",
+                   help="Ablate only these agents (one shard of an array job).")
+    p.add_argument("--shard-tag", type=str, default="",
+                   help="Suffix for this shard's CSVs; also forces shard mode "
+                        "(CSV only, no figures). Use `thread-gather` after.")
 
 
 def _add_learning_curves(sub):
@@ -163,6 +170,98 @@ def _add_thread_a(sub):
                    help="Must match what --models-dir was trained on.")
     p.add_argument("--output-dir", type=Path,
                    default=Path("_results/committee_v1_threadA"))
+    p.add_argument("--only", nargs="+", metavar="POLICY",
+                   help="Run only these policies (one shard of an array job).")
+    p.add_argument("--shard-tag", type=str, default="",
+                   help="Suffix for this shard's CSVs; also forces shard mode "
+                        "(CSV only, no figures). Use `thread-gather` after.")
+
+
+def _add_thread_gather(sub):
+    p = sub.add_parser(
+        "thread-gather",
+        help="Merge sharded thread-a/thread-b CSVs and render their figures.",
+    )
+    p.add_argument("thread", choices=["a", "b"])
+    p.add_argument("--output-dir", type=Path, required=True,
+                   help="Directory holding the shard CSVs; figures land here.")
+    p.add_argument("--best-solo", type=str, default=None,
+                   help="Best-solo agent for thread-a's reference. Defaults to "
+                        "the value recorded in thread_a_weights.json.")
+
+
+def _run_thread_gather(args) -> None:
+    """Rebuild a whole-run result from shard CSVs and render the figures.
+
+    The shards already hold every number; this step is pure rendering, so it
+    is cheap and needs no trained models.
+    """
+    import json
+    from traits_audit.committee.analysis.thread_regret import read_thread_csv
+    from traits_audit.committee.analysis.thread_figures import (
+        render_a1, render_a2, render_a3, render_ablation, render_b1,
+    )
+
+    out = args.output_dir
+    stem = f"thread_{args.thread}_regret"
+    shards = sorted(out.glob(f"{stem}*.csv"))
+    if not shards:
+        raise SystemExit(f"no {stem}*.csv shards found under {out}/")
+    print(f"[gather] merging {len(shards)} shard(s): "
+          f"{', '.join(p.name for p in shards)}")
+    result = read_thread_csv(shards)
+    print(f"[gather] {len(result.per_policy_regret)} policies x "
+          f"{len(result.seeds)} seeds x {result.episode_length} steps")
+
+    if args.thread == "b":
+        tests = render_b1(result, out / "b1_regret_paired.png")
+        (out / "thread_b_tests.json").write_text(json.dumps(tests, indent=2) + "\n")
+        for name, t in tests.items():
+            print(f"  {name}: p={t['p_value']:.2e}")
+
+        for target_policy, fig_name, csv_stem in ABLATION_TARGETS:
+            ab_shards = sorted(out.glob(f"{csv_stem}*.csv"))
+            if not ab_shards:
+                continue
+            # Merge the per-agent terminal regrets across ablation shards.
+            merged: dict[str, list[float]] = {}
+            for path in ab_shards:
+                for line in path.read_text().splitlines()[1:]:
+                    agent, _es, v = line.split(",")
+                    merged.setdefault(agent, []).append(float(v))
+            ablation = {k: np.asarray(v) for k, v in merged.items()}
+            render_ablation(
+                ablation,
+                baseline_terminal=result.per_policy_regret[target_policy][:, -1],
+                agent_names=sorted(ablation),
+                output_path=out / fig_name,
+                headline=target_policy,
+            )
+            print(f"[gather] {fig_name}: {len(ablation)} agents")
+    else:
+        weights_path = out / "thread_a_weights.json"
+        payload = json.loads(weights_path.read_text()) if weights_path.exists() else {}
+        best_solo = args.best_solo or payload.get("best_solo")
+        if best_solo is None:
+            raise SystemExit(
+                "thread-a gather needs --best-solo (no thread_a_weights.json)"
+            )
+        reference = f"best-solo:{best_solo}"
+        tests = render_a1(result, out / "a1_aggregator_bakeoff.png",
+                          reference=reference)
+        (out / "thread_a_tests.json").write_text(json.dumps(tests, indent=2) + "\n")
+        for name, t in tests.items():
+            print(f"  {name}: mean={t['a_mean']:.4f}  p={t['p_value']:.2e}")
+
+        indep_w, invreg_w = payload.get("independence"), payload.get("inverse_regret")
+        if indep_w and invreg_w:
+            # Solo terminal SR = 1/weight, the inverse of how invreg was built.
+            solo_terminal = {a: 1.0 / w for a, w in invreg_w.items()}
+            render_a2(indep_w, invreg_w, solo_terminal,
+                      out / "a2_weight_vs_regret.png")
+        render_a3(result, out / "a3_disagreement.png")
+
+    print(f"[gather] wrote figures to {out}/")
 
 
 def _run_corr_random(args) -> None:
@@ -333,6 +432,48 @@ def _run_learning_curves(args) -> None:
     print(f"[learning-curves] wrote outputs to {out}/")
 
 
+ABLATION_TARGETS = [
+    # (policy, figure name, csv stem)
+    ("LCB+votes",       "b2_ablation_lcb.png",      "thread_b_ablation_lcb"),
+    ("max-sigma+votes", "b2_ablation_maxsigma.png", "thread_b_ablation_maxsigma"),
+]
+
+
+def _run_thread_b_shard_ablations(args, voter, result, tag, ablate_only) -> None:
+    """Leave-one-out ablation for this shard's agents; CSV only, no figure.
+
+    The full-committee baseline each bar is measured against lives in the
+    thread_b_regret CSVs, so it is resolved at gather time rather than here
+    — a shard that doesn't happen to run the target policy can't know it.
+    """
+    from traits_audit.committee.analysis.thread_regret import (
+        run_thread_b_ablation,
+    )
+
+    if args.skip_ablation:
+        return
+    for target_policy, _fig, csv_stem in ABLATION_TARGETS:
+        print(f"[thread-b] ablation shard for {target_policy} "
+              f"(agents: {ablate_only or 'all'}) ...")
+        ablation = run_thread_b_ablation(
+            voter,
+            n_episode_seeds=args.n_episode_seeds,
+            episode_length=args.episode_length,
+            rng_seed=args.seed,
+            vote_weight=args.vote_weight,
+            policy=target_policy,
+            problem=args.problem,
+            only_agents=ablate_only,
+        )
+        rows = ["dropped_agent,episode_seed,terminal_regret"]
+        for name, arr in ablation.items():
+            for es, v in zip(result.seeds, arr):
+                rows.append(f"{name},{es},{v:.6f}")
+        (args.output_dir / f"{csv_stem}{tag}.csv").write_text(
+            "\n".join(rows) + "\n"
+        )
+
+
 def _run_thread_b(args) -> None:
     import json
     from traits_audit.committee.analysis.thread_regret import (
@@ -347,6 +488,14 @@ def _run_thread_b(args) -> None:
           f"solo-seed={args.committee_solo_seed} "
           f"{args.n_episode_seeds} ep-seeds x {args.episode_length} steps "
           f"vote_weight={args.vote_weight}")
+
+    only = args.only or None
+    ablate_only = args.ablate_agents or None
+    # A shard computes a slice and writes only CSVs; `thread-gather` then
+    # renders the figures once every shard has landed.
+    sharded = bool(only or ablate_only or args.shard_tag)
+    tag = f"_{args.shard_tag}" if args.shard_tag else ""
+
     result, voter = run_thread_b(
         models_dir=args.models_dir,
         n_episode_seeds=args.n_episode_seeds,
@@ -355,9 +504,17 @@ def _run_thread_b(args) -> None:
         committee_solo_seed=args.committee_solo_seed,
         vote_weight=args.vote_weight,
         problem=args.problem,
+        only=only,
     )
     out = args.output_dir
-    write_thread_csv(result, out / "thread_b_regret.csv")
+    write_thread_csv(result, out / f"thread_b_regret{tag}.csv")
+
+    if sharded:
+        _run_thread_b_shard_ablations(args, voter, result, tag, ablate_only)
+        print(f"[thread-b] shard outputs written to {out}/ "
+              f"— run `thread-gather` once all shards finish")
+        return
+
     tests = render_b1(result, out / "b1_regret_paired.png")
     (out / "thread_b_tests.json").write_text(json.dumps(tests, indent=2) + "\n")
     print(f"[thread-b] LCB+votes vs LCB: p={tests['LCB+votes_vs_LCB']['p_value']:.2e}")
@@ -365,10 +522,8 @@ def _run_thread_b(args) -> None:
           f"p={tests['MaxSigma+votes_vs_MaxSigma']['p_value']:.2e}")
 
     if not args.skip_ablation:
-        for target_policy, out_name, csv_name in [
-            ("LCB+votes",       "b2_ablation_lcb.png",       "thread_b_ablation_lcb.csv"),
-            ("max-sigma+votes", "b2_ablation_maxsigma.png",  "thread_b_ablation_maxsigma.csv"),
-        ]:
+        for target_policy, out_name, csv_stem in ABLATION_TARGETS:
+            csv_name = f"{csv_stem}.csv"
             print(f"[thread-b] running leave-one-out ablation for {target_policy} ...")
             ablation = run_thread_b_ablation(
                 voter,
@@ -406,6 +561,8 @@ def _run_thread_a(args) -> None:
     print(f"[thread-a] problem={args.problem} models={args.models_dir} "
           f"corr={args.correlation_csv} "
           f"regret={args.regret_json} {args.n_episode_seeds} ep-seeds")
+    only = args.only or None
+    tag = f"_{args.shard_tag}" if args.shard_tag else ""
     result, voter, indep_w, invreg_w, best_solo = run_thread_a(
         models_dir=args.models_dir,
         correlation_csv=args.correlation_csv,
@@ -415,9 +572,23 @@ def _run_thread_a(args) -> None:
         rng_seed=args.seed,
         committee_solo_seed=args.committee_solo_seed,
         problem=args.problem,
+        only=only,
     )
     out = args.output_dir
-    write_thread_csv(result, out / "thread_a_regret.csv")
+    write_thread_csv(result, out / f"thread_a_regret{tag}.csv")
+
+    if only or args.shard_tag:
+        # Weights are cheap and identical across shards; write them so the
+        # gather step doesn't need the models loaded again.
+        (out / "thread_a_weights.json").write_text(json.dumps({
+            "independence": indep_w,
+            "inverse_regret": invreg_w,
+            "best_solo": best_solo,
+        }, indent=2) + "\n")
+        print(f"[thread-a] shard outputs written to {out}/ "
+              f"— run `thread-gather` once all shards finish")
+        return
+
     tests = render_a1(result, out / "a1_aggregator_bakeoff.png",
                       reference=f"best-solo:{best_solo}")
     (out / "thread_a_tests.json").write_text(json.dumps(tests, indent=2) + "\n")
@@ -455,6 +626,7 @@ def main() -> None:
     _add_regret(sub)
     _add_thread_b(sub)
     _add_thread_a(sub)
+    _add_thread_gather(sub)
     _add_learning_curves(sub)
 
     args = parser.parse_args()
@@ -470,6 +642,8 @@ def main() -> None:
         _run_thread_b(args)
     elif args.cmd == "thread-a":
         _run_thread_a(args)
+    elif args.cmd == "thread-gather":
+        _run_thread_gather(args)
     elif args.cmd == "learning-curves":
         _run_learning_curves(args)
     else:

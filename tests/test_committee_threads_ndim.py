@@ -186,3 +186,82 @@ def test_masked_voter_drops_an_agent_row_not_a_coordinate():
     masked = np.delete(voter.preferred_actions(None), 1, axis=0)
     assert masked.shape == (3, 3)
     np.testing.assert_allclose(masked, prefs[[0, 2, 3]])
+
+
+# ---------------------------------------------------------------------------
+# Shard / gather round-trip: HPC array jobs split the bake-off by policy, so
+# merged shards must reconstruct exactly what one process would have produced.
+# ---------------------------------------------------------------------------
+
+def _fake_result(policies, n_seeds=3, n_steps=5, seed=0):
+    from traits_audit.committee.analysis.thread_regret import ThreadResult
+
+    rng = np.random.default_rng(seed)
+    seeds = [1000 + i for i in range(n_seeds)]
+    return ThreadResult(
+        per_policy_regret={p: rng.random((n_seeds, n_steps)) for p in policies},
+        per_policy_action_std={p: rng.random((n_seeds, n_steps)) for p in policies},
+        seeds=seeds,
+        episode_length=n_steps,
+        warmstart_n=20,
+    )
+
+
+def test_thread_csv_round_trips(tmp_path):
+    from traits_audit.committee.analysis.thread_regret import (
+        read_thread_csv, write_thread_csv,
+    )
+    result = _fake_result(["random", "LCB", "LCB+votes"])
+    path = tmp_path / "thread_b_regret.csv"
+    write_thread_csv(result, path)
+
+    back = read_thread_csv([path])
+    assert back.seeds == result.seeds
+    assert back.episode_length == result.episode_length
+    for p, arr in result.per_policy_regret.items():
+        # write_thread_csv rounds to 6dp; that is the on-disk precision.
+        np.testing.assert_allclose(back.per_policy_regret[p], arr, atol=1e-6)
+        np.testing.assert_allclose(back.per_policy_action_std[p],
+                                   result.per_policy_action_std[p], atol=1e-6)
+
+
+def test_merged_shards_equal_a_single_whole_run(tmp_path):
+    """Two shards written separately must merge back to the whole result."""
+    from traits_audit.committee.analysis.thread_regret import (
+        read_thread_csv, write_thread_csv,
+    )
+    whole = _fake_result(["random", "LCB", "max-sigma", "LCB+votes"])
+
+    # Split by policy, exactly as an array job's --only shards would.
+    from traits_audit.committee.analysis.thread_regret import ThreadResult
+    for tag, names in [("s0", ["random", "LCB"]),
+                       ("s1", ["max-sigma", "LCB+votes"])]:
+        shard = ThreadResult(
+            per_policy_regret={n: whole.per_policy_regret[n] for n in names},
+            per_policy_action_std={n: whole.per_policy_action_std[n] for n in names},
+            seeds=whole.seeds,
+            episode_length=whole.episode_length,
+            warmstart_n=whole.warmstart_n,
+        )
+        write_thread_csv(shard, tmp_path / f"thread_b_regret_{tag}.csv")
+
+    merged = read_thread_csv(sorted(tmp_path.glob("thread_b_regret_*.csv")))
+    assert set(merged.per_policy_regret) == set(whole.per_policy_regret)
+    assert merged.seeds == whole.seeds
+    for p, arr in whole.per_policy_regret.items():
+        np.testing.assert_allclose(merged.per_policy_regret[p], arr, atol=1e-6)
+
+
+def test_merging_shards_with_mismatched_seeds_is_rejected(tmp_path):
+    """Paired tests are invalid across different seeds -- must not merge."""
+    from traits_audit.committee.analysis.thread_regret import (
+        read_thread_csv, write_thread_csv,
+    )
+    a = _fake_result(["random"], seed=1)
+    b = _fake_result(["LCB"], seed=2)
+    b.seeds = [9999 + i for i in range(len(b.seeds))]   # different episodes
+    write_thread_csv(a, tmp_path / "thread_b_regret_s0.csv")
+    write_thread_csv(b, tmp_path / "thread_b_regret_s1.csv")
+
+    with pytest.raises(ValueError, match="paired"):
+        read_thread_csv(sorted(tmp_path.glob("thread_b_regret_*.csv")))
