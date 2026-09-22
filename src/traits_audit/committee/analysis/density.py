@@ -200,6 +200,7 @@ def render_headline_figure(
     n_agents = len(AGENT_NAMES)
     fig, axes, nrows, ncols = _panel_grid(n_agents)
     edges = np.linspace(0.0, 1.0, n_bins + 1)
+    target_xy = None  # set below for `color`; gates that figure's legend
 
     if dim == 1:
         x_grid = np.linspace(0.0, 1.0, 400)
@@ -217,7 +218,6 @@ def render_headline_figure(
     elif problem.name == "color":
         from traits_audit._viz import draw_cie_background, rgb_norm_to_cie_xy
         target = getattr(problem, "target", None)
-        target_xy = None
         if target is not None:
             tx, ty = rgb_norm_to_cie_xy(np.asarray(target).reshape(1, 3))
             target_xy = (float(tx[0]), float(ty[0]))
@@ -266,20 +266,21 @@ def render_headline_figure(
             ylabel = problem.input_names[1]
 
         elif problem.name == "color":
-            # D65 stays a muted grey cross: it is the standard illuminant
-            # the chromaticity diagram ships with, NOT this problem's goal.
-            # Colouring it would read as "the target" in a colour-matching
-            # figure, which is the one thing it is not.
-            draw_cie_background(ax, gamut_label=False)
+            # Both reference points are red so they stay visible over tens of
+            # thousands of query dots, and are told apart by SHAPE:
+            #   +  D65, the diagram's standard illuminant (context only)
+            #   *  the target spectrum, i.e. this problem's optimum
+            # They sit only ~0.13 apart in CIE y, so the panel legend below
+            # is what stops the cross being read as the goal.
+            draw_cie_background(ax, gamut_label=False,
+                                d65_color="red", d65_zorder=5)
             xa, ya = rgb_norm_to_cie_xy(pooled)
             ax.scatter(xa, ya, s=4, color="C0",
                        alpha=_scatter_alpha(len(pooled)),
                        edgecolors="none", zorder=4, label="pooled (5 seeds)")
-            # The actual optimum (frechet = 0), in front of everything.
             if target_xy is not None:
                 ax.scatter(*target_xy, marker="*", s=150, color="red",
-                           edgecolors="black", linewidths=0.5, zorder=6,
-                           label="target")
+                           edgecolors="black", linewidths=0.5, zorder=6)
             ax.set_xlim(0.0, 0.80)
             ax.set_ylim(0.0, 0.90)
             ylabel = "CIE y"
@@ -297,6 +298,26 @@ def render_headline_figure(
         ax.tick_params(axis="both", labelsize=9)
         ax.grid(alpha=0.3)
 
+    if problem.name == "color" and target_xy is not None:
+        # One figure-level legend rather than 15 panel legends: the two red
+        # markers are only ~0.13 apart in CIE y and differ by shape alone,
+        # so they have to be decoded somewhere -- but repeating that in
+        # every panel buried the horseshoe under legend boxes.
+        from matplotlib.lines import Line2D
+        fig.legend(
+            handles=[
+                Line2D([], [], marker="*", color="none", markerfacecolor="red",
+                       markeredgecolor="black", markersize=13,
+                       label="target spectrum (frechet = 0)"),
+                Line2D([], [], marker="+", color="red", linestyle="none",
+                       markersize=9, label="D65 illuminant (reference only)"),
+                Line2D([], [], marker="o", color="none", markerfacecolor="C0",
+                       markersize=7, label="pooled queries (5 seeds)"),
+            ],
+            loc="lower center", ncol=3, fontsize=11, frameon=False,
+            bbox_to_anchor=(0.5, -0.004),
+        )
+
     if dim == 1:
         bottom_label = "x (acquisition query)"
     elif problem.name == "branin-currin":
@@ -311,7 +332,9 @@ def render_headline_figure(
     # a partial last row would need per-column "last visible axis" logic.
     for ax in axes[-ncols:]:
         ax.set_xlabel(bottom_label, fontsize=11)
-    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    # Reserve a strip at the bottom when the figure-level legend is drawn.
+    bottom = 0.035 if (problem.name == "color" and target_xy is not None) else 0.0
+    fig.tight_layout(rect=(0, bottom, 1, 0.97))
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=140)
     plt.close(fig)
