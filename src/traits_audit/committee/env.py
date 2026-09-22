@@ -50,7 +50,8 @@ class CommitteeEnv(gym.Env):
     oracle_fn : callable, optional
         Oracle f(x, rng) -> y. Defaults to noisy Forrester from _cal_demo.py.
     warmstart_n : int
-        Number of initial random queries before step 0 (clean oracle, no noise).
+        Number of initial random queries before step 0, fit by a fresh
+        surrogate each episode (same noisy oracle as the acquisition steps).
     episode_length : int
         Maximum acquisition steps per episode.
     n_estimators : int
