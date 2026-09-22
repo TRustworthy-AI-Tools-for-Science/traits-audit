@@ -269,6 +269,20 @@ class ColorMatchingProblem(Problem):
     # global minimum, not merely the smallest value seen in a sample.
     true_min: float = 0.0
 
+    @cached_property
+    def target(self) -> Optional[np.ndarray]:
+        """The optimum in normalised [0, 1]^3 RGB, or None if unavailable.
+
+        The simulator stores its goal as a *spectrum* and only derives the
+        (R, G, B) that produced it on request (``target_inputs`` reads None
+        until then), so this asks it rather than hardcoding a triple that
+        would silently go stale if the demo's ``target_seed`` ever changed.
+        """
+        inputs = self._sdl.get_target_inputs()
+        if not inputs:
+            return None
+        return np.array([float(inputs[k]) for k in ("R", "G", "B")]) / self.rgb_max
+
     def clean(self, x: np.ndarray) -> np.ndarray:
         rgb = np.asarray(x, dtype=float).reshape(-1, 3) * self.rgb_max
         return np.array([

@@ -178,10 +178,13 @@ def render_headline_figure(
     the Forrester panels do.
 
     ``color`` (3-D): the CIE 1931 xy chromaticity diagram (spectral locus +
-    sRGB gamut triangle) that Ashley's ``plot_cie_trajectory`` draws for the
-    SDL demo (``traits_audit._viz``), with each agent's normalised (R, G, B)
-    queries projected to CIE xy and scattered on top in the same ``C0``
-    style — reusing her exact background rather than inventing a new one.
+    sRGB gamut triangle) that ``plot_cie_trajectory`` draws for the SDL demo
+    (``traits_audit._viz``), with each agent's normalised (R, G, B) queries
+    projected to CIE xy and scattered on top in the same ``C0`` style —
+    reusing that exact background rather than inventing a new one. A red
+    star marks the problem's optimum (the simulator's target spectrum,
+    frechet = 0). The grey ``+`` is D65, the diagram's standard illuminant,
+    which is *not* the target and is deliberately left unhighlighted.
 
     Any other/future problem without a bespoke panel falls back to one
     marginal histogram per input dimension (the original placeholder).
@@ -213,6 +216,11 @@ def render_headline_figure(
         levels = np.geomspace(max(float(Z.min()), 1e-3), float(Z.max()), 12)
     elif problem.name == "color":
         from traits_audit._viz import draw_cie_background, rgb_norm_to_cie_xy
+        target = getattr(problem, "target", None)
+        target_xy = None
+        if target is not None:
+            tx, ty = rgb_norm_to_cie_xy(np.asarray(target).reshape(1, 3))
+            target_xy = (float(tx[0]), float(ty[0]))
     else:
         labels = list(problem.input_names)
         colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
@@ -258,14 +266,20 @@ def render_headline_figure(
             ylabel = problem.input_names[1]
 
         elif problem.name == "color":
-            # D65 lifted above the scatter and reddened: at these point
-            # counts the default grey cross sits invisibly underneath.
-            draw_cie_background(ax, gamut_label=False,
-                                d65_color="red", d65_zorder=5)
+            # D65 stays a muted grey cross: it is the standard illuminant
+            # the chromaticity diagram ships with, NOT this problem's goal.
+            # Colouring it would read as "the target" in a colour-matching
+            # figure, which is the one thing it is not.
+            draw_cie_background(ax, gamut_label=False)
             xa, ya = rgb_norm_to_cie_xy(pooled)
             ax.scatter(xa, ya, s=4, color="C0",
                        alpha=_scatter_alpha(len(pooled)),
                        edgecolors="none", zorder=4, label="pooled (5 seeds)")
+            # The actual optimum (frechet = 0), in front of everything.
+            if target_xy is not None:
+                ax.scatter(*target_xy, marker="*", s=150, color="red",
+                           edgecolors="black", linewidths=0.5, zorder=6,
+                           label="target")
             ax.set_xlim(0.0, 0.80)
             ax.set_ylim(0.0, 0.90)
             ylabel = "CIE y"
