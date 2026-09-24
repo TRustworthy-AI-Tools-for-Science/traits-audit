@@ -36,6 +36,7 @@ from traits_audit.committee.problems import get_problem
 DEFAULT_RESULTS_DIR: dict[str, str] = {
     "forrester": "_results/committee_v0",
     "branin-currin": "_results/committee_branin-currin",
+    "branin-currin-mo": "_results/committee_branin-currin-mo",
     "color": "_results/committee_color",
 }
 
@@ -112,6 +113,10 @@ def main() -> None:
     ap.add_argument("--surface3d", action="store_true",
                     help="Also write query_surface3d.png, queries drawn on "
                          "the true surface in 3-D. 2-D problems only.")
+    ap.add_argument("--openbook", action="store_true",
+                    help="Also write query_openbook.png, both objectives as "
+                         "the facing pages of an open book. 2-D, "
+                         "2-objective problems only.")
     ap.add_argument("--max-points", type=int, default=1500,
                     help="Markers per panel for --surface3d.")
     args = ap.parse_args()
@@ -152,6 +157,18 @@ def main() -> None:
         render_surface3d(result, s3_path, problem=problem,
                          max_points=args.max_points)
         print(f"[replot] wrote {s3_path}")
+
+    if args.openbook:
+        if problem.dim != 2 or problem.n_objectives != 2:
+            raise SystemExit(
+                f"--openbook needs a 2-D, 2-objective problem; {args.problem} "
+                f"is {problem.dim}-D with {problem.n_objectives} objective(s)."
+            )
+        from traits_audit.committee.analysis.openbook import render_openbook_figure
+        ob_path = results_dir / "query_openbook.png"
+        render_openbook_figure(result, ob_path, problem=problem,
+                               max_points=args.max_points)
+        print(f"[replot] wrote {ob_path}")
 
 
 if __name__ == "__main__":

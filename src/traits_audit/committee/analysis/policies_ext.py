@@ -31,7 +31,10 @@ from typing import Callable, Optional
 
 import numpy as np
 
-from traits_audit.committee.analysis.rollouts import _acquisition_grid
+from traits_audit.committee.analysis.rollouts import (
+    _acquisition_grid,
+    _reduce_objectives,
+)
 from traits_audit.committee.analysis.votes import CommitteeVoter
 
 
@@ -75,7 +78,8 @@ def lcb_with_votes_policy(
         mu, sigma = surrogate.predict(grid)
         prefs = voter.preferred_actions(obs)
         dist = _mean_vote_distance(grid, prefs)
-        score = mu - kappa * sigma + vote_weight * dist
+        score = (_reduce_objectives(mu) - kappa * _reduce_objectives(sigma)
+                 + vote_weight * dist)
         return grid[int(np.argmin(score))].astype(np.float32)
 
     return _pi
@@ -96,7 +100,7 @@ def max_sigma_with_votes_policy(
         _mu, sigma = surrogate.predict(grid)
         prefs = voter.preferred_actions(obs)
         dist = _mean_vote_distance(grid, prefs)
-        score = -sigma + vote_weight * dist
+        score = -_reduce_objectives(sigma) + vote_weight * dist
         return grid[int(np.argmin(score))].astype(np.float32)
 
     return _pi

@@ -9,7 +9,12 @@
 # Each problem writes to its own run dir, runs/committee_<problem>_5M/, with
 # the same layout as the Forrester runs (models/, checkpoints/, tb/).
 #
-# Resources are sized for the larger states (479 / 1092 dims vs Forrester's
+# branin-currin-mo audits BOTH objectives: 932-dim state, two surrogates
+# refit per step. The replay buffer holds obs + next_obs, so it is roughly
+# double the single-objective arm's -- hence 12G rather than 8G. Expect
+# ~2x the wall-clock per step from the second surrogate fit.
+#
+# Resources are sized for the larger states (479 / 932 / 1092 dims vs Forrester's
 # 414): the replay buffer holds obs + next_obs, ~4.4 GB for color at 500k.
 # Slowest tasks (MahalanobisOOD) measured ~2x a CRPS task; 12 h leaves >2x
 # headroom on both problems.
@@ -19,7 +24,7 @@
 #SBATCH --account=YOUR_ACCOUNT         # <-- replace with your Alliance allocation
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
-#SBATCH --mem=8G
+#SBATCH --mem=12G
 #SBATCH --time=12:00:00
 #SBATCH --array=0-74                   # 15 agents × 5 seeds = 75 tasks
 #SBATCH --output=logs/slurm/committee_problem_%A_%a.out

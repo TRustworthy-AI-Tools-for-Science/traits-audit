@@ -207,16 +207,22 @@ def render_headline_figure(
     if dim == 1:
         x_grid = np.linspace(0.0, 1.0, 400)
         f_grid = _forrester(x_grid)
-    elif problem.name == "branin-currin":
+    elif problem.name in ("branin-currin", "branin-currin-mo"):
         # Fresh, finer-than-state grid just for this contour (the env's own
         # problem.grid is only 15/dim -- too coarse to look like a surface).
         axis = np.linspace(0.0, 1.0, 60)
         GX, GY = np.meshgrid(axis, axis, indexing="ij")
         grid_pts = np.stack([GX.ravel(), GY.ravel()], axis=1)
-        Z = problem.clean(grid_pts)[:, 0].reshape(GX.shape)
+        clean = problem.clean(grid_pts)
+        Z = clean[:, 0].reshape(GX.shape)
         # Log-spaced levels: Branin spans ~0.4-308 with three sharp minima,
         # so linear levels wash out the basins that matter for this figure.
         levels = np.geomspace(max(float(Z.min()), 1e-3), float(Z.max()), 12)
+        # Second objective, only when it is actually audited.
+        if problem.n_objectives > 1:
+            Z2 = clean[:, 1].reshape(GX.shape)
+            # Currin spans no decades, so linear levels, unlike Branin.
+            levels2 = np.linspace(float(Z2.min()), float(Z2.max()), 8)
     elif problem.name == "color":
         from traits_audit._viz import draw_cie_background, rgb_norm_to_cie_xy
         target = getattr(problem, "target", None)
@@ -250,17 +256,33 @@ def render_headline_figure(
                             left=False, right=False,
                             labelleft=False, labelright=False)
 
-        elif problem.name == "branin-currin":
+        elif problem.name in ("branin-currin", "branin-currin-mo"):
             # Unfilled contours only. A grey contourf underneath darkened
             # the whole panel and made the queries read as washed out; the
             # 3-D companion figure (surface3d.py) is where the surface's
             # *shape* is shown, so here the landscape only needs to be a
             # reference frame for the query positions.
-            cs = ax.contour(GX, GY, Z, levels=levels, cmap="viridis",
-                            linewidths=0.8, alpha=0.85, zorder=1)
+            two_obj = problem.n_objectives > 1
+            # With both objectives drawn, the first switches to `autumn` so
+            # the two families differ in hue as well as dash pattern --
+            # `viridis` and a second sequential map are too close to tell
+            # apart at panel scale. Single-objective keeps viridis at
+            # zorder=1 so its figure is unchanged.
+            ax.contour(GX, GY, Z, levels=levels,
+                       cmap="autumn" if two_obj else "viridis",
+                       linewidths=0.9 if two_obj else 0.8,
+                       alpha=0.9 if two_obj else 0.85,
+                       zorder=3 if two_obj else 1)
+            if two_obj:
+                # Dashed + a distinct hue family: two solid contour sets on
+                # one axes are not separable at 3.6-inch panel width. Drawn
+                # over the queries so the landscapes stay readable where the
+                # cloud is dense.
+                ax.contour(GX, GY, Z2, levels=levels2, cmap="winter",
+                           linewidths=0.9, alpha=0.9, linestyles="--", zorder=3)
             ax.scatter(pooled[:, 0], pooled[:, 1], s=4, color="C0",
                        alpha=_scatter_alpha(len(pooled)) * 2.0,
-                       edgecolors="none", zorder=3,
+                       edgecolors="none", zorder=2 if two_obj else 3,
                        label="pooled (5 seeds)")
             ax.set_xlim(0.0, 1.0)
             ax.set_ylim(0.0, 1.0)
@@ -322,8 +344,27 @@ def render_headline_figure(
             bbox_to_anchor=(0.5, -0.004),
         )
 
+    if problem.name == "branin-currin-mo":
+        # Two contour families on shared axes need decoding once, not in all
+        # 15 panels.
+        from matplotlib.lines import Line2D
+        fig.legend(
+            handles=[
+                Line2D([], [], color="#C0392B", lw=1.6, ls="-",
+                       label=f"{problem.objective_names[0]} (solid)"),
+                Line2D([], [], color="#1F5FA0", lw=1.6, ls="--",
+                       label=f"{problem.objective_names[1]} (dashed)"),
+                Line2D([], [], marker="o", color="none", markerfacecolor="C0",
+                       markersize=7, label="pooled queries (5 seeds)"),
+            ],
+            loc="lower center", ncol=3, fontsize=11, frameon=False,
+            bbox_to_anchor=(0.5, -0.004),
+        )
+
     if dim == 1:
         bottom_label = "x (acquisition query)"
+    elif problem.name == "branin-currin-mo":
+        bottom_label = f"{problem.input_names[0]}  (contours: both objectives)"
     elif problem.name == "branin-currin":
         bottom_label = f"{problem.input_names[0]}  (contours: Branin surface)"
     elif problem.name == "color":
@@ -337,7 +378,9 @@ def render_headline_figure(
     for ax in axes[-ncols:]:
         ax.set_xlabel(bottom_label, fontsize=11)
     # Reserve a strip at the bottom when the figure-level legend is drawn.
-    bottom = 0.035 if (problem.name == "color" and target_xy is not None) else 0.0
+    has_legend = (problem.name == "branin-currin-mo"
+                  or (problem.name == "color" and target_xy is not None))
+    bottom = 0.035 if has_legend else 0.0
     fig.tight_layout(rect=(0, bottom, 1, 0.97))
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=140)

@@ -386,6 +386,7 @@ def _run_regret(args) -> None:
         run_regret,
         write_regret_csv,
     )
+    from traits_audit.committee.problems import get_problem
 
     print(f"[regret] problem={args.problem} models={args.models_dir} "
           f"solo-seed={args.committee_solo_seed} "
@@ -407,7 +408,8 @@ def _run_regret(args) -> None:
 
     out = args.output_dir
     write_regret_csv(result, out / "regret.csv")
-    render_regret_figure(result, out / "regret.png")
+    render_regret_figure(result, out / "regret.png",
+                         problem=get_problem(args.problem))
     (out / "regret_test.json").write_text(json.dumps(test, indent=2) + "\n")
     print(f"[regret] wrote outputs to {out}/")
 

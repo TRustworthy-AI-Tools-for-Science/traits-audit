@@ -85,22 +85,45 @@ class RegretResult:
     warmstart_n: int
 
 
+#: Floor for the log-hypervolume difference, so a run that reaches the
+#: dense-grid ceiling yields a large finite number rather than -inf.
+HV_FLOOR = 1e-6
+
+
 def _trace_to_regret(
     trace, warmstart_n: int, episode_length: int, problem: Problem,
 ) -> np.ndarray:
-    """Per-step simple regret along the acquisition trajectory.
+    """Per-step score along the acquisition trajectory. Lower is better.
 
-    Score the *clean* audited objective at each queried x and take the
-    running min, so noise can't drive regret negative. Verified to
-    reproduce the pre-generalization Forrester-only computation bit for
-    bit (test_committee_problems.py).
+    Single objective: **simple regret** — the running min of the *clean*
+    audited objective minus the true min, so noise can't drive it negative.
+    Verified to reproduce the pre-generalization Forrester-only computation
+    bit for bit (test_committee_problems.py).
+
+    Multi-objective: **log hypervolume difference**, ``log10(hv_max - HV_t)``.
+    Simple regret on one objective would let a policy look excellent while
+    never touching the other. Hypervolume is the standard scalar for "how good
+    is this set of queries" in several objectives, and staying scalar keeps
+    the existing figure and paired-Wilcoxon machinery working unchanged.
+    Scored on ``clean`` for the same reason as above: noise could otherwise
+    inflate the hypervolume, the multi-objective analogue of negative regret.
     """
     x = np.asarray(trace.x_obs, dtype=float).reshape(-1, problem.dim)
-    f_clean = problem.clean(x)[:, 0]
+    if problem.n_objectives == 1:
+        f_clean = problem.clean(x)[:, 0]
+        sr = np.zeros(episode_length, dtype=float)
+        for t in range(episode_length):
+            cutoff = warmstart_n + t + 1
+            sr[t] = float(np.min(f_clean[:cutoff])) - problem.true_min
+        return sr
+
+    Y = problem.clean(x)[:, : problem.n_objectives]
+    hv_max = problem.hv_max
     sr = np.zeros(episode_length, dtype=float)
     for t in range(episode_length):
         cutoff = warmstart_n + t + 1
-        sr[t] = float(np.min(f_clean[:cutoff])) - problem.true_min
+        hv = problem.hypervolume(Y[:cutoff])
+        sr[t] = float(np.log10(max(hv_max - hv, HV_FLOOR)))
     return sr
 
 
@@ -244,11 +267,21 @@ def paired_test(result: RegretResult) -> dict:
     }
 
 
-def render_regret_figure(result: RegretResult, output_path: Path) -> None:
-    """Mean simple regret over time per policy with 95% CI bands.
+def render_regret_figure(
+    result: RegretResult,
+    output_path: Path,
+    problem: Optional[Problem] = None,
+) -> None:
+    """Mean score over time per policy with 95% CI bands.
 
     Solo agents in the Okabe-Ito palette; baselines (random / max-sigma) muted
     in dashed grey; committee in vermillion as the headline policy.
+
+    ``problem`` only affects labelling and the y-scale. Omitted (the default)
+    keeps the historical "simple regret" log-y presentation, so existing
+    single-objective figures are unchanged; passing a multi-objective problem
+    switches to the log-hypervolume-difference label on a linear axis (the
+    value is already a log).
     """
     import matplotlib.pyplot as plt
     from traits_audit.committee.analysis import style as st
@@ -284,16 +317,25 @@ def render_regret_figure(result: RegretResult, output_path: Path) -> None:
     _band(result.per_policy["committee"], "committee",
           **st.HEADLINE_STYLE)
 
+    multi = problem is not None and problem.n_objectives > 1
+    if multi:
+        ylabel = r"$\log_{10}(HV_{\max} - HV)$"
+        title = (f"Hypervolume shortfall ({len(result.seeds)} episode seeds, "
+                 f"{problem.n_objectives} objectives)")
+    else:
+        ylabel = "simple regret"
+        title = f"Simple regret ({len(result.seeds)} episode seeds)"
+
     ax.set_xlabel("acquisition step", fontsize=st.LABEL_FS)
-    ax.set_ylabel("simple regret", fontsize=st.LABEL_FS)
-    ax.set_title(f"Simple regret ({len(result.seeds)} episode seeds)",
-                 fontsize=st.TITLE_FS)
+    ax.set_ylabel(ylabel, fontsize=st.LABEL_FS)
+    ax.set_title(title, fontsize=st.TITLE_FS)
     # 19 entries (15 agents + 4 comparators): a 2-column legend inside the
     # axes covers the curves, so it goes beside the plot in 1 column.
     ax.legend(fontsize=st.LEGEND_FS - 2, ncol=1,
               loc="center left", bbox_to_anchor=(1.01, 0.5),
               framealpha=0.92, handlelength=2.6)
-    st.style_axes(ax, xlim=(0, result.episode_length), ylog=True)
+    # The MO value is already a log, so a log y-axis would double-log it.
+    st.style_axes(ax, xlim=(0, result.episode_length), ylog=not multi)
     fig.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=140)

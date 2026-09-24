@@ -120,6 +120,21 @@ class CommitteeEnv(gym.Env):
         self._sigma_history: Optional[list[float]] = None
         self._step_count = 0
 
+    # -- objective handling -----------------------------------------------
+
+    def _scale_y(self, y_raw: np.ndarray) -> np.ndarray:
+        """Divide raw objectives by their per-objective scale.
+
+        Returns ``(n,)`` for a single-objective problem — the historical shape,
+        preserved exactly so the surrogate fit is bit-identical — and
+        ``(n, n_objectives)`` otherwise.
+        """
+        y_raw = np.atleast_2d(np.asarray(y_raw, dtype=np.float64))
+        p = self.problem
+        if p.n_objectives == 1:
+            return y_raw[:, 0] / p.y_scale
+        return y_raw[:, : p.n_objectives] / p.y_scales
+
     # -- gym interface ----------------------------------------------------
 
     def reset(
@@ -143,7 +158,7 @@ class CommitteeEnv(gym.Env):
         x_init = self._rng.uniform(0.0, 1.0, size=(self.warmstart_n, self.problem.dim))
         self._x = x_init.astype(np.float64)
         self._y_raw = np.asarray(self.problem.observe(self._x, self._rng), dtype=np.float64)
-        self._y_obs = self._y_raw[:, 0] / self.problem.y_scale
+        self._y_obs = self._scale_y(self._y_raw)
         self._surrogate.fit(self._x, self._y_obs)
 
         # Backfill per-observation (mu, sigma) at the warm-start x's so the
@@ -164,10 +179,11 @@ class CommitteeEnv(gym.Env):
         # the *pre-update* surrogate represent the agent's prediction at
         # query time, which is what the audit checks expect.
         mu_q_pred, sigma_q_pred = self._surrogate.predict(x_q[None, :])
-        mu_q = float(mu_q_pred[0])
-        sigma_q = float(sigma_q_pred[0])
+        single = self.problem.n_objectives == 1
+        mu_q = float(mu_q_pred[0]) if single else np.asarray(mu_q_pred[0], dtype=float)
+        sigma_q = float(sigma_q_pred[0]) if single else np.asarray(sigma_q_pred[0], dtype=float)
         y_raw_q = np.asarray(self.problem.observe(x_q[None, :], self._rng), dtype=np.float64)[0]
-        y_q = float(y_raw_q[0] / self.problem.y_scale)
+        y_q = self._scale_y(y_raw_q[None, :])[0]
 
         y_before = np.asarray(self._y_obs, dtype=float)
         mu_before = np.asarray(self._mu_history, dtype=float)
@@ -176,7 +192,8 @@ class CommitteeEnv(gym.Env):
 
         self._x = np.vstack([self._x, x_q[None, :]])
         self._y_raw = np.vstack([self._y_raw, y_raw_q[None, :]])
-        self._y_obs = np.append(self._y_obs, y_q)
+        self._y_obs = (np.append(self._y_obs, y_q) if single
+                       else np.vstack([self._y_obs, y_q[None, :]]))
         self._mu_history.append(mu_q)
         self._sigma_history.append(sigma_q)
         self._surrogate.fit(self._x, self._y_obs)
@@ -186,14 +203,11 @@ class CommitteeEnv(gym.Env):
         sigma_after = np.asarray(self._sigma_history, dtype=float)
         x_after = self.x_obs
 
-        reward = float(self.reward_computer.reward(
+        reward = self._compute_reward(
             y_before, mu_before, sigma_before,
             y_after, mu_after, sigma_after,
-            x_before=x_before,
-            x_after=x_after,
-            sigma_series_before=sigma_before,
-            sigma_series_after=sigma_after,
-        ))
+            x_before, x_after,
+        )
 
         self._step_count += 1
         terminated = False
@@ -208,6 +222,51 @@ class CommitteeEnv(gym.Env):
         }
         return self._observation(), reward, terminated, truncated, info
 
+    def _compute_reward(
+        self,
+        y_before, mu_before, sigma_before,
+        y_after, mu_after, sigma_after,
+        x_before, x_after,
+    ) -> float:
+        """Scalar reward from one or several uncertainty streams.
+
+        Single objective: exactly the historical call, unchanged.
+
+        Multi-objective: the audit check is run once per objective on that
+        objective's own ``(y, mu, sigma)`` column, and the per-objective
+        deltas are **averaged**. Averaging rather than summing keeps the
+        reward on the same scale as the single-objective arm, and leaves the
+        objective-independent checks (MahalanobisOOD reads only the queried-x
+        geometry) identical across arms rather than multiplied by n_objectives.
+
+        ``sigma_series_*`` is passed per objective inside the same loop, so
+        the two signal-based rewards that consume it stay meaningful instead
+        of receiving a 2-D array they would silently mis-score.
+        """
+        rc = self.reward_computer
+        if self.problem.n_objectives == 1:
+            return float(rc.reward(
+                y_before, mu_before, sigma_before,
+                y_after, mu_after, sigma_after,
+                x_before=x_before,
+                x_after=x_after,
+                sigma_series_before=sigma_before,
+                sigma_series_after=sigma_after,
+            ))
+
+        rewards = [
+            float(rc.reward(
+                y_before[:, j], mu_before[:, j], sigma_before[:, j],
+                y_after[:, j], mu_after[:, j], sigma_after[:, j],
+                x_before=x_before,
+                x_after=x_after,
+                sigma_series_before=sigma_before[:, j],
+                sigma_series_after=sigma_after[:, j],
+            ))
+            for j in range(self.problem.n_objectives)
+        ]
+        return float(np.mean(rewards))
+
     # -- state assembly ---------------------------------------------------
 
     def _observation(self) -> np.ndarray:
@@ -215,9 +274,13 @@ class CommitteeEnv(gym.Env):
         p = self.problem
         mu_grid, sigma_grid = self._surrogate.predict(p.grid)
         step_norm = self._step_count / max(self.episode_length, 1)
-        mean_y = float(np.mean(self._y_obs))
-        var_y = float(np.var(self._y_obs))
-        best_y = float(np.min(self._y_obs))
+        # Per-objective mean/var/min, as one (n, n_obj) view either way. For
+        # n_obj == 1 this yields the original three scalars in the original
+        # order, so the concatenated state is byte-identical to before.
+        y = np.asarray(self._y_obs, dtype=float).reshape(-1, p.n_objectives)
+        summary = np.concatenate([
+            [step_norm], y.mean(axis=0), y.var(axis=0), y.min(axis=0),
+        ])
         if p.dim == 1:
             density, _ = np.histogram(self._x[:, 0], bins=p.density_bins, range=(0.0, 1.0))
         else:
@@ -227,9 +290,9 @@ class CommitteeEnv(gym.Env):
             density = density.ravel()
         density = density.astype(np.float32) / max(len(self._x), 1)
         state = np.concatenate([
-            mu_grid.astype(np.float32),
-            sigma_grid.astype(np.float32),
-            np.array([step_norm, mean_y, var_y, best_y], dtype=np.float32),
+            np.asarray(mu_grid, dtype=np.float32).ravel(order="F"),
+            np.asarray(sigma_grid, dtype=np.float32).ravel(order="F"),
+            summary.astype(np.float32),
             density,
         ])
         return state

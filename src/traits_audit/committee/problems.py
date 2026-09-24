@@ -7,10 +7,10 @@ hypervolume), a fixed output scale, the grid on which the surrogate's
 
 Inputs are always normalised to [0, 1]^dim — the agent's action space.
 Oracles return an ``(n, n_objectives)`` array in the problem's original
-units; column 0 is the objective the audit rewards score. The env divides
-that column by ``y_scale`` before fitting the surrogate, so every problem
-presents (mu, sigma) of similar magnitude to SAC (observations are not
-normalised; only rewards are).
+units. ``n_objectives`` says how many of those columns the audit actually
+scores; the env divides each by the matching ``y_scales`` entry before
+fitting, so every problem presents (mu, sigma) of similar magnitude to SAC
+(observations are not normalised; only rewards are).
 
 Problems
 --------
@@ -21,7 +21,13 @@ forrester
 branin-currin
     BoTorch's two-objective BraninCurrin on [0, 1]^2 with the observation
     noise used in ``_mobo_demo.py``. Rewards audit Branin only (as that demo
-    does); Currin is observed and kept for hypervolume.
+    does); Currin is observed but not scored. 479-dim state.
+branin-currin-mo
+    The same oracle with **both** objectives audited: one surrogate each, the
+    15 audit rewards scored per objective and averaged, and log-hypervolume
+    difference in place of simple regret. 932-dim state, so its models are
+    not interchangeable with ``branin-currin``'s — the two are separate arms,
+    kept side by side deliberately.
 color
     LED colour matching with the self-driving-lab-demo light simulator, as
     in ``_sdl_demo.py``: R, G, B in [0, 89] -> Frechet distance to the
@@ -109,6 +115,36 @@ class _Forrester1DSurrogate:
         return self.inner.predict(self._flat(x))
 
 
+class _MultiSurrogate:
+    """One independent surrogate per objective, behind the env's interface.
+
+    ``PolyBootstrapSurrogate.fit`` is already shape-generic (the ridge solve
+    handles an ``(n_features, n_obj)`` right-hand side), but ``predict``
+    reduces over axis 1 to collapse the bootstrap ensemble, which is the
+    wrong axis once ``y`` has columns. Rather than perform axis surgery on a
+    class the Forrester and single-objective arms both depend on, hold a list
+    and loop — the same adapter approach as :class:`_Forrester1DSurrogate`.
+
+    ``fit`` takes ``(n, n_obj)``; ``predict`` returns ``(mu, sigma)`` each of
+    shape ``(n_points, n_obj)``.
+    """
+
+    def __init__(self, surrogates: list):
+        self.surrogates = surrogates
+
+    def fit(self, x: np.ndarray, y: np.ndarray) -> "_MultiSurrogate":
+        y = np.asarray(y, dtype=float)
+        for j, s in enumerate(self.surrogates):
+            s.fit(x, y[:, j])
+        return self
+
+    def predict(self, x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        preds = [s.predict(x) for s in self.surrogates]
+        mu = np.stack([p[0] for p in preds], axis=1)
+        sigma = np.stack([p[1] for p in preds], axis=1)
+        return mu, sigma
+
+
 def _grid(points_per_dim: int, dim: int) -> np.ndarray:
     axis = np.linspace(0.0, 1.0, points_per_dim)
     mesh = np.meshgrid(*([axis] * dim), indexing="ij")
@@ -128,15 +164,43 @@ class Problem:
     grid_points_per_dim: int
     density_bins: int  # per input dimension
 
+    # How many objectives the *audit* scores. Deliberately NOT derived from
+    # ``len(objective_names)``: BraninCurrinProblem already names two
+    # objectives while auditing only Branin, and inferring this would flip
+    # its state_dim from 479 to 932 and invalidate every saved SAC model
+    # (SB3 raises the shape mismatch at load time, i.e. during analysis,
+    # long after the training that produced them).
+    n_objectives: int = 1
+
     @cached_property
     def grid(self) -> np.ndarray:
         """(n_grid, dim) points where the surrogate's (mu, sigma) enter the state."""
         return _grid(self.grid_points_per_dim, self.dim)
 
+    @cached_property
+    def y_scales(self) -> np.ndarray:
+        """Per-objective divisor applied before the surrogate sees ``y``.
+
+        One entry per audited objective. Defaults to ``y_scale`` repeated, so
+        single-objective problems are unchanged. Multi-objective problems must
+        override with genuinely per-objective values: observations are not
+        normalised before SAC sees them (only rewards are), so a shared scale
+        would leave one objective's whole mu/sigma block an order of magnitude
+        smaller than the other's and effectively invisible to the policy.
+        """
+        return np.full(self.n_objectives, float(self.y_scale), dtype=np.float64)
+
     @property
     def state_dim(self) -> int:
-        # mu + sigma on the grid, 4 summary features, query-density histogram.
-        return 2 * len(self.grid) + 4 + self.density_bins ** self.dim
+        # mu + sigma on the grid (per objective), summary features, and the
+        # query-density histogram. The summary block is
+        #   step_norm + per-objective (mean, var, best)
+        # = 1 + 3*n_obj, which is the familiar 4 when n_obj == 1.
+        return (
+            2 * self.n_objectives * len(self.grid)
+            + 1 + 3 * self.n_objectives
+            + self.density_bins ** self.dim
+        )
 
     def observe(self, x: np.ndarray, rng: np.random.Generator) -> np.ndarray:
         """Noisy oracle: (n, dim) in [0, 1] -> (n, n_objectives), original units."""
@@ -158,10 +222,52 @@ class Problem:
     def make_surrogate(
         self, degree: int, n_estimators: int, std_scale: float, rng: np.random.Generator,
     ):
-        return PolyBootstrapSurrogate(
-            dim=self.dim, degree=degree,
-            n_estimators=n_estimators, std_scale=std_scale, rng=rng,
-        )
+        if self.n_objectives == 1:
+            return PolyBootstrapSurrogate(
+                dim=self.dim, degree=degree,
+                n_estimators=n_estimators, std_scale=std_scale, rng=rng,
+            )
+        # Independent seeds per objective so the two bootstrap ensembles are
+        # not resampling in lockstep, which would correlate their sigmas.
+        return _MultiSurrogate([
+            PolyBootstrapSurrogate(
+                dim=self.dim, degree=degree,
+                n_estimators=n_estimators, std_scale=std_scale,
+                rng=np.random.default_rng(rng.integers(0, 2**63 - 1)),
+            )
+            for _ in range(self.n_objectives)
+        ])
+
+    # -- multi-objective scoring ------------------------------------------
+    # Only meaningful when n_objectives > 1; used by analysis/regret.py, never
+    # inside the env or the reward path.
+
+    ref_point: Optional[np.ndarray] = None   # hypervolume reference, minimisation
+    hv_max: Optional[float] = None           # dense-grid ceiling, for log HV difference
+
+    def hypervolume(self, Y: np.ndarray) -> float:
+        """Hypervolume dominated by the non-dominated set of ``Y`` (minimisation).
+
+        ponytail: six lines duplicated from ``_mobo_demo._hypervolume`` rather
+        than shared. ``_pybamm_demo`` holds a third copy with the *opposite*
+        (maximisation) sign convention, and a common helper taking a
+        ``maximise=`` flag is how a third convention bug gets written. The
+        demos are standalone reproducibility artifacts; this method is the
+        committee's own. ``test_hypervolume_matches_mobo_demo`` pins them
+        together.
+        """
+        import torch
+        from botorch.utils.multi_objective.hypervolume import Hypervolume
+        from botorch.utils.multi_objective.pareto import is_non_dominated
+
+        if self.ref_point is None:
+            raise ValueError(f"{self.name!r} has no ref_point; hypervolume undefined")
+        Y_t = torch.tensor(np.asarray(Y, dtype=float), dtype=torch.float64)
+        ref = torch.tensor(self.ref_point, dtype=torch.float64)
+        # is_non_dominated expects maximisation, so negate on the way in and
+        # back out again for Hypervolume.
+        mask = is_non_dominated(-Y_t)
+        return float(Hypervolume(ref_point=-ref).compute(-Y_t[mask]))
 
 
 class ForresterProblem(Problem):
@@ -240,6 +346,57 @@ class BraninCurrinProblem(Problem):
     true_min: float = 0.3978873577297666
 
 
+class BraninCurrinMOProblem(BraninCurrinProblem):
+    """Branin-Currin with **both** objectives audited.
+
+    Identical oracle, noise, grid and degree to :class:`BraninCurrinProblem` —
+    the only difference is that the env fits a surrogate per objective and each
+    of the 15 audit rewards is scored on both uncertainty streams, then
+    averaged. The single-objective class is left untouched so its trained
+    models and figures stay valid as the comparison arm.
+
+    Averaging rather than summing: it keeps the reward on the same scale as the
+    single-objective arm (so learning curves are comparable and the downstream
+    z-score normaliser behaves the same), and it makes ``MahalanobisOOD`` --
+    whose check reads only the queried-x geometry and is objective-independent
+    -- identical across the two arms instead of double-counted.
+    """
+
+    name = "branin-currin-mo"
+    n_objectives = 2
+
+    # Branin std ~50.4, Currin std ~2.6 over [0,1]^2: a shared scale would put
+    # Currin's entire mu/sigma block at ~1/20 the magnitude of Branin's, and
+    # observations are not normalised before SAC sees them.
+    #
+    # ponytail: y_scales is the balance knob between the two reward streams.
+    # If one objective's raw-delta std stays an order of magnitude larger,
+    # retune these before reaching for a per-objective RunningZScore -- the
+    # env's output is already z-scored by ZScoreRewardWrapper, and a second
+    # normalisation layer inside would mean three sets of running statistics
+    # converging on different timescales.
+    @cached_property
+    def y_scales(self) -> np.ndarray:
+        return np.array([50.0, 2.6], dtype=np.float64)
+
+    # Hypervolume reference, in minimisation space. Taken from the project's
+    # own MOBO demo (_mobo_demo._REF_POINT) so the committee and the demo
+    # score the same objective ranges the same way. Verified to dominate the
+    # clean objectives everywhere on [0,1]^2 (see test).
+    ref_point: Optional[np.ndarray] = np.array([18.0, 6.0], dtype=np.float64)
+
+    @cached_property
+    def hv_max(self) -> float:
+        """Practical hypervolume ceiling, from a dense grid of clean values.
+
+        Used as the reference in ``log10(hv_max - HV_t)``. A grid rather than
+        the true Pareto front: the front is only reachable in the limit, and a
+        ceiling slightly below the theoretical one keeps the log finite and
+        the scale interpretable.
+        """
+        return self.hypervolume(self.clean(_grid(120, self.dim)))
+
+
 class ColorMatchingProblem(Problem):
     name = "color"
     dim = 3
@@ -295,7 +452,12 @@ class ColorMatchingProblem(Problem):
 
 
 PROBLEMS: dict[str, type[Problem]] = {
-    p.name: p for p in (ForresterProblem, BraninCurrinProblem, ColorMatchingProblem)
+    p.name: p for p in (
+        ForresterProblem,
+        BraninCurrinProblem,
+        BraninCurrinMOProblem,
+        ColorMatchingProblem,
+    )
 }
 
 

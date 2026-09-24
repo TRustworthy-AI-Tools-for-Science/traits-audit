@@ -110,12 +110,29 @@ def sac_policy(model) -> Policy:
     return _pi
 
 
+def _reduce_objectives(a: np.ndarray) -> np.ndarray:
+    """Collapse a (n_points, n_obj) surrogate output to (n_points,).
+
+    Multi-objective problems give these grid-search baselines one column per
+    objective. Summing is the natural scalarisation here: the env already
+    divides each objective by its own ``y_scales`` entry, so the columns are
+    on comparable footing and an equal-weight sum is the unweighted
+    compromise. 1-D input passes straight through, so the single-objective
+    baselines are unchanged.
+
+    ponytail: equal weights. A weight vector would be a free parameter to
+    justify, and these are deliberately simple reference policies.
+    """
+    a = np.asarray(a)
+    return a if a.ndim == 1 else a.sum(axis=1)
+
+
 def lcb_policy(kappa: float = 2.0, grid_size: int = 300) -> Policy:
     def _pi(obs: np.ndarray, env: CommitteeEnv) -> np.ndarray:
         surrogate = env.unwrapped.surrogate
         grid = _acquisition_grid(env, grid_size)
         mu, sigma = surrogate.predict(grid)
-        idx = int(np.argmin(mu - kappa * sigma))
+        idx = int(np.argmin(_reduce_objectives(mu) - kappa * _reduce_objectives(sigma)))
         return grid[idx].astype(np.float32)
     return _pi
 
@@ -125,7 +142,7 @@ def max_sigma_policy(grid_size: int = 300) -> Policy:
         surrogate = env.unwrapped.surrogate
         grid = _acquisition_grid(env, grid_size)
         _mu, sigma = surrogate.predict(grid)
-        idx = int(np.argmax(sigma))
+        idx = int(np.argmax(_reduce_objectives(sigma)))
         return grid[idx].astype(np.float32)
     return _pi
 
@@ -200,6 +217,16 @@ def score_trace(trace: RolloutTrace) -> dict[str, np.ndarray]:
     sigma = trace.sigma_hist
     n_steps = trace.n_steps
 
+    # Multi-objective traces carry (n, n_obj) y/mu/sigma. Mirror the env's
+    # per-objective-then-average reduction (CommitteeEnv._compute_reward)
+    # exactly: without this the checks would receive 2-D arrays and return a
+    # *plausible but wrong* number rather than raising, quietly corrupting the
+    # cross-agent correlation matrices this function feeds.
+    n_obj = 1 if np.ndim(y) == 1 else int(np.shape(y)[1])
+    cols = [slice(None)] if n_obj == 1 else [
+        (slice(None), j) for j in range(n_obj)
+    ]
+
     for name, reward_cls in REWARD_REGISTRY.items():
         rc = reward_cls()
         rewards = np.zeros(n_steps, dtype=float)
@@ -207,13 +234,17 @@ def score_trace(trace: RolloutTrace) -> dict[str, np.ndarray]:
             i = w + t
             # Same extras env.step() forwards; the signal-based rewards
             # (UncertaintyEvolution/Anomaly, MahalanobisOOD) score 0 without them.
-            rewards[t] = rc.reward(
-                y[:i], mu[:i], sigma[:i],
-                y[:i + 1], mu[:i + 1], sigma[:i + 1],
-                x_before=x[:i],
-                x_after=x[:i + 1],
-                sigma_series_before=sigma[:i],
-                sigma_series_after=sigma[:i + 1],
-            )
+            per_obj = [
+                rc.reward(
+                    y[:i][c], mu[:i][c], sigma[:i][c],
+                    y[:i + 1][c], mu[:i + 1][c], sigma[:i + 1][c],
+                    x_before=x[:i],
+                    x_after=x[:i + 1],
+                    sigma_series_before=sigma[:i][c],
+                    sigma_series_after=sigma[:i + 1][c],
+                )
+                for c in cols
+            ]
+            rewards[t] = float(np.mean(per_obj))
         out[name] = rewards
     return out

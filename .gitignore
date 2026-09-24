@@ -62,6 +62,20 @@ _results/*/*
 # .synctex.gz) stay ignored by the rule above.
 !_results/story.tex
 
+# Ashley's manuscript repo (daleas0120/paper-traits-audit), cloned here for
+# convenience. It is a SEPARATE git repository with its own remote and
+# history, so it must never be staged by this one -- an un-ignored nested
+# repo gets recorded as a gitlink, which is a broken half-submodule for
+# anyone else who clones.
+/paper/
+
+# Local run noise: SLURM stdout/stderr, the thread-driver log, LaTeX build
+# logs, and OneDrive's folder-metadata file. None of it is reproducible
+# output anyone else needs.
+logs/
+*.log
+desktop.ini
+
 # Editor
 .vscode/
 .idea/
