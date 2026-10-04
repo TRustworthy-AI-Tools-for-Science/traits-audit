@@ -3,7 +3,8 @@
 B1: paired regret curves (LCB vs LCB+votes, max-sigma vs max-sigma+votes).
 B2: leave-one-out terminal-regret ablation for LCB+votes.
 B2-max-sigma: analogous leave-one-out ablation for max-sigma+votes.
-A1: aggregator regret curves with paired Wilcoxon p-values in the subheader.
+A1: aggregator regret curves (paired Wilcoxon p-values are returned to the
+    caller for tabulation, not drawn on the figure).
 A2: weight-vs-solo-regret scatter for both weighting schemes.
 A3: committee disagreement (action-std) over time twin-axed with the
     winning aggregator's regret curve.
@@ -164,12 +165,22 @@ def render_a1(
     result: ThreadResult,
     output_path: Path,
     reference: str = "best-solo:PITUniformity",
+    problem=None,
 ) -> dict:
-    """A1: regret curves for all aggregators; paired Wilcoxon p in subheader.
+    """A1: regret curves for all aggregators.
+
+    The paired Wilcoxon tests are still computed and returned, but are not
+    drawn on the figure -- they are tabulated in the manuscript instead.
 
     ``reference`` is the best-solo policy key as it appears in ``result``.
     It varies by problem (PITUniformity on Forrester, UncertaintyAnomaly on
     Branin-Currin, ...), so it is a parameter rather than a constant.
+
+    ``problem`` only affects labelling and the y-scale, exactly as in
+    ``render_regret_figure``: omitted keeps the simple-regret log-y
+    presentation, a multi-objective problem switches to the
+    log-hypervolume-difference label on a linear axis (the value is already
+    a log, so a log axis would double-log it).
 
     Returns dict mapping aggregator -> paired test against ``reference``.
     """
@@ -195,7 +206,9 @@ def render_a1(
         "committee:weighted-indep":   (st.REDDISH_PURPLE,2.0, "-"),
     }
 
-    fig, ax = plt.subplots(figsize=(11, 6.5))
+    # Same canvas + outside-legend geometry as render_regret_figure, so the
+    # two panels sit side by side in the paper at matching plot-box sizes.
+    fig, ax = plt.subplots(figsize=(12.5, 6.2))
     xs = np.arange(result.episode_length)
     for name in aggregator_order:
         if name not in result.per_policy_regret:
@@ -212,35 +225,23 @@ def render_a1(
     for n in bar_names:
         tests[n] = paired_terminal_test(result, n, reference)
 
-    short = {
-        "committee:weighted-invreg": "weighted-invreg",
-        "committee:weighted-indep":  "weighted-indep",
-        "committee:uniform":         "uniform",
-        "committee:agree":           "agree",
-        "committee:disagree":        "disagree",
-        "random":                    "random",
-    }
-    pieces = []
-    for n in bar_names:
-        t = tests[n]
-        pieces.append(f"{short.get(n, n)} {_format_p(t['p_value'])}")
-    # Split subheader across two lines for readability.
-    half = (len(pieces) + 1) // 2
-    subheader = (
-        f"vs {reference}:  " + "   ".join(pieces[:half]) + "\n"
-        + "   ".join(pieces[half:])
-    )
+    multi = problem is not None and problem.n_objectives > 1
+    ylabel = r"$\log_{10}(HV_{\max} - HV)$" if multi else "simple regret"
+    title = (f"Aggregator hypervolume difference ({len(result.seeds)} seeds)"
+             if multi else f"Aggregator regret ({len(result.seeds)} seeds)")
 
+    # The per-aggregator p-values are still computed above and returned to the
+    # caller, but they are tabulated in the manuscript rather than printed as
+    # a subheader -- two lines of p-values above every panel duplicated the
+    # table and crowded the plot box.
     ax.set_xlabel("acquisition step", fontsize=st.LABEL_FS)
-    ax.set_ylabel("simple regret", fontsize=st.LABEL_FS)
-    ax.set_title(
-        f"Aggregator regret ({len(result.seeds)} seeds)\n" + subheader,
-        fontsize=st.TITLE_FS,
-    )
+    ax.set_ylabel(ylabel, fontsize=st.LABEL_FS)
+    ax.set_title(title, fontsize=st.TITLE_FS)
     ax.title.set_multialignment("center")
-    ax.legend(fontsize=st.LEGEND_FS, loc="lower left", ncol=2,
-              framealpha=0.92)
-    st.style_axes(ax, xlim=(0, result.episode_length), ylog=True)
+    ax.legend(fontsize=st.LEGEND_FS - 2, ncol=1,
+              loc="center left", bbox_to_anchor=(1.01, 0.5),
+              framealpha=0.92, handlelength=2.6)
+    st.style_axes(ax, xlim=(0, result.episode_length), ylog=not multi)
     fig.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=140)

@@ -285,15 +285,20 @@ def run_thread_b_ablation(
     policy: str = "LCB+votes",
     problem: Union[Problem, str, None] = None,
     only_agents: Optional[Iterable[str]] = None,
+    weights: Optional[dict[str, float]] = None,
 ) -> dict[str, np.ndarray]:
-    """Leave-one-agent-out ablation for a vote-augmented policy.
+    """Leave-one-agent-out ablation for a vote-augmented or aggregator policy.
 
-    For each agent k, build a sub-voter view that drops k, run the augmented
-    policy with the (n-1)-member committee, and record terminal SR.
+    For each agent k, build a sub-voter view that drops k, run the policy with
+    the (n-1)-member committee, and record terminal SR.
 
-    ``policy`` selects which augmented policy to ablate:
+    ``policy`` selects which policy to ablate:
         - "LCB+votes" (default) — pair to lcb_with_votes_policy.
         - "max-sigma+votes"     — pair to max_sigma_with_votes_policy.
+        - "committee:uniform" / "committee:agree" / "committee:disagree"
+        - "committee:weighted-indep" / "committee:weighted-invreg", which
+          additionally require ``weights`` (agent name -> weight; the
+          surviving members are renormalised to sum to 1).
 
     Returns dict[agent_name] -> terminal_regret_array (shape n_episode_seeds).
     """
@@ -307,7 +312,13 @@ def run_thread_b_ablation(
             self._base = base
             self._mask = mask_idx
         @property
-        def agent_names(self): return self._base.agent_names
+        def agent_names(self):
+            # Must drop the masked name, not pass the full list through:
+            # committee_weighted_policy builds its weight vector from
+            # agent_names and multiplies it against preferred_actions, so a
+            # 15-name list against 14 rows misaligns the weights.
+            return [n for i, n in enumerate(self._base.agent_names)
+                    if i != self._mask]
         @property
         def n_agents(self): return self._base.n_agents - 1
         def preferred_actions(self, obs):
@@ -324,6 +335,23 @@ def run_thread_b_ablation(
         make_policy = lambda sub: max_sigma_with_votes_policy(
             sub, vote_weight=vote_weight,
         )
+    # Aggregator rules: ablate a member out of the committee itself, rather
+    # than out of a vote-feature vector handed to a base rule.
+    elif policy == "committee:uniform":
+        make_policy = lambda sub: committee_uniform_policy(
+            sub, np.random.default_rng(rng_seed + 999),
+        )
+    elif policy == "committee:agree":
+        make_policy = lambda sub: committee_agree_policy(sub)
+    elif policy == "committee:disagree":
+        make_policy = lambda sub: committee_disagree_policy(sub)
+    elif policy in ("committee:weighted-indep", "committee:weighted-invreg"):
+        if weights is None:
+            raise ValueError(f"{policy!r} needs `weights`.")
+        # committee_weighted_policy renormalises over whatever names it is
+        # given, so with agent_names masked the surviving 14 weights are
+        # rescaled to sum to 1 automatically.
+        make_policy = lambda sub: committee_weighted_policy(sub, weights)
     else:
         raise ValueError(f"Unknown ablation target policy: {policy!r}")
 

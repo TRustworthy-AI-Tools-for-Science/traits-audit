@@ -320,7 +320,7 @@ def render_regret_figure(
     multi = problem is not None and problem.n_objectives > 1
     if multi:
         ylabel = r"$\log_{10}(HV_{\max} - HV)$"
-        title = (f"Hypervolume shortfall ({len(result.seeds)} episode seeds, "
+        title = (f"Hypervolume difference ({len(result.seeds)} episode seeds, "
                  f"{problem.n_objectives} objectives)")
     else:
         ylabel = "simple regret"

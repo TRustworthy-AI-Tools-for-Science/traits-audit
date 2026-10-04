@@ -1,0 +1,24 @@
+{
+  "best_solo": "solo:ConformalCoverage",
+  "committee_mean": 0.9645013760180637,
+  "best_solo_mean": 0.9804250229582048,
+  "p_value": 0.9272785186767578,
+  "stat": 102.0,
+  "solo_means": {
+    "solo:CRPS": 1.6812898972407493,
+    "solo:NLL": 1.0951207421663454,
+    "solo:IntervalScore": 1.6799824983947844,
+    "solo:CalibrationError": 0.9824478449982683,
+    "solo:KuleshovCalibration": 1.34601376960644,
+    "solo:ENCE": 1.2838856816729707,
+    "solo:CalibrationError1Std": 1.0726335678339323,
+    "solo:ConformalCoverage": 0.9804250229582048,
+    "solo:PITUniformity": 1.309369769710196,
+    "solo:IntervalCoverage": 1.25047150519254,
+    "solo:VarianceAlignment": 1.6290037504015378,
+    "solo:VarErrCorrelation": 1.4748321421784079,
+    "solo:UncertaintyEvolution": 1.3203934863701803,
+    "solo:UncertaintyAnomaly": 0.9997110306493704,
+    "solo:MahalanobisOOD": 1.4325150266937805
+  }
+}

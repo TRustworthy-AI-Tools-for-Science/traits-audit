@@ -188,6 +188,10 @@ def _add_thread_gather(sub):
     p.add_argument("--best-solo", type=str, default=None,
                    help="Best-solo agent for thread-a's reference. Defaults to "
                         "the value recorded in thread_a_weights.json.")
+    p.add_argument("--problem", choices=list(PROBLEMS), default="forrester",
+                   help="Sets the thread-a y-axis label and scale; a "
+                        "multi-objective problem plots the log hypervolume "
+                        "difference on a linear axis.")
 
 
 def _run_thread_gather(args) -> None:
@@ -247,8 +251,10 @@ def _run_thread_gather(args) -> None:
                 "thread-a gather needs --best-solo (no thread_a_weights.json)"
             )
         reference = f"best-solo:{best_solo}"
+        from traits_audit.committee.problems import get_problem
         tests = render_a1(result, out / "a1_aggregator_bakeoff.png",
-                          reference=reference)
+                          reference=reference,
+                          problem=get_problem(args.problem))
         (out / "thread_a_tests.json").write_text(json.dumps(tests, indent=2) + "\n")
         for name, t in tests.items():
             print(f"  {name}: mean={t['a_mean']:.4f}  p={t['p_value']:.2e}")
@@ -591,8 +597,10 @@ def _run_thread_a(args) -> None:
               f"— run `thread-gather` once all shards finish")
         return
 
+    from traits_audit.committee.problems import get_problem
     tests = render_a1(result, out / "a1_aggregator_bakeoff.png",
-                      reference=f"best-solo:{best_solo}")
+                      reference=f"best-solo:{best_solo}",
+                      problem=get_problem(args.problem))
     (out / "thread_a_tests.json").write_text(json.dumps(tests, indent=2) + "\n")
 
     # Pull solo terminal SR from the same regret_json used for inv-reg weights.

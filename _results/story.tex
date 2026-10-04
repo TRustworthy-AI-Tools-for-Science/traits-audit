@@ -34,7 +34,7 @@ The principle behind this RL formulation is that the agent is not trying to crea
 
 \subsection{Three benchmark problems}
 
-The same pipeline is run on three problems of increasing input dimension, so we can ask whether any conclusion about committees is a property of the method or an accident of the 1-D case.
+The same pipeline is run on three problems of increasing input dimension, so we can ask whether any conclusion about committees is a property of the method or an accident of the 1-D case. The second is genuinely multi-objective, and exists so that the RL arm is framed the same way as the MOBO benchmark used elsewhere in this work.
 
 \begin{center}
 \small
@@ -44,47 +44,50 @@ The same pipeline is run on three problems of increasing input dimension, so we 
 \midrule
 Forrester & 1 & $(6x-2)^2\sin(12x-4)$, noisy & single minimum, $f^\star = -6.0207$ \\
 \midrule
-Branin--Currin & 2 & Branin (Currin observed but not scored) & \textbf{three} equal minima, $f^\star = 0.397887$ \\
+Branin--Currin (MO) & 2 & \textbf{both} Branin and Currin, each with its own surrogate & Pareto front; $HV_{\max} = 56.956$ at reference point $(18, 6)$ \\
 \midrule
 Colour matching & 3 & Fr\'echet distance from an LED spectrum to a fixed target spectrum & single minimum at RGB $(41,3,31)/89$, $f^\star = 0$ exactly \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-Inputs are normalised to $[0,1]^d$ in every case, so the action space is $\mathrm{Box}(0,1)^d$. Simple regret is computed against $f^\star$, which is exact for all three: a literature value verified by multistart L-BFGS-B for Branin, and $0$ by construction for colour matching, since the Fr\'echet distance is a metric and the simulator's target RGB is reachable inside the action space.
+Inputs are normalised to $[0,1]^d$ in every case, so the action space is $\mathrm{Box}(0,1)^d$. Simple regret is computed against $f^\star$, which is exact for both single-objective problems: a literature value for Forrester, and $0$ by construction for colour matching, since the Fr\'echet distance is a metric and the simulator's target RGB is reachable inside the action space.
 
-Branin's three minima need no special handling because simple regret is \emph{value}-based: it asks only how low the best value seen so far is, never where that value was found. An agent that locates one basin scores identically to one that locates all three. This is worth stating because it means simple regret gives no credit for multimodal coverage, and conversely a single lucky query into any of the three basins produces near-zero regret regardless of the other 119 queries.
+\paragraph{The multi-objective arm.} In \textsc{Branin--Currin (MO)} the agent fits \emph{two} independent bootstrap surrogates, one per objective, so there are two uncertainty streams to audit rather than one. Each of the 15 audit metrics is evaluated separately on each objective's $(y, \mu, \sigma)$ and the two per-step deltas are \textbf{averaged} into the scalar reward. Averaging rather than summing keeps the reward on the same scale as the single-objective arms, and leaves the one objective-independent metric (MahalanobisOOD, which reads only the geometry of the queried inputs) identical across arms rather than doubled. Each objective is divided by its own scale before auditing --- $50.0$ for Branin, $2.6$ for Currin --- which is not cosmetic: under a shared scale Currin's standard deviation is $0.05$ against Branin's $1.26$, its reward deltas are some $25\times$ weaker, and the agents learn to ignore it entirely.
+
+Because both objectives are audited, the state carries a mean grid, an uncertainty grid and a set of running summary statistics per objective, giving 932 dimensions.
 
 \subsection{Sampling the objective as a sequential decision problem}
 
 To train an RL agent we formulate ``query the objective 100 times'' as a Markov Decision Process (MDP), a tuple $(S, A, P, R, \gamma)$. Each feature maps to a concrete object in this experiment.
 
-The state $S$ is a fixed-dimensional summary of everything the agent sees: the surrogate's predicted mean $\mu$ on a grid over $[0,1]^d$, its predicted $\sigma$ on the same grid, the normalized step count $t/100$, the running mean and variance of observed $y$, the current best $y$, and a query-density histogram. With $g$ grid points and $b$ histogram bins \emph{per axis},
+The state $S$ is a fixed-dimensional summary of everything the agent sees: the surrogate's predicted mean $\mu$ on a grid over $[0,1]^d$, its predicted $\sigma$ on the same grid, the normalized step count $t/100$, the running mean and variance of observed $y$, the current best $y$, and a query-density histogram. With $g$ grid points and $b$ histogram bins \emph{per axis}, and $m$ objectives (so that $\mu$, $\sigma$ and the three running summaries are stored once per objective),
 \[
-\dim(S) = 2g^{d} + 4 + b^{d}.
+\dim(S) = 2mg^{d} + 1 + 3m + b^{d}.
 \]
+For $m = 1$ this is the familiar $2g^d + 4 + b^d$.
 The action $A$ is a point $x \in [0,1]^d$, and the agent's policy $\pi(x \mid s)$ maps a state to a distribution over query points. The transition $P$ takes $(s_t, x_t)$, samples $y_t = f(x_t) + \varepsilon_t$ from the noisy oracle, appends $(x_t, y_t)$ to the dataset, refits the surrogate, and recomputes the state summary. Transitions are stochastic because the oracle is noisy and the surrogate is a bootstrap.
 
 \begin{center}
 \small
-\begin{tabular}{lccccc}
+\begin{tabular}{lcccccc}
 \toprule
-Problem & $d$ & $g$ (grid/axis) & $b$ (bins/axis) & $\dim(S)$ & action space \\
+Problem & $d$ & $m$ (objectives) & $g$ (grid/axis) & $b$ (bins/axis) & $\dim(S)$ & action space \\
 \midrule
-Forrester       & 1 & 200 & 10 & 414  & $\mathrm{Box}(1)$ \\
-Branin--Currin  & 2 & 15  & 5  & 479  & $\mathrm{Box}(2)$ \\
-Colour matching & 3 & 8   & 4  & 1092 & $\mathrm{Box}(3)$ \\
+Forrester            & 1 & 1 & 200 & 10 & 414  & $\mathrm{Box}(1)$ \\
+Branin--Currin (MO)  & 2 & 2 & 15  & 5  & 932  & $\mathrm{Box}(2)$ \\
+Colour matching      & 3 & 1 & 8   & 4  & 1092 & $\mathrm{Box}(3)$ \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-The per-axis grid resolution falls sharply with dimension. This is forced: keeping 200 points per axis would make $\mu$ and $\sigma$ alone an 80{,}000-dimensional state for Branin and a 16-million-dimensional state for colour. It is worth being precise about what this coarsening does and does not affect. It limits only what the agent \emph{observes}. The oracle is continuous and is evaluated at the exact real-valued query; the surrogate is a closed-form polynomial that can be evaluated anywhere; and the action space is continuous and is never snapped to the grid. The grid is a sensor resolution, not a discretisation of the problem. Measured against the true surface, linear interpolation from the state grid is accurate to a mean of $0.34\%$ of range on Branin and $0.68\%$ on colour, with worst cases of $1.5\%$ and $9.5\%$ respectively.
+The per-axis grid resolution falls sharply with dimension. This is forced: keeping 200 points per axis would make $\mu$ and $\sigma$ alone an 80{,}000-dimensional state per objective on Branin--Currin and a 16-million-dimensional state for colour. It is worth being precise about what this coarsening does and does not affect. It limits only what the agent \emph{observes}. The oracle is continuous and is evaluated at the exact real-valued query; the surrogate is a closed-form polynomial that can be evaluated anywhere; and the action space is continuous and is never snapped to the grid. The grid is a sensor resolution, not a discretisation of the problem. Measured against the true surface, linear interpolation from the state grid is accurate to a mean of $0.34\%$ of range on Branin--Currin and $0.68\%$ on colour, with worst cases of $1.5\%$ and $9.5\%$ respectively.
 
 \subsection{Surrogate and its uncertainty}
 
-The surrogate is a bootstrap ensemble of ridge-regression polynomials: 30 fits, each on a bootstrap resample of the data seen so far, with monomial features of total degree $\le 5$ (Forrester, Branin) or $\le 3$ (colour). The predicted mean is the ensemble mean and \textbf{$\sigma(x)$ is the standard deviation across the 30 fits}. There is no analytic variance and no Gaussian process; $\sigma$ is purely the ensemble's disagreement, which grows where data does not pin the polynomial down --- fitting on $x \in [0, 0.6]$ only, $\sigma$ rises from $0.067$ at $x = 0.4$ to $7.27$ at $x = 1.0$.
+The surrogate is a bootstrap ensemble of ridge-regression polynomials: 30 fits, each on a bootstrap resample of the data seen so far, with monomial features of total degree $\le 5$ (Forrester, Branin--Currin) or $\le 3$ (colour). The predicted mean is the ensemble mean and \textbf{$\sigma(x)$ is the standard deviation across the 30 fits}. There is no analytic variance and no Gaussian process; $\sigma$ is purely the ensemble's disagreement, which grows where data does not pin the polynomial down --- fitting on $x \in [0, 0.6]$ only, $\sigma$ rises from $0.067$ at $x = 0.4$ to $7.27$ at $x = 1.0$.
 
-Two properties of this choice matter for interpreting the results. First, $\sigma$ is \emph{epistemic}: it carries no explicit noise term, and tripling the oracle's observation noise moves the mean $\sigma$ only from $0.37$ to $0.50$. Several audit metrics (NLL, IntervalScore, ConformalCoverage) implicitly assume $\sigma$ covers observation noise, and it does not. Second, $\sigma$ inherits the polynomial basis's blind spots: where a degree-5 polynomial simply cannot express the surface, all 30 fits are wrong in the same way, agree with each other, and report small $\sigma$ alongside large error. Fitting on 2000 points, the best achievable $R^2$ is $0.925$ (Forrester), $0.987$ (Branin) and $0.978$ (colour), so such regions exist on all three problems.
+Two properties of this choice matter for interpreting the results. First, $\sigma$ is \emph{epistemic}: it carries no explicit noise term, and tripling the oracle's observation noise moves the mean $\sigma$ only from $0.37$ to $0.50$. Several audit metrics (NLL, IntervalScore, ConformalCoverage) implicitly assume $\sigma$ covers observation noise, and it does not. Second, $\sigma$ inherits the polynomial basis's blind spots: where a degree-5 polynomial simply cannot express the surface, all 30 fits are wrong in the same way, agree with each other, and report small $\sigma$ alongside large error. Fitting on 2000 points, the best achievable $R^2$ is $0.925$ (Forrester), $0.987$ (Branin) and $0.978$ (colour), so such regions exist on every problem.
 
 \subsection{The 15 reward functions}
 
@@ -132,9 +135,17 @@ MahalanobisOOD & OOD fraction wrt the queried-$x$ manifold & Stay in-distributio
 
 When minimizing $f$, \textbf{simple regret} at the end of a run is the gap between the best value found and the true minimum of $f$, evaluated on the \emph{clean} objective so a lucky noise draw cannot push it below zero. For each policy we run 20 random episode seeds, paired across all policies, and take the mean. That single number is the headline score for that committee member.
 
+On the multi-objective arm simple regret is unavailable, and would be misleading if forced: a policy that drove Branin to its minimum while never moving Currin would score perfectly. We use the \textbf{log hypervolume shortfall} instead,
+\[
+  \log_{10}\bigl(HV_{\max} - HV_t\bigr),
+\]
+where $HV_t$ is the hypervolume dominated by the clean objective values of all points queried up to step $t$, measured against the reference point $(18, 6)$, and $HV_{\max} = 56.956$ is the value attained by a dense $120\times120$ grid. Lower is better and the quantity decreases monotonically, exactly as simple regret does, so the same paired-Wilcoxon machinery applies without modification. It is likewise computed on the clean objectives: scoring on noisy draws could inflate the hypervolume, which is the multi-objective analogue of a negative simple regret. Because the two scores are on different scales, the multi-objective column is never compared numerically against the other two --- only the \emph{ranking} of policies within it is.
+
 % ===========================================================================
 \section{Results and Discussion}
 % ===========================================================================
+
+The main text reports the \textsc{Forrester} problem in full. The colour-matching and \textsc{Branin--Currin (MO)} arms follow the same protocol and are reported in the Supplementary Information (\S\ref{si:colour}--\S\ref{si:mo}); every headline claim below is stated for all three problems, with the supporting figures for the other two in the SI.
 
 \subsection{Learning curves}
 
@@ -151,9 +162,7 @@ The observation that survives from the 9-metric version of this experiment is th
 
 \subsection{Query densities}
 
-Figures \ref{fig:density_forrester}--\ref{fig:density_color} show where each agent prefers to query, one panel per agent. For Forrester the panel is a histogram over $[0,1]$ with the objective overlaid; for Branin it is a scatter over the input square with the true Branin contours; for colour it is the CIE 1931 chromaticity diagram, with the target spectrum marked.
-
-On Forrester, tall narrow peaks indicate an agent that has learned to focus on one region, and flat broad shapes mean it explores. The agents whose reward pushes them to exploit low-$\sigma$ regions concentrate on the left half of the interval where noise is small but the true optimum is not; the agents whose reward pushes them to cover quantile gaps or align $\sigma$ with error spread further right, into the noisy half where the true minimum lives. The three signal-based agents (UncertaintyEvolution, UncertaintyAnomaly, MahalanobisOOD) are the ones that put the most mass in the right half, and they are also the best-performing solos.
+Figure \ref{fig:density_forrester} shows where each agent prefers to query on Forrester, one panel per agent: a histogram over $[0,1]$ with the objective overlaid. Tall narrow peaks indicate an agent that has learned to focus on one region, and flat broad shapes mean it explores. The agents whose reward pushes them to exploit low-$\sigma$ regions concentrate on the left half of the interval where noise is small but the true optimum is not; the agents whose reward pushes them to cover quantile gaps or align $\sigma$ with error spread further right, into the noisy half where the true minimum lives. The three signal-based agents (UncertaintyEvolution, UncertaintyAnomaly, MahalanobisOOD) are the ones that put the most mass in the right half, and they are also the best-performing solos.
 
 \begin{figure}[H]
     \centering
@@ -162,44 +171,7 @@ On Forrester, tall narrow peaks indicate an agent that has learned to focus on o
     \label{fig:density_forrester}
 \end{figure}
 
-\begin{figure}[H]
-    \centering
-    \includegraphics[width=0.95\textwidth]{committee_branin-currin/query_density_headline.png}
-    \caption{Branin queries for all 15 agents, over contours of the true Branin surface. The three equal minima are the three closed contour families.}
-    \label{fig:density_branin}
-\end{figure}
-
-Figure \ref{fig:surface3d} lifts the same Branin queries onto the surface itself, which shows what the top-down view cannot: the objective \emph{value} at which each agent spent its budget. It also makes clear how modest the differences are. The fraction of queries landing in a basin (below the surface's own 10th percentile) ranges only from $7.1\%$ (MahalanobisOOD) to $18.3\%$ (VarianceAlignment), against $10\%$ for uniform sampling by construction. Most agents are barely better than chance at finding the low region on this problem, and several are worse. Note that basin-hit-rate and terminal regret are not the same quantity --- regret needs only one good query, whereas this is distributional --- and indeed MahalanobisOOD has the lowest basin rate while UncertaintyAnomaly, at $14.1\%$, has the best regret.
-
-\begin{figure}[H]
-    \centering
-    \includegraphics[width=0.95\textwidth]{committee_branin-currin/query_surface3d.png}
-    \caption{Branin queries drawn on the true surface ($z$ log-scaled). Marker colour encodes queried objective value; dark markers in the three basins are good queries.}
-    \label{fig:surface3d}
-\end{figure}
-
-\begin{figure}[H]
-    \centering
-    \includegraphics[width=0.95\textwidth]{committee_color/query_density_headline.png}
-    \caption{Colour-matching queries for all 15 agents, projected onto the CIE 1931 chromaticity diagram. Red star: the target spectrum ($\text{frechet} = 0$). Red cross: the D65 standard illuminant, a reference point of the diagram and \emph{not} the optimisation target.}
-    \label{fig:density_color}
-\end{figure}
-
-\subsection{The colour problem exposes explicit reward hacking}
-\label{sec:hacking}
-
-The chromaticity projection in Figure \ref{fig:density_color} is the natural way to display colour, but it divides out intensity: the entire $R = G = B$ diagonal of the RGB cube collapses onto the single D65 point, and a policy pinned against a channel's upper bound is invisible. Figure \ref{fig:channels} plots the raw per-channel marginals instead, and the picture is stark. \textbf{Twelve of the fifteen agents spend 75--100\% of their queries at $B > 0.95$}, against the target's $B = 0.348$.
-
-This is not incidental, and it is not a failure of optimisation. The audited objective is very nearly a function of $B$ alone: Spearman $\rho$ with Fr\'echet distance is $+0.83$ for $B$, $+0.03$ for $R$ and $-0.12$ for $G$. Sweeping $B$ from $0.5$ to $1.0$ moves the objective from $31{,}644$ to $128{,}834$, while sweeping $R$ across its entire range moves it by $51$, about $0.16\%$. High $B$ is therefore the \emph{worst} region of the space for the true objective. But it is the \emph{best} region for the audit: the surrogate's standardised residual $|y - \mu|/\sigma$ falls from $1.42$ in the low-$B$ band to $0.69$ in the high-$B$ band, because the polynomial is smoothly wrong there and all 30 bootstrap fits agree with each other about it.
-
-The calibration-style rewards therefore pay the agents to sit exactly where the true objective is worst, and the agents comply. The three agents that do \emph{not} saturate $B$ --- UncertaintyEvolution ($6\%$), MahalanobisOOD ($20\%$), UncertaintyAnomaly ($53\%$) --- are precisely the three best solos on this problem. This is the cleanest demonstration in the study that an audit metric and a design objective can be actively anti-correlated.
-
-\begin{figure}[H]
-    \centering
-    \includegraphics[width=0.95\textwidth]{committee_color/query_channels.png}
-    \caption{Per-channel query marginals for colour matching. Dotted lines mark the target's channel values. The blue spike at $B = 1$ is the reward-hacking behaviour described in \S\ref{sec:hacking}, and is invisible in the chromaticity view.}
-    \label{fig:channels}
-\end{figure}
+The corresponding maps for colour matching (Figure \ref{fig:density_color}) and the multi-objective arm (Figure \ref{fig:density_mo}) are in the SI. The colour map is the one that carries an independent finding, and \S\ref{sec:hacking} draws on it directly.
 
 \subsection{Reward correlation between agents}
 
@@ -224,57 +196,34 @@ The central observation is unchanged from the 9-metric experiment and in fact st
     \label{fig:corr_pair}
 \end{figure}
 
-\subsection{Simple regret across solo agents and the uniform committee}
+\subsection{Terminal score across solo agents and the uniform committee}
 
 Table \ref{tab:solo} ranks the solo policies on all three problems. Three things stand out.
 
-First, \textbf{the best solo agent is problem-dependent}, and it is a signal-based agent in every case: MahalanobisOOD on Forrester, UncertaintyAnomaly on Branin, UncertaintyEvolution on colour. PITUniformity, which was the best agent in the 9-metric version of this experiment, is now second on Forrester and is the \emph{worst} of all fifteen on Branin. Any claim about which audit metric makes a good acquisition reward is therefore not portable between problems.
+First, \textbf{the best solo agent is problem-dependent}. It is a signal-based agent on both single-objective problems --- MahalanobisOOD on Forrester, UncertaintyEvolution on colour --- but \emph{not} on the multi-objective arm, where ConformalCoverage and CalibrationError take the top two places and are effectively tied ($0.980$ vs $0.982$), with UncertaintyAnomaly third. PITUniformity, which was the best agent in the 9-metric version of this experiment, is now only second on Forrester. Any claim about which audit metric makes a good acquisition reward is therefore not portable between problems, and adding a second objective is enough to break it.
 
-Second, \textbf{the uniform-pick committee is never better than the best solo}, and is significantly worse on Forrester ($0.119$ vs $0.0052$, $p = 6.3\times10^{-5}$) and colour ($13354$ vs $10614$, $p = 2.5\times10^{-3}$). On Branin it is nominally worse but not significantly so ($p = 0.23$).
+Second, \textbf{the uniform-pick committee is never significantly better than the best solo}. It is significantly worse on Forrester ($0.119$ vs $0.0052$, $p = 6.3\times10^{-5}$) and colour ($13354$ vs $10614$, $p = 2.5\times10^{-3}$). The multi-objective arm is the single case where the committee is nominally \emph{ahead} ($0.9645$ vs $0.9804$) --- but the margin is well inside the noise ($p = 0.93$), so the honest reading is a tie, not a win.
 
-Third, on colour, five agents tie at exactly $13878$. That is the value reached by a policy that never improves on its warm start, and it indicates saturation rather than a meaningful ranking among those five.
+Third, the multi-objective arm compresses the field. Its best and worst solo agents differ by a factor of $1.7$ in the log-shortfall ($0.980$ to $1.681$), where Forrester's differ by a factor of $134$. With two objectives to satisfy, no single metric's preferred querying style is as decisive as it is on one. On colour the opposite degeneracy appears: five agents tie at exactly $13878$, the value reached by a policy that never improves on its warm start, which indicates saturation rather than a meaningful ranking among those five.
 
 \begin{table}[H]
 \centering
 \small
 \begin{tabular}{lccc}
 \toprule
-Policy & Forrester & Branin & Colour \\
+Policy & Forrester & Colour & Branin--Currin (MO) \\
 \midrule
-\textbf{Best solo} & \textbf{0.0052} (MahalanobisOOD) & \textbf{0.235} (UncAnomaly) & \textbf{10614} (UncEvolution) \\
-Second solo & 0.0128 (PITUniformity) & 0.282 (VarErrCorr) & 12328 (MahalanobisOOD) \\
-Worst solo & 0.699 (IntervalScore) & 0.953 (PITUniformity) & 13878 (five-way tie) \\
+\textbf{Best solo} & \textbf{0.0052} (MahalanobisOOD) & \textbf{10614} (UncEvolution) & \textbf{0.980} (ConformalCov) \\
+Second solo & 0.0128 (PITUniformity) & 12328 (MahalanobisOOD) & 0.982 (CalibrationError) \\
+Worst solo & 0.699 (IntervalScore) & 13878 (five-way tie) & 1.681 (CRPS) \\
 \midrule
-Committee (uniform) & 0.119 & 0.406 & 13354 \\
-$p$ vs best solo & $6.3\times10^{-5}$ & $0.23$ & $2.5\times10^{-3}$ \\
+Committee (uniform) & 0.119 & 13354 & 0.965 \\
+$p$ vs best solo & $6.3\times10^{-5}$ & $2.5\times10^{-3}$ & $0.93$ \\
 \bottomrule
 \end{tabular}
-\caption{Mean terminal simple regret over 20 paired episode seeds. Lower is better.}
+\caption{Mean terminal score over 20 paired episode seeds; lower is better in every column. The first two columns are simple regret; the third is the log hypervolume shortfall $\log_{10}(HV_{\max} - HV)$, so values are comparable \emph{within} but not \emph{across} columns.}
 \label{tab:solo}
 \end{table}
-
-\begin{figure}[H]
-    \centering
-    \begin{subfigure}[t]{0.32\textwidth}
-        \centering
-        \includegraphics[width=\linewidth]{committee_v1/regret.png}
-        \caption{Forrester}
-    \end{subfigure}
-    \hfill
-    \begin{subfigure}[t]{0.32\textwidth}
-        \centering
-        \includegraphics[width=\linewidth]{committee_branin-currin/regret.png}
-        \caption{Branin}
-    \end{subfigure}
-    \hfill
-    \begin{subfigure}[t]{0.32\textwidth}
-        \centering
-        \includegraphics[width=\linewidth]{committee_color/regret.png}
-        \caption{Colour}
-    \end{subfigure}
-    \caption{Mean simple regret per policy (lower is better), 20 paired episode seeds.}
-    \label{fig:regret_all}
-\end{figure}
 
 \subsection{Aggregation rules over the committee}
 
@@ -285,53 +234,191 @@ Rather than rotating uniformly through the 15 members, the votes can be combined
 \small
 \begin{tabular}{lcccccc}
 \toprule
- & \multicolumn{2}{c}{Forrester} & \multicolumn{2}{c}{Branin} & \multicolumn{2}{c}{Colour} \\
+ & \multicolumn{2}{c}{Forrester} & \multicolumn{2}{c}{Colour} & \multicolumn{2}{c}{Branin--Currin (MO)} \\
 \cmidrule(lr){2-3}\cmidrule(lr){4-5}\cmidrule(lr){6-7}
-Aggregator & regret & $p$ & regret & $p$ & regret & $p$ \\
+Aggregator & score & $p$ & score & $p$ & score & $p$ \\
 \midrule
-best solo (reference) & 0.0052 & --- & 0.235 & --- & 10614 & --- \\
-random                & 0.0182 & 0.13 & \textbf{0.231} & 0.84 & \textbf{10006} & 0.47 \\
-committee:disagree    & \textbf{0.0160} & 0.09 & 0.748 & $6.4\!\times\!10^{-4}$ & 13100 & $1.9\!\times\!10^{-3}$ \\
-committee:uniform     & 0.119  & $6.3\!\times\!10^{-5}$ & 0.406 & 0.23 & 13354 & $2.5\!\times\!10^{-3}$ \\
-committee:weighted-invreg & 0.0183 & 0.019 & 1.072 & $1.1\!\times\!10^{-3}$ & 13878 & $2.0\!\times\!10^{-4}$ \\
-committee:weighted-indep  & 0.361  & $1.9\!\times\!10^{-6}$ & 2.241 & $1.1\!\times\!10^{-3}$ & 13878 & $2.0\!\times\!10^{-4}$ \\
-committee:agree       & 0.371  & $9.5\!\times\!10^{-6}$ & 2.228 & $4.4\!\times\!10^{-4}$ & 13878 & $2.0\!\times\!10^{-4}$ \\
+best solo (reference) & 0.0052 & --- & 10614 & --- & 0.980 & --- \\
+random                & 0.0182 & 0.13 & \textbf{10006} & 0.47 & 1.406 & $1.3\!\times\!10^{-5}$ \\
+committee:disagree    & \textbf{0.0160} & 0.09 & 13100 & $1.9\!\times\!10^{-3}$ & 1.677 & $1.9\!\times\!10^{-6}$ \\
+committee:uniform     & 0.119  & $6.3\!\times\!10^{-5}$ & 13354 & $2.5\!\times\!10^{-3}$ & \textbf{0.965} & 0.93 \\
+committee:weighted-invreg & 0.0183 & 0.019 & 13878 & $2.0\!\times\!10^{-4}$ & 1.680 & $1.9\!\times\!10^{-6}$ \\
+committee:weighted-indep  & 0.361  & $1.9\!\times\!10^{-6}$ & 13878 & $2.0\!\times\!10^{-4}$ & 1.681 & $1.9\!\times\!10^{-6}$ \\
+committee:agree       & 0.371  & $9.5\!\times\!10^{-6}$ & 13878 & $2.0\!\times\!10^{-4}$ & 1.681 & $1.9\!\times\!10^{-6}$ \\
 \bottomrule
 \end{tabular}
-\caption{Aggregator terminal simple regret, 20 paired episode seeds, with paired Wilcoxon $p$ against the best solo agent on that problem. Bold marks the best entry in each column.}
+\caption{Aggregator terminal score, 20 paired episode seeds, with paired Wilcoxon $p$ against the best solo agent on that problem. Bold marks the best entry in each column. The first two columns are simple regret; the third is the log hypervolume shortfall.}
 \label{tab:agg}
 \end{table}
 
-\textbf{No aggregation rule beats the best solo agent on any of the three problems.} This is the headline result, and it is a reversal of the 9-metric finding. In that earlier experiment \texttt{weighted-invreg} beat best-solo by an order of magnitude; with the full 15-metric registry it is $3.5\times$ worse than best-solo on Forrester ($p = 0.019$) and dramatically worse on the other two. The earlier result was an artifact of a small metric set, in which inverse-regret weighting collapsed onto ``use PITUniformity, with the others as tiebreakers.''
+\textbf{No aggregation rule significantly beats the best solo agent on any of the three problems.} This is the headline result, and it is a reversal of the 9-metric finding. In that earlier experiment \texttt{weighted-invreg} beat best-solo by an order of magnitude; with the full 15-metric registry it is $3.5\times$ worse than best-solo on Forrester ($p = 0.019$) and dramatically worse on the other two. The earlier result was an artifact of a small metric set, in which inverse-regret weighting collapsed onto ``use PITUniformity, with the others as tiebreakers.''
 
-Two further observations. \texttt{agree} and \texttt{weighted-indep} remain catastrophic on all three problems, and for the reasons previously identified: averaging disagreeing members lands in a region none of them wanted, a failure that worsens with dimension because a centroid in $d$ dimensions can be further from every member than it can on a line; and ``most independent'' is not ``most useful'' --- the most independent agent by correlation is MahalanobisOOD on Forrester and colour, whose colour regret is poor.
+Two further observations. \texttt{agree} and \texttt{weighted-indep} remain catastrophic on all three problems, and for the reasons previously identified: averaging disagreeing members lands in a region none of them wanted, a failure that worsens with dimension because a centroid in $d$ dimensions can be further from every member than it can on a line; and ``most independent'' is not ``most useful'' --- the most independent agent by correlation is MahalanobisOOD on Forrester and colour, whose colour regret is poor. On the multi-objective arm these two, together with \texttt{disagree} and \texttt{weighted-invreg}, converge on essentially the same poor value ($1.677$--$1.681$, all $p \approx 2\times10^{-6}$), matching the worst solo agent exactly. They have collapsed onto a degenerate policy.
 
-Most uncomfortably, \texttt{random} is statistically indistinguishable from the best solo on Branin ($p = 0.84$) and colour ($p = 0.47$), and is nominally the best entry in both columns. On Branin this is partly structural: with three equal basins and 120 queries, uniform sampling hits one reasonably often, and simple regret rewards that single lucky query.
+Most uncomfortably, \texttt{random} is statistically indistinguishable from the best solo on colour ($p = 0.47$), and is nominally the best entry in that column.
+
+\textbf{The multi-objective arm is the one place this does not happen}, and it is the most useful thing the arm contributes. There \texttt{random} is decisively \emph{beaten} by the best solo ($1.406$ vs $0.980$, $p = 1.3\times10^{-5}$), and the uniform committee is the best entry in the column. Hypervolume requires a policy to make progress on both objectives, and a single lucky query cannot deliver that the way it can deliver low simple regret. This supports the reading that random search's apparent competitiveness on colour is substantially an artifact of what simple regret measures, rather than evidence that the trained agents are worthless: given a score that cannot be won by one lucky draw, the trained agents separate from random cleanly.
 
 \begin{figure}[H]
     \centering
-    \begin{subfigure}[t]{0.32\textwidth}
+    \begin{subfigure}[t]{0.49\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{committee_v1/regret.png}
+        \caption{Solo agents}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[t]{0.49\textwidth}
         \centering
         \includegraphics[width=\linewidth]{committee_v1/threadA/a1_aggregator_bakeoff.png}
-        \caption{Forrester}
+        \caption{Aggregation rules}
     \end{subfigure}
-    \hfill
-    \begin{subfigure}[t]{0.32\textwidth}
+
+    \vspace{1em}
+    \begin{subfigure}[t]{\textwidth}
         \centering
-        \includegraphics[width=\linewidth]{committee_branin-currin/threadA/a1_aggregator_bakeoff.png}
-        \caption{Branin}
+        \includegraphics[width=\linewidth]{committee_v1/threadA/a2_weight_vs_regret.png}
+        \caption{Vote weight vs.\ solo regret for the two weighted aggregators: independence-weighted (left) and inverse-regret-weighted (right). Dotted line: the uniform weight $1/15$.}
     \end{subfigure}
-    \hfill
-    \begin{subfigure}[t]{0.32\textwidth}
-        \centering
-        \includegraphics[width=\linewidth]{committee_color/threadA/a1_aggregator_bakeoff.png}
-        \caption{Colour}
-    \end{subfigure}
-    \caption{Aggregator regret curves. Each curve is the mean of 20 paired episode seeds.}
-    \label{fig:a1}
+    \caption{Forrester. (a) mean simple regret per solo policy; (b) score curves for each aggregation rule; (c) how each aggregator distributes weight over the 15 members, against how good that member is alone. All curves are means of 20 paired episode seeds; lower is better.}
+    \label{fig:forrester_regret}
 \end{figure}
 
-\subsection{Committee votes as features in the AL state space}
+% ===========================================================================
+\section{Conclusion}
+% ===========================================================================
+
+Reward-shaping with uncertainty-audit metrics does produce stylistically distinct agents, but on roughly 9--11 independent axes rather than 15, and the random-control matrices show that most of that structure is intrinsic to the metric definitions rather than learned. Two of the fifteen metrics (CalibrationError and KuleshovCalibration) are effectively identical as reward signals, correlating at $+1.00$ under both trained and random policies on every problem.
+
+The central negative result is that \textbf{no committee aggregation scheme we tested significantly beats the best individual agent on any of the three problems}, and on colour a uniformly random acquisition policy is statistically indistinguishable from the best agent. The one scheme that appeared to win in a smaller 9-metric version of this experiment, inverse-regret weighting, does not survive the expansion to 15 metrics; it was an artifact of a committee in which a single member dominated. Averaging members' picks and weighting by behavioural independence remain reliably catastrophic.
+
+The multi-objective arm qualifies that second clause in a way worth carrying forward. When the score is hypervolume rather than simple regret --- so that no single lucky query can win, and progress on both objectives is required --- random search is beaten decisively ($p = 1.3\times10^{-5}$) and the uniform committee is nominally the best policy tested, though its margin over the best solo agent is not significant. The trained agents are therefore not indistinguishable from chance in general; they are indistinguishable from chance \emph{under a score that a single lucky query can win}. This does not rescue the committee hypothesis, but it does relocate part of the negative result from the agents to the metric used to judge them.
+
+The most interesting finding is negative in a more specific way. On the colour-matching problem the audited objective is essentially a function of one input channel, and the surrogate's calibration is \emph{best} in precisely the region where the design objective is \emph{worst}. Twelve of fifteen agents duly spend almost their entire budget there. The agents are not failing to optimise; they are optimising exactly what they were paid to optimise, and what they were paid to optimise is anti-correlated with the goal. The three agents that resist this --- all three of the signal-based rewards, which score the trajectory of uncertainty rather than its instantaneous calibration --- are the three best performers on that problem, and signal-based agents are the best solo on both single-objective problems. On the multi-objective arm they are not: ConformalCoverage and CalibrationError lead there, with UncertaintyAnomaly third, so this conclusion is the one that a second objective most clearly disturbs.
+
+This suggests the practical conclusion is not about committees at all. It is that \emph{instantaneous calibration quality is a poor acquisition signal}, because a surrogate can be well-calibrated and uninformative at the same time, while metrics that score how uncertainty \emph{evolves} retain some connection to whether the campaign is making progress.
+
+\subsection*{Caveats}
+
+Several limitations bear on how far these results generalise.
+
+\begin{itemize}
+\item \textbf{Surrogate capacity.} All results are conditioned on a bootstrap polynomial surrogate whose best achievable $R^2$ is $0.93$--$0.99$. Its $\sigma$ is purely epistemic and carries no noise model, which several of the audit metrics implicitly assume it does.
+\item \textbf{Acquisition-grid resolution.} The grid-search baselines search 300 points in 1-D but only 225 (Branin--Currin) and 512 (colour) candidates in higher dimensions, since a 300-per-axis grid is infeasible. Cross-problem comparisons of LCB and max-$\sigma$ are therefore not strictly like-for-like.
+\item \textbf{Simple regret rewards a single lucky query.} It asks only how low the best value seen so far is, never where or how reliably that value was found, which inflates the apparent competitiveness of random search --- as the multi-objective arm, scored by hypervolume, demonstrates directly.
+\item \textbf{The audit metrics remain per-objective.} On the multi-objective arm each of the 15 checks is applied to each objective's surrogate separately and the results averaged. No metric inspects the \emph{joint} residual structure of the two surrogates, and none is aware of Pareto dominance. The arm therefore answers ``do these metrics, applied to a two-surrogate model, help or harm hypervolume?'' It does not evaluate any multi-objective-aware audit metric, and nothing here should be read as a claim about one.
+\item \textbf{Scalarisation in the baselines.} The LCB and max-$\sigma$ baselines on the multi-objective arm reduce the two objectives by an unweighted sum. This is a deliberate simplification rather than a tuned choice, and it is part of why both rules perform poorly there; a proper multi-objective acquisition function (e.g.\ expected hypervolume improvement) would be a fairer baseline.
+\item \textbf{Budget.} 100 acquisition steps after a 20-point warm start is short for a 3-D problem; the colour saturation at $13878$ reflects policies that never improved on their warm start at all.
+\end{itemize}
+
+% ===========================================================================
+\appendix
+\section*{Supplementary Information}
+\renewcommand{\thefigure}{S\arabic{figure}}
+\renewcommand{\thetable}{S\arabic{table}}
+\setcounter{figure}{0}
+\setcounter{table}{0}
+% ===========================================================================
+
+% ---------------------------------------------------------------------------
+\subsection*{SI-1: Colour matching}
+\label{si:colour}
+% ---------------------------------------------------------------------------
+
+Colour matching is the 3-D arm: the agent sets an LED's RGB drive levels, and the objective is the Fr\'echet distance between the resulting spectrum and a fixed target spectrum, minimised at RGB $(41,3,31)/89$ where the distance is exactly $0$.
+
+Figure \ref{fig:density_color} projects each agent's queries onto the CIE 1931 chromaticity diagram, and Figure \ref{fig:color_regret} gives the score panels for this problem.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.95\textwidth]{committee_color/query_density_headline.png}
+    \caption{Colour-matching queries for all 15 agents, projected onto the CIE 1931 chromaticity diagram. Red star: the target spectrum ($\text{frechet} = 0$). Red cross: the D65 standard illuminant, a reference point of the diagram and \emph{not} the optimisation target.}
+    \label{fig:density_color}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}[t]{0.49\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{committee_color/regret.png}
+        \caption{Solo agents}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[t]{0.49\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{committee_color/threadA/a1_aggregator_bakeoff.png}
+        \caption{Aggregation rules}
+    \end{subfigure}
+
+    \vspace{1em}
+    \begin{subfigure}[t]{\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{committee_color/threadA/a2_weight_vs_regret.png}
+        \caption{Vote weight vs.\ solo regret: independence-weighted (left), inverse-regret-weighted (right).}
+    \end{subfigure}
+    \caption{Colour matching. (a) mean simple regret per solo policy; (b) score curves per aggregation rule; (c) aggregator weight over the 15 members against each member's solo score. 20 paired episode seeds; lower is better.}
+    \label{fig:color_regret}
+\end{figure}
+
+\subsubsection*{The colour problem exposes explicit reward hacking}
+\label{sec:hacking}
+
+The chromaticity projection in Figure \ref{fig:density_color} is the natural way to display colour, but it divides out intensity: the entire $R = G = B$ diagonal of the RGB cube collapses onto the single D65 point, and a policy pinned against a channel's upper bound is invisible. Figure \ref{fig:channels} plots the raw per-channel marginals instead, and the picture is stark. \textbf{Twelve of the fifteen agents spend 75--100\% of their queries at $B > 0.95$}, against the target's $B = 0.348$.
+
+This is not incidental, and it is not a failure of optimisation. The audited objective is very nearly a function of $B$ alone: Spearman $\rho$ with Fr\'echet distance is $+0.83$ for $B$, $+0.03$ for $R$ and $-0.12$ for $G$. Sweeping $B$ from $0.5$ to $1.0$ moves the objective from $31{,}644$ to $128{,}834$, while sweeping $R$ across its entire range moves it by $51$, about $0.16\%$. High $B$ is therefore the \emph{worst} region of the space for the true objective. But it is the \emph{best} region for the audit: the surrogate's standardised residual $|y - \mu|/\sigma$ falls from $1.42$ in the low-$B$ band to $0.69$ in the high-$B$ band, because the polynomial is smoothly wrong there and all 30 bootstrap fits agree with each other about it.
+
+The calibration-style rewards therefore pay the agents to sit exactly where the true objective is worst, and the agents comply. The three agents that do \emph{not} saturate $B$ --- UncertaintyEvolution ($6\%$), MahalanobisOOD ($20\%$), UncertaintyAnomaly ($53\%$) --- are precisely the three best solos on this problem. This is the cleanest demonstration in the study that an audit metric and a design objective can be actively anti-correlated.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.95\textwidth]{committee_color/query_channels.png}
+    \caption{Per-channel query marginals for colour matching. Dotted lines mark the target's channel values. The blue spike at $B = 1$ is the reward-hacking behaviour described in \S\ref{sec:hacking}, and is invisible in the chromaticity view.}
+    \label{fig:channels}
+\end{figure}
+
+% ---------------------------------------------------------------------------
+\subsection*{SI-2: Branin--Currin, multi-objective}
+\label{si:mo}
+% ---------------------------------------------------------------------------
+
+The multi-objective arm audits \emph{both} Branin and Currin, each with its own bootstrap surrogate, and scores policies by the log hypervolume shortfall rather than simple regret.
+
+The query maps (Figure \ref{fig:density_mo}) show why this is a different problem rather than the same problem scored differently. Branin's three basins and Currin's corner optimum are in largely different places, so an agent's query cloud has to be read against two landscapes at once, and a cloud sitting in a Branin basin is not thereby good.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.95\textwidth]{committee_branin-currin-mo/query_density_headline.png}
+    \caption{Multi-objective arm: queries for all 15 agents against \emph{both} landscapes. Solid warm contours are Branin (three closed minima); dashed cool contours are Currin, which descends smoothly to its optimum at the $(0,1)$ corner. The two objectives conflict over most of the domain, so a query cannot be good for both.}
+    \label{fig:density_mo}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}[t]{0.49\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{committee_branin-currin-mo/regret.png}
+        \caption{Solo agents}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[t]{0.49\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{committee_branin-currin-mo/threadA/a1_aggregator_bakeoff.png}
+        \caption{Aggregation rules}
+    \end{subfigure}
+
+    \vspace{1em}
+    \begin{subfigure}[t]{\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{committee_branin-currin-mo/threadA/a2_weight_vs_regret.png}
+        \caption{Vote weight vs.\ solo score: independence-weighted (left), inverse-regret-weighted (right).}
+    \end{subfigure}
+    \caption{Branin--Currin (MO). (a) mean log hypervolume shortfall per solo policy; (b) score curves per aggregation rule; (c) aggregator weight over the 15 members against each member's solo score. 20 paired episode seeds; lower is better. The three grid-search baselines (LCB, max-$\sigma$, random) are among the worst policies on this problem.}
+    \label{fig:mo_regret}
+\end{figure}
+
+% ---------------------------------------------------------------------------
+\subsection*{SI-3: Committee votes as features in the AL state space}
+\label{si:votes}
+% ---------------------------------------------------------------------------
 
 A different way to use the committee is to treat its votes as \emph{features} for a classical Bayesian-optimization rule rather than as a policy in their own right. At each step we ask the 15 agents where they would query, and add a soft penalty on distance from their preferred points to the acquisition score. We test two base rules: LCB, which balances exploration and exploitation by minimising $\mu(x) - \kappa\sigma(x)$, and max-$\sigma$, which is pure exploration.
 
@@ -340,22 +427,24 @@ A different way to use the committee is to treat its votes as \emph{features} fo
 \small
 \begin{tabular}{lccc}
 \toprule
- & Forrester & Branin & Colour \\
+ & Forrester & Colour & Branin--Currin (MO) \\
 \midrule
-LCB                 & 0.0532 & 0.884 & 11860 \\
-LCB + votes         & 0.0561 & \textbf{0.499} & 11874 \\
-$p$                 & 0.88   & \textbf{0.007} & 0.50 \\
+LCB                 & 0.0532 & 11860 & 1.604 \\
+LCB + votes         & 0.0561 & 11874 & 1.610 \\
+$p$                 & 0.88   & 0.50 & 0.50 \\
 \midrule
-max-$\sigma$        & 0.135  & 1.131 & 12149 \\
-max-$\sigma$ + votes & \textbf{0.0082} & 1.184 & 13774 \\
-$p$                 & \textbf{0.003} & 0.75 & \textbf{0.001} \\
+max-$\sigma$        & 0.135  & 12149 & 1.657 \\
+max-$\sigma$ + votes & \textbf{0.0082} & 13774 & 1.652 \\
+$p$                 & \textbf{0.003} & \textbf{0.001} & 0.68 \\
 \bottomrule
 \end{tabular}
-\caption{Votes-as-features, mean terminal simple regret over 20 paired seeds. Bold marks a significant change.}
+\caption{Votes-as-features, mean terminal score over 20 paired seeds. Bold marks a significant change. The first two columns are simple regret; the third is the log hypervolume shortfall.}
 \label{tab:votes}
 \end{table}
 
-The 9-metric experiment concluded that committee votes rescue a deliberately under-informed rule (max-$\sigma$) while adding nothing to an already-strong one (LCB). \textbf{That conclusion does not generalise.} It holds on Forrester, where max-$\sigma$ improves by a factor of 16 ($p = 0.003$) and LCB is unmoved. It \emph{inverts} on Branin, where LCB is the rule that benefits ($0.884 \to 0.499$, $p = 0.007$) and max-$\sigma$ is unmoved. And on colour the votes are actively \emph{harmful} to max-$\sigma$ ($12149 \to 13774$, $p = 0.001$): the vote-augmented policy makes no progress past its warm start on 16 of 20 seeds, because the committee's preferred points cluster tightly (the $B\!\approx\!1$ region of \S\ref{sec:hacking}) and the distance penalty pins acquisition there regardless of $\sigma$.
+The 9-metric experiment concluded that committee votes rescue a deliberately under-informed rule (max-$\sigma$) while adding nothing to an already-strong one (LCB). \textbf{That conclusion does not generalise.} It holds on Forrester, where max-$\sigma$ improves by a factor of 16 ($p = 0.003$) and LCB is unmoved. On colour the votes are actively \emph{harmful} to max-$\sigma$ ($12149 \to 13774$, $p = 0.001$): the vote-augmented policy makes no progress past its warm start on 16 of 20 seeds, because the committee's preferred points cluster tightly (the $B\!\approx\!1$ region of \S\ref{sec:hacking}) and the distance penalty pins acquisition there regardless of $\sigma$.
+
+On the multi-objective arm the votes do \emph{nothing at all}: both base rules move by less than $0.006$ in the log shortfall, neither approaching significance ($p = 0.50$ and $p = 0.68$). This is the cleanest null of the three, and it is informative because both base rules are poor here in absolute terms --- at $1.60$ and $1.66$ they sit among the worst policies in Table \ref{tab:agg}, below even \texttt{random}. The grid-search baselines scalarise the two objectives by summing them, which is a crude compromise on a problem where the objectives conflict, and no amount of committee-vote steering repairs a rule that is optimising the wrong scalar.
 
 The honest summary is that committee votes are a prior over where to look, and whether that prior helps depends on whether it happens to point somewhere useful on the problem at hand. It is not a property of the base rule's sophistication.
 
@@ -369,59 +458,41 @@ The honest summary is that committee votes are a prior over where to look, and w
     \hfill
     \begin{subfigure}[t]{0.32\textwidth}
         \centering
-        \includegraphics[width=\linewidth]{committee_branin-currin/threadB/b1_regret_paired.png}
-        \caption{Branin}
+        \includegraphics[width=\linewidth]{committee_color/threadB/b1_regret_paired.png}
+        \caption{Colour}
     \end{subfigure}
     \hfill
     \begin{subfigure}[t]{0.32\textwidth}
         \centering
-        \includegraphics[width=\linewidth]{committee_color/threadB/b1_regret_paired.png}
-        \caption{Colour}
+        \includegraphics[width=\linewidth]{committee_branin-currin-mo/threadB/b1_regret_paired.png}
+        \caption{Branin--Currin (MO)}
     \end{subfigure}
-    \caption{Paired regret with and without committee votes, for both base rules.}
+    \caption{Paired score with and without committee votes, for both base rules.}
     \label{fig:b1}
 \end{figure}
 
-The leave-one-out ablations (Figure \ref{fig:b2_pair}) isolate which member's vote carries the effect, by dropping each agent in turn from the feature vector. On Forrester the effects are small (all $|\Delta| \le 0.02$), consistent with the votes mattering as an aggregate rather than through any individual. On Branin, IntervalScore is the single most load-bearing member for both rules, and dropping it costs $0.06$ (LCB) and $0.21$ (max-$\sigma$); conversely dropping IntervalCoverage, CalibrationError1Std or MahalanobisOOD \emph{improves} max-$\sigma$ by around $0.25$--$0.29$.
+% ---------------------------------------------------------------------------
+\subsection*{SI-4: Leave-one-out ablation of committee members}
+\label{si:ablation}
+% ---------------------------------------------------------------------------
+
+The leave-one-out ablations isolate which member's vote carries the votes-as-features effect, by dropping each agent in turn from the feature vector. On Forrester (Figure \ref{fig:b2_pair}) the effects are small --- all $|\Delta| \le 0.02$ --- which is consistent with the votes mattering as an aggregate rather than through any individual member.
 
 \begin{figure}[H]
     \centering
     \begin{subfigure}[t]{0.49\textwidth}
         \centering
-        \includegraphics[width=\linewidth]{committee_branin-currin/threadB/b2_ablation_lcb.png}
+        \includegraphics[width=\linewidth]{committee_v1/threadB/b2_ablation_lcb.png}
         \caption{LCB + votes}
     \end{subfigure}
     \hfill
     \begin{subfigure}[t]{0.49\textwidth}
         \centering
-        \includegraphics[width=\linewidth]{committee_branin-currin/threadB/b2_ablation_maxsigma.png}
+        \includegraphics[width=\linewidth]{committee_v1/threadB/b2_ablation_maxsigma.png}
         \caption{max-$\sigma$ + votes}
     \end{subfigure}
-    \caption{Leave-one-out ablation on Branin. Each bar is the change in mean terminal regret when that agent's vote is removed; positive means removing it hurts.}
+    \caption{Leave-one-out ablation on Forrester. Each bar is the change in mean terminal regret when that agent's vote is removed; positive means removing it hurts.}
     \label{fig:b2_pair}
 \end{figure}
-
-% ===========================================================================
-\section{Conclusion}
-% ===========================================================================
-
-Reward-shaping with uncertainty-audit metrics does produce stylistically distinct agents, but on roughly 9--11 independent axes rather than 15, and the random-control matrices show that most of that structure is intrinsic to the metric definitions rather than learned. Two of the fifteen metrics (CalibrationError and KuleshovCalibration) are effectively identical as reward signals, correlating at $+1.00$ under both trained and random policies on every problem.
-
-The central negative result is that \textbf{no committee aggregation scheme we tested beats the best individual agent on any of the three problems}, and on two of them a uniformly random acquisition policy is statistically indistinguishable from the best agent. The one scheme that appeared to win in a smaller 9-metric version of this experiment, inverse-regret weighting, does not survive the expansion to 15 metrics; it was an artifact of a committee in which a single member dominated. Averaging members' picks and weighting by behavioural independence remain reliably catastrophic.
-
-The most interesting finding is negative in a more specific way. On the colour-matching problem the audited objective is essentially a function of one input channel, and the surrogate's calibration is \emph{best} in precisely the region where the design objective is \emph{worst}. Twelve of fifteen agents duly spend almost their entire budget there. The agents are not failing to optimise; they are optimising exactly what they were paid to optimise, and what they were paid to optimise is anti-correlated with the goal. The three agents that resist this --- all three of the signal-based rewards, which score the trajectory of uncertainty rather than its instantaneous calibration --- are the three best performers on that problem, and signal-based agents are the best solo on all three problems.
-
-This suggests the practical conclusion is not about committees at all. It is that \emph{instantaneous calibration quality is a poor acquisition signal}, because a surrogate can be well-calibrated and uninformative at the same time, while metrics that score how uncertainty \emph{evolves} retain some connection to whether the campaign is making progress.
-
-\subsection*{Caveats}
-
-Several limitations bear on how far these results generalise.
-
-\begin{itemize}
-\item \textbf{Surrogate capacity.} All results are conditioned on a bootstrap polynomial surrogate whose best achievable $R^2$ is $0.93$--$0.99$. Its $\sigma$ is purely epistemic and carries no noise model, which several of the audit metrics implicitly assume it does.
-\item \textbf{Acquisition-grid resolution.} The grid-search baselines search 300 points in 1-D but only 225 (Branin) and 512 (colour) candidates in higher dimensions, since a 300-per-axis grid is infeasible. Cross-problem comparisons of LCB and max-$\sigma$ are therefore not strictly like-for-like.
-\item \textbf{Simple regret on a multimodal problem.} Branin has three equal minima, and simple regret gives no credit for finding more than one, while rewarding a single lucky query into any of them. This inflates the apparent competitiveness of random search on that problem.
-\item \textbf{Budget.} 100 acquisition steps after a 20-point warm start is short for a 3-D problem; the colour saturation at $13878$ reflects policies that never improved on their warm start at all.
-\end{itemize}
 
 \end{document}
