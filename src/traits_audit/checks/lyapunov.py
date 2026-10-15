@@ -6,9 +6,17 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 
 from ..base import AuditCategory, AuditCheck, AuditResult
+from ..stability.lyapunov_eq import (
+    make_gd_predictor,
+    numerical_jacobian,
+    numerical_jacobian_batched,
+)
 
 
 # ── Pure computation helpers (numpy-only, no matplotlib) ─────────────────────
+# Thin adapters over the shared implementations in stability.lyapunov_eq; the
+# private names are kept because the check (and its tests) use the 1-argument
+# ``predictor(state)`` calling convention.
 
 def _numerical_jacobian(
     predictor,
@@ -16,13 +24,7 @@ def _numerical_jacobian(
     dx: float = 1e-4,
 ) -> np.ndarray:
     """n×n Jacobian of predictor(state) → ℝⁿ via central differences."""
-    n = len(state)
-    J = np.zeros((n, n), dtype=np.float64)
-    for i in range(n):
-        s_plus = state.copy(); s_plus[i] += dx
-        s_minus = state.copy(); s_minus[i] -= dx
-        J[:, i] = (predictor(s_plus) - predictor(s_minus)) / (2.0 * dx)
-    return J
+    return numerical_jacobian(lambda s, _a: predictor(s), state, None, dx)
 
 
 def _eigenvalues(J: np.ndarray) -> np.ndarray:
@@ -31,71 +33,10 @@ def _eigenvalues(J: np.ndarray) -> np.ndarray:
 
 def _gd_predictor(f_scalar, alpha: float = 0.01, eps: float = 1e-5):
     """Wrap f: ℝⁿ → ℝ as the discrete gradient-descent step x_{t+1} = x_t − α∇f."""
-    def predictor(state: np.ndarray) -> np.ndarray:
-        n = len(state)
-        grad = np.zeros(n)
-        for i in range(n):
-            s_p = state.copy(); s_p[i] += eps
-            s_m = state.copy(); s_m[i] -= eps
-            grad[i] = (f_scalar(s_p) - f_scalar(s_m)) / (2.0 * eps)
-        return state - alpha * grad
-    return predictor
+    return make_gd_predictor(f_scalar, alpha=alpha, eps=eps)
 
 
-def _numerical_jacobian_batched(
-    f_batched,
-    state: np.ndarray,
-    alpha: float,
-    dx: float = 1e-4,
-    eps: float = 1e-5,
-) -> np.ndarray:
-    """Same n×n Jacobian as ``_numerical_jacobian(_gd_predictor(f_scalar, alpha,
-    eps), state, dx)`` for the scalar-callable ``f_scalar`` that ``f_batched``
-    batches — but issued as exactly ONE call to ``f_batched`` covering all
-    4n² perturbed states the nested (Jacobian-of-a-numerically-differentiated-
-    gradient) computation needs, instead of 4n² separate scalar calls.
-
-    For a surrogate whose real cost is per-call dispatch overhead rather than
-    per-row compute (e.g. a JAX-jitted model, where a threaded loop of many
-    small calls empirically gave ~0% speedup — batched execution is the
-    idiomatic fix for that case, not concurrency), this is where the actual
-    win comes from.
-
-    Parameters
-    ----------
-    f_batched : callable
-        ``(M, D) ndarray -> (M,) ndarray``. Must accept an arbitrary batch
-        size M and return one scalar per row — the batched counterpart of
-        the scalar ``f_scalar: (D,) ndarray -> float`` that
-        ``_numerical_jacobian``/``_gd_predictor`` take.
-    state : (D,) ndarray
-    alpha : float
-        Gradient-descent step size (see ``_gd_predictor``).
-    """
-    n = len(state)
-    # Outer perturbations (2n states): outer[2i] = state + dx*e_i, outer[2i+1] = state - dx*e_i.
-    outer = np.tile(state, (2 * n, 1)).astype(np.float64)
-    idx = np.arange(n)
-    outer[2 * idx, idx] += dx
-    outer[2 * idx + 1, idx] -= dx
-
-    # Each of the 2n outer states needs its own 2n-perturbation gradient estimate
-    # -> 2n * 2n = 4n^2 states total, batched into one call.
-    inner = np.repeat(outer, 2 * n, axis=0)  # (4n^2, D)
-    base = (np.arange(2 * n) * 2 * n)[:, None]  # (2n, 1) row offsets into `inner`
-    rows_p = (base + 2 * idx[None, :]).ravel()
-    rows_m = (base + 2 * idx[None, :] + 1).ravel()
-    cols = np.tile(idx, 2 * n)
-    inner[rows_p, cols] += eps
-    inner[rows_m, cols] -= eps
-
-    flat = np.asarray(f_batched(inner), dtype=np.float64).reshape(2 * n, 2 * n)
-    grad = (flat[:, 0::2] - flat[:, 1::2]) / (2.0 * eps)  # (2n, n) == (2n, D)
-    predictor_out = outer - alpha * grad  # (2n, D)
-
-    J = np.zeros((n, n), dtype=np.float64)
-    J[:, idx] = ((predictor_out[2 * idx] - predictor_out[2 * idx + 1]) / (2.0 * dx)).T
-    return J
+_numerical_jacobian_batched = numerical_jacobian_batched
 
 
 # ── Check ─────────────────────────────────────────────────────────────────────

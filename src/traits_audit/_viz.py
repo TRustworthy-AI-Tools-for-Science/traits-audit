@@ -14,9 +14,15 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import numpy as np
-from scipy.linalg import solve_discrete_lyapunov
 
 import matplotlib.pyplot as plt
+
+from .stability.lyapunov_eq import (  # noqa: F401  (re-exports)
+    compute_lyapunov,
+    eigenvalues_and_stability,
+    make_gd_predictor,
+    numerical_jacobian,
+)
 
 # ── Publication rcParams (applied once at import) ───────────────────────────
 
@@ -56,68 +62,8 @@ _CHECK_ABBREV: Dict[str, str] = {
 _STATE_KEYS = ["uncertainty", "pool_sigma_mean", "pool_sigma_max", "abs_error"]
 
 
-# ── Core Lyapunov functions ─────────────────────────────────────────────────
-
-def numerical_jacobian(
-    predictor,
-    state: np.ndarray,
-    action: np.ndarray | None = None,
-    dx: float = 1e-4,
-) -> np.ndarray:
-    """n×n Jacobian of predictor(state, action) → ℝⁿ via central differences."""
-    n = len(state)
-    J = np.zeros((n, n), dtype=np.float64)
-    for i in range(n):
-        s_plus  = state.copy(); s_plus[i]  += dx
-        s_minus = state.copy(); s_minus[i] -= dx
-        col = (predictor(s_plus, action) - predictor(s_minus, action)) / (2.0 * dx)
-        J[:, i] = col
-    return J
-
-
-def eigenvalues_and_stability(J: np.ndarray) -> dict:
-    """Eigenvalue spectrum and discrete-time stability indicators."""
-    eigs = np.linalg.eigvals(J)
-    mags = np.abs(eigs)
-    return {
-        "eigenvalues": eigs,
-        "magnitudes":  mags,
-        "lambda_max":  float(mags.max()),
-        "lambda_min":  float(mags.min()),
-        "is_stable":   bool((mags < 1.0).all()),
-        "n_unstable":  int((mags >= 1.0).sum()),
-    }
-
-
-def compute_lyapunov(A: np.ndarray, rho_max: float = 0.99) -> np.ndarray | None:
-    """Solve discrete Lyapunov equation Aᵀ P A − P = −I.
-
-    If ``A``'s spectral radius is ≥ 1, ``A`` is rescaled to spectral radius
-    *rho_max* before solving — same approach as
-    :func:`traits_audit.dmdc.compute_gramians`. Returns ``None`` only if
-    ``solve_discrete_lyapunov`` itself raises.
-    """
-    rho = float(np.abs(np.linalg.eigvals(A)).max())
-    if rho >= 1.0:
-        A = A * (rho_max / rho)
-    try:
-        return solve_discrete_lyapunov(A.T, np.eye(len(A)))
-    except Exception:
-        return None
-
-
-def make_gd_predictor(f_scalar, alpha: float = 0.01, eps: float = 1e-5):
-    """Discrete gradient-descent step predictor: x_{t+1} = x_t − α ∇f(x_t)."""
-    def predictor(state: np.ndarray, action=None) -> np.ndarray:
-        n = len(state)
-        grad = np.zeros(n)
-        for i in range(n):
-            s_p = state.copy(); s_p[i] += eps
-            s_m = state.copy(); s_m[i] -= eps
-            grad[i] = (f_scalar(s_p) - f_scalar(s_m)) / (2.0 * eps)
-        return state - alpha * grad
-    return predictor
-
+# ── Core Lyapunov functions: single source of truth in stability.lyapunov_eq ──
+# (re-exported here because demos and external callers import them from _viz)
 
 # ── Private save helper ─────────────────────────────────────────────────────
 
@@ -1726,7 +1672,7 @@ def run_dmdc_lyapunov_analysis(
     ``P``, ``A_r``, ``B_r``, ``U_r``, ``csv_path``.
     """
     import csv as _csv
-    from traits_audit import dmdc as dm
+    from traits_audit.stability import dmdc as dm
 
     aug_states = np.asarray(aug_states, dtype=np.float64)
     T = len(aug_states)

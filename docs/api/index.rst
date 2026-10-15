@@ -9,3 +9,4 @@ API reference
    checks
    mlflow_logger
    base
+   stability

@@ -519,7 +519,7 @@ def run(
         plot_exploration_campaign,
         plot_discovery_rate,
     )
-    from traits_audit import dmdc as dm
+    from traits_audit.stability import dmdc as dm
 
     # Build augmented state trajectory and compute per-step lambda_max via
     # growing-prefix DMDc fits (analogous to battery-forecast's stability_convergence).

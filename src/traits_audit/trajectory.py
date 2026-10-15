@@ -31,7 +31,7 @@ from typing import Sequence
 
 import numpy as np
 
-from . import dmdc as _dmdc
+from .stability import dmdc as _dmdc
 
 
 # ─────────────────────────────────────────────────────────────────────────────
