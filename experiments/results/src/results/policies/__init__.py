@@ -1,4 +1,9 @@
-"""Battery charge-rate active learning policies.
+"""State-space active learning policies.
+
+Originally developed for battery charge-rate selection (the battery-forecast
+project); they only need numpy and :mod:`traits_audit`.  See
+``experiments/results/scripts/steer_state_space.py`` for their use as
+uncertainty-state steering policies (paper, "Novel Active Learning Policies").
 
 Each policy inherits from :class:`BasePolicy` and implements
 :meth:`~BasePolicy.select_next`.  The shared :meth:`~BasePolicy.run` loop
@@ -53,9 +58,9 @@ Usage
 -----
 ::
 
-    from battery_forecast.policies import LCBPolicy, StateSpacePolicy
-    from battery_forecast.policies import BayesianDynamicsPolicy
-    from battery_forecast.policies.base import resistance_degradation
+    from results.policies import LCBPolicy, StateSpacePolicy
+    from results.policies import BayesianDynamicsPolicy
+    from results.policies.base import resistance_degradation
 
     policy = LCBPolicy(model, kappa=2.0, scaler=scaler,
                        degradation_fn=resistance_degradation)
@@ -68,7 +73,7 @@ Usage
     history = policy.run(initial_state, candidates, oracle_fn, n_iterations=20)
 """
 
-from .base import BasePolicy, _default_degradation, resistance_degradation
+from .base import BasePolicy, OracleFailure, resistance_degradation
 from .random import RandomPolicy
 from .greedy import GreedyPolicy
 from .constant import ConstantPolicy
@@ -86,6 +91,7 @@ from .state_space_audit import (
 
 __all__ = [
     "BasePolicy",
+    "OracleFailure",
     "ConstantPolicy",
     "RandomPolicy",
     "GreedyPolicy",

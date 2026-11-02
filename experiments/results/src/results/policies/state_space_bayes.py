@@ -1,6 +1,6 @@
 """Bayesian dynamics policy with online precision updates and information-gain scoring.
 
-Extends :class:`~battery_forecast.policies.StateSpacePolicy` in three ways,
+Extends :class:`~results.policies.StateSpacePolicy` in three ways,
 each grounded in the accompanying literature:
 
 1. **Online Bayesian precision update (Eldredge & Mousavi, 2026)**
@@ -62,7 +62,7 @@ each grounded in the accompanying literature:
           − γ_info · h(z, a) / (1 + h(z, a))     ← Cai 2014 / Eldredge 2026
           − γ_sub · ρ(ŝ_GP, U_r)                 ← Li 2021 ALSL
 
-**Key difference from** :class:`~battery_forecast.policies.StateSpacePolicy`
+**Key difference from** :class:`~results.policies.StateSpacePolicy`
 
 StateSpacePolicy refits the full SVD + OLS dynamics on *all* historical data
 at every :meth:`observe` call.  BayesianDynamicsPolicy fits the SVD basis
@@ -102,12 +102,10 @@ from typing import Callable, Optional
 
 import numpy as np
 
-from .. import utils
-from ..oracle import OracleFailure
-from .base import BasePolicy
+from .base import BasePolicy, OracleFailure
 from .lcb import LCBPolicy
 
-log = utils.get_logger(__name__, level=logging.INFO)
+log = logging.getLogger(__name__)
 
 
 class BayesianDynamicsPolicy(BasePolicy):
@@ -238,7 +236,7 @@ class BayesianDynamicsPolicy(BasePolicy):
         """Concatenate ECM state with scaled uncertainty vector (belief state).
 
         Follows the belief-state MDP augmentation of Kaelbling et al. (1998)
-        used in :class:`~battery_forecast.policies.StateSpacePolicy`.
+        used in :class:`~results.policies.StateSpacePolicy`.
         Returns the state unchanged when no uncertainty vector is available.
         """
         if uncertainty is None:
@@ -538,7 +536,7 @@ class BayesianDynamicsPolicy(BasePolicy):
     ) -> tuple[np.ndarray, float, np.ndarray]:
         """Select the candidate minimising the composite information-theoretic score.
 
-        Falls back to :class:`~battery_forecast.policies.LCBPolicy` (GP-only)
+        Falls back to :class:`~results.policies.LCBPolicy` (GP-only)
         until ``min_fit_obs`` transitions have been observed.
 
         Parameters
@@ -588,7 +586,7 @@ class BayesianDynamicsPolicy(BasePolicy):
         """Active learning loop with optional uncertainty oracle.
 
         Identical interface to
-        :meth:`~battery_forecast.policies.StateSpacePolicy.run`.
+        :meth:`~results.policies.StateSpacePolicy.run`.
 
         Parameters
         ----------

@@ -1,7 +1,7 @@
 """State-space policies that use the audit system health vector as belief state.
 
-Standard usage of :class:`~battery_forecast.policies.StateSpacePolicy` and
-:class:`~battery_forecast.policies.BayesianDynamicsPolicy` appends the
+Standard usage of :class:`~results.policies.StateSpacePolicy` and
+:class:`~results.policies.BayesianDynamicsPolicy` appends the
 **per-parameter ECM variance vector** (shape ``(n_params,)``) to the battery
 state when augmenting the belief state.  This represents the *magnitude* of
 uncertainty for each individual circuit element.
@@ -53,7 +53,7 @@ It encodes two classes of experiment health:
   Zero means the model structure captures all physical relaxation processes.
   Compute via :func:`drt_peak_mismatch_result`.
 
-Assembling this vector from a run of :class:`~battery_forecast.audit.AuditPipeline`
+Assembling this vector from a run of ``battery_forecast.audit.AuditPipeline``
 is handled by :func:`make_audit_health_vector`.
 
 Both policies add an **explicit health cost** (weight ``gamma_health``) to
@@ -85,12 +85,12 @@ from typing import Callable, List, Optional
 
 import numpy as np
 
-from .. import utils
-from ..audit.base import AuditCategory, AuditResult
+from traits_audit.base import AuditCategory, AuditResult
+
 from .state_space import StateSpacePolicy
 from .state_space_bayes import BayesianDynamicsPolicy
 
-log = utils.get_logger(__name__, level=logging.INFO)
+log = logging.getLogger(__name__)
 
 # ── Canonical audit health vector ─────────────────────────────────────────────
 
@@ -132,10 +132,10 @@ def make_audit_health_vector(results: list, fill_value: float = 0.0) -> np.ndarr
     ----------
     results : list of AuditResult
         Output of any combination of
-        :meth:`~battery_forecast.audit.AuditPipeline.run_tsmodel_audit`,
-        :meth:`~battery_forecast.audit.AuditPipeline.run_evaluate_audit`, and
-        :meth:`~battery_forecast.audit.AuditPipeline.run_inference_audit`,
-        plus any :class:`~battery_forecast.audit.base.AuditResult` objects
+        ``battery_forecast.audit.AuditPipeline.run_tsmodel_audit``,
+        ``battery_forecast.audit.AuditPipeline.run_evaluate_audit``, and
+        ``battery_forecast.audit.AuditPipeline.run_inference_audit``,
+        plus any ``battery_forecast.audit.base.AuditResult`` objects
         returned by :func:`drt_peak_mismatch_result`.
     fill_value : float
         Value to use for checks that did not run or returned ``None``.
@@ -324,7 +324,7 @@ def drt_peak_mismatch_result(
     ----------
     drt_dict : dict
         ``DRTdict`` returned by
-        :func:`~battery_forecast.analysis.drt.get_drt_impedance` — a dict of
+        ``battery_forecast.analysis.drt.get_drt_impedance`` — a dict of
         ``np.ndarray([tau, gamma]).T`` per spectrum (keyed by integer index).
     n_ecm_elements : int
         Number of RC/CPE/ZARC elements in the ECM circuit string.  This is the
@@ -384,9 +384,9 @@ class AuditStateSpacePolicy(StateSpacePolicy):
     """StateSpacePolicy augmented with the audit system health vector.
 
     Replaces the per-parameter ECM variance augmentation of
-    :class:`~battery_forecast.policies.StateSpacePolicy` with the
+    :class:`~results.policies.StateSpacePolicy` with the
     12-dimensional **audit health vector** produced by
-    :class:`~battery_forecast.audit.AuditPipeline`.
+    ``battery_forecast.audit.AuditPipeline``.
 
     The augmented belief state is::
 
@@ -409,7 +409,7 @@ class AuditStateSpacePolicy(StateSpacePolicy):
     ``h(v) = rho − CE − anomaly_frac`` (see :func:`_health_score`).
 
     The :meth:`make_audit_health_vector` class method assembles ``v_audit``
-    from a list of :class:`~battery_forecast.audit.AuditResult` objects.
+    from a list of ``battery_forecast.audit.AuditResult`` objects.
 
     Parameters
     ----------
@@ -417,8 +417,13 @@ class AuditStateSpacePolicy(StateSpacePolicy):
         Weight on the audit health bonus.  Positive values encourage the
         policy to select protocols that are predicted to maintain or improve
         experiment health.  Set to 0.0 to disable (equivalent to the base
-        :class:`~battery_forecast.policies.StateSpacePolicy` except for the
+        :class:`~results.policies.StateSpacePolicy` except for the
         different augmentation vector).
+    health_fn : callable, optional
+        ``f(v_audit) -> float`` (higher = healthier) applied to the predicted
+        next audit vector.  Defaults to :func:`_health_score`, which assumes
+        the 12-field battery layout of :data:`AUDIT_HEALTH_FIELDS`; pass your
+        own when the audit vector has a different layout.
     All other parameters are inherited from StateSpacePolicy.
     """
 
@@ -431,6 +436,7 @@ class AuditStateSpacePolicy(StateSpacePolicy):
         R_weight: float = 0.01,
         C_rate_bonus: float = 0.0,
         gamma_health: float = 0.5,
+        health_fn: Optional[Callable[[np.ndarray], float]] = None,
         min_fit_obs: int = 5,
         num_action_features: int = 6,
         uncertainty_weight: float = 1.0,
@@ -451,6 +457,7 @@ class AuditStateSpacePolicy(StateSpacePolicy):
             scaler=scaler,
         )
         self.gamma_health = gamma_health
+        self.health_fn = health_fn or _health_score
 
     # ── Health vector interface ───────────────────────────────────────────
 
@@ -507,7 +514,7 @@ class AuditStateSpacePolicy(StateSpacePolicy):
             v_pred = s_aug_next[n:].copy()
             if self.uncertainty_weight > 0:
                 v_pred /= self.uncertainty_weight
-            health_bonus = self.gamma_health * _health_score(v_pred)
+            health_bonus = self.gamma_health * self.health_fn(v_pred)
 
         return state_cost + control_cost - uncertainty_bonus - c_rate_bonus - health_bonus
 
@@ -518,9 +525,9 @@ class AuditBayesianDynamicsPolicy(BayesianDynamicsPolicy):
     """BayesianDynamicsPolicy augmented with the audit system health vector.
 
     Replaces the per-parameter ECM variance augmentation of
-    :class:`~battery_forecast.policies.BayesianDynamicsPolicy` with the
+    :class:`~results.policies.BayesianDynamicsPolicy` with the
     12-dimensional **audit health vector** produced by
-    :class:`~battery_forecast.audit.AuditPipeline`.
+    ``battery_forecast.audit.AuditPipeline``.
 
     The augmented belief state is::
 
@@ -543,7 +550,9 @@ class AuditBayesianDynamicsPolicy(BayesianDynamicsPolicy):
     ----------
     gamma_health : float
         Weight on the audit health bonus.  Set to 0.0 to fall back to the
-        behaviour of :class:`~battery_forecast.policies.BayesianDynamicsPolicy`.
+        behaviour of :class:`~results.policies.BayesianDynamicsPolicy`.
+    health_fn : callable, optional
+        See :class:`AuditStateSpacePolicy`.
     All other parameters are inherited from BayesianDynamicsPolicy.
     """
 
@@ -558,6 +567,7 @@ class AuditBayesianDynamicsPolicy(BayesianDynamicsPolicy):
         gamma_info: float = 1.0,
         gamma_sub: float = 0.5,
         gamma_health: float = 0.5,
+        health_fn: Optional[Callable[[np.ndarray], float]] = None,
         lambda_reg: float = 1e-3,
         min_fit_obs: int = 5,
         reanchor_freq: Optional[int] = None,
@@ -584,6 +594,7 @@ class AuditBayesianDynamicsPolicy(BayesianDynamicsPolicy):
             scaler=scaler,
         )
         self.gamma_health = gamma_health
+        self.health_fn = health_fn or _health_score
 
     # ── Health vector interface ───────────────────────────────────────────
 
@@ -640,7 +651,7 @@ class AuditBayesianDynamicsPolicy(BayesianDynamicsPolicy):
             v_pred = s_aug_next[n:].copy()
             if self.uncertainty_weight > 0:
                 v_pred /= self.uncertainty_weight
-            health_bonus = self.gamma_health * _health_score(v_pred)
+            health_bonus = self.gamma_health * self.health_fn(v_pred)
 
         return (
             state_cost + control_cost

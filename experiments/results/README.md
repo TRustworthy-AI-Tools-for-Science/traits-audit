@@ -77,15 +77,45 @@ src/results/
   viz.py               figure code shared by the demos
   mechanism_check.py   Gramian mechanism-check printout
   committee/           RL environment, rewards, agents, analysis CLI
-  policies/            state-space steering policies (work in progress; see below)
-scripts/               figure drivers and ablations
+  policies/            state-space active-learning policies (numpy + traits-audit only)
+scripts/               figure drivers, ablations, state-space steering study
 hpc/                   SLURM templates
 tests/
 ```
 
-**`policies/` does not import yet.** It was copied from the
-`battery_forecast` project and still uses that project's relative imports
-(`..utils`, `..oracle`, `..audit.base`). Nothing else imports it.
+### State-space steering (paper: "Novel Active Learning Policies")
+
+`results.policies` learns the uncertainty-state dynamics
+x<sub>t+1</sub> = A x<sub>t</sub> + B u<sub>t</sub> online and uses them to
+choose the next query. Two standalone scripts apply the policies to the
+Forrester problem:
+
+```bash
+python experiments/results/scripts/steer_state_space.py --out _results/steering
+python experiments/results/scripts/analyze_steering.py  --in  _results/steering
+```
+
+`steer_state_space.py` follows the experimental plan's conventions:
+
+- Metrics are evaluated on a fixed reference grid (§3.3).
+- Metrics are z-scored against the warm-start baseline (§3.1).
+- A random-probe fraction of the budget is reserved (§3.4).
+- The metrics are split into a **steering** subset, which the policy sees,
+  and an **audit-only** subset, which it never sees (§6.1). Choose the split
+  with `--steering`.
+
+It compares Random, LCB, StateSpace, BayesianDynamics and their
+health-steered `audit-*` variants, with seeds paired across policies.
+
+`analyze_steering.py` tests the four §6.1 predictions against the random
+policy on the same seeds:
+
+1. Steered metrics improve.
+2. Audit-only metrics don't.
+3. Cross-group co-movement breaks.
+4. A drifts once the loop is closed.
+
+It writes `steering_summary.json` and `steering_summary.png`.
 
 ## Tests
 

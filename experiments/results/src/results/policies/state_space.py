@@ -25,7 +25,7 @@ in which the agent conditions on its full posterior over hidden variables rather
 than a point estimate.
 
 Before enough transitions have been observed to fit the dynamics model, the
-policy falls back to :class:`~battery_forecast.policies.LCBPolicy` (GP-only).
+policy falls back to :class:`~results.policies.LCBPolicy` (GP-only).
 
 References
 ----------
@@ -56,12 +56,10 @@ from typing import Callable, Optional
 
 import numpy as np
 
-from .. import utils
-from ..oracle import OracleFailure
-from .base import BasePolicy
+from .base import BasePolicy, OracleFailure
 from .lcb import LCBPolicy
 
-log = utils.get_logger(__name__, level=logging.INFO)
+log = logging.getLogger(__name__)
 
 
 class StateSpacePolicy(BasePolicy):
@@ -365,7 +363,7 @@ class StateSpacePolicy(BasePolicy):
     ) -> tuple[np.ndarray, float, np.ndarray]:
         """Select the candidate that minimises the composite cost.
 
-        Falls back to :class:`~battery_forecast.policies.LCBPolicy` (GP-only)
+        Falls back to :class:`~results.policies.LCBPolicy` (GP-only)
         until ``min_fit_obs`` transitions have been observed.
 
         Parameters

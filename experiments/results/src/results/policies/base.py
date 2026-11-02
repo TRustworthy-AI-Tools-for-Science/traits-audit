@@ -1,4 +1,9 @@
-"""Abstract base class for battery active learning policies."""
+"""Abstract base class for state-action active learning policies.
+
+Originally written for battery charge-protocol selection (hence the ECM /
+protocol vocabulary); nothing here is battery-specific beyond the optional
+:func:`resistance_degradation` helper.
+"""
 
 from __future__ import annotations
 
@@ -8,10 +13,14 @@ from typing import Callable, Optional
 
 import numpy as np
 
-from .. import utils
-from ..oracle import OracleFailure
+log = logging.getLogger(__name__)
 
-log = utils.get_logger(__name__, level=logging.INFO)
+
+class OracleFailure(RuntimeError):
+    """Raised by an ``oracle_fn`` when the experiment cannot be completed.
+
+    The run loops record the failing step and stop instead of propagating.
+    """
 
 
 def _default_degradation(state: np.ndarray) -> float:
@@ -131,7 +140,7 @@ class BasePolicy(ABC):
 
         Called automatically by :meth:`run` after each iteration.
         Stateless policies leave this as a no-op.  Stateful policies
-        (e.g. :class:`~battery_forecast.policies.StateSpacePolicy`)
+        (e.g. :class:`~results.policies.StateSpacePolicy`)
         override it to update their internal models.
         """
 
