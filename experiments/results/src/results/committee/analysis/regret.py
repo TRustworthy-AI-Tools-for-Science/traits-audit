@@ -34,10 +34,6 @@ from typing import Callable, Optional, Union
 
 import numpy as np
 
-from results.cal_demo import oracle as forrester_oracle
-from results.committee.env import DEFAULT_EPISODE_LENGTH, DEFAULT_WARMSTART
-from results.committee.problems import ForresterProblem, Problem, get_problem
-from results.committee.rewards import REWARD_REGISTRY
 from results.committee.analysis.rollouts import (
     lcb_policy,
     max_sigma_policy,
@@ -45,7 +41,9 @@ from results.committee.analysis.rollouts import (
     run_rollout,
     sac_policy,
 )
-
+from results.committee.env import DEFAULT_EPISODE_LENGTH, DEFAULT_WARMSTART
+from results.committee.problems import ForresterProblem, Problem, get_problem
+from results.committee.rewards import REWARD_REGISTRY
 
 AGENT_NAMES: list[str] = list(REWARD_REGISTRY.keys())
 
@@ -284,6 +282,7 @@ def render_regret_figure(
     value is already a log).
     """
     import matplotlib.pyplot as plt
+
     from results.committee.analysis import style as st
 
     fig, ax = plt.subplots(figsize=(12.5, 6.2))   # extra width for the legend

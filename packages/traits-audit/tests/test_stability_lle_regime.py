@@ -1,7 +1,6 @@
 """Tests for traits_audit.stability.lle / regime (ported from battery-forecast exp4)."""
 import numpy as np
 import pytest
-
 from traits_audit.stability.detrend import RegimeDetrender
 from traits_audit.stability.lle import (
     classify_lle_regime,
@@ -144,11 +143,11 @@ class TestExtractBackgroundTrend:
         assert residual.shape == raw_state.shape
 
     def test_trend_matches_independently_constructed_regime_detrender_baseline(self):
-        """Drift-guard against a future _detrend_trajectory semantics
+        """Drift-guard against a future detrend_trajectory semantics
         change: trend[i] must equal an INDEPENDENTLY built
         RegimeDetrender().update(...) baseline (state - detrended) at
         hand-picked steps, using regimes=None's documented all-zero-vector
-        semantics directly (not reaching into _detrend_trajectory again)."""
+        semantics directly (not reaching into detrend_trajectory again)."""
         rng = np.random.default_rng(2)
         raw_state = rng.standard_normal((15, 3)) + np.linspace(0, 3, 15)[:, None]
         trend, _ = extract_background_trend(raw_state)
@@ -183,7 +182,7 @@ class TestClassifyLleRegime:
     def test_periodic_like_on_noisy_near_zero_values(self):
         rng = np.random.default_rng(2)
         values = rng.standard_normal(30) * 0.5  # centered at 0, noisy
-        label, median, p = classify_lle_regime(values)
+        label, _median, p = classify_lle_regime(values)
         assert label == "PERIODIC-LIKE"
         assert p >= 0.05
 
@@ -204,7 +203,7 @@ class TestClassifyLleRegime:
         from scipy.stats import wilcoxon
         rng = np.random.default_rng(3)
         values = 0.3 + rng.standard_normal(20) * 0.1
-        label, median, p = classify_lle_regime(values)
+        label, _median, p = classify_lle_regime(values)
         _, p_hardcoded = wilcoxon(values, alternative="greater")
         assert label == "CHAOTIC"
         assert p == pytest.approx(p_hardcoded)

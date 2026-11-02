@@ -67,6 +67,9 @@ ignore = [
     "S603", "S301", "S105",
     # Style suggestions — ternary, contextlib.suppress, Yoda — not required.
     "SIM105", "SIM108", "SIM300",
+    # dict(...) keyword-call form is used intentionally for multi-line kwargs
+    # (matches pylint's disabled use-dict-literal below).
+    "C408",
     # Longer lines are acceptable (docstrings, long mathematical expressions).
     "E501",
 ]

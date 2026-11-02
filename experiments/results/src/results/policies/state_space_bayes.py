@@ -271,7 +271,7 @@ class BayesianDynamicsPolicy(BasePolicy):
         )
         aug_states = np.array([
             self._build_augmented(s, u if u is not None else np.zeros(u_dim))
-            for s, u in zip(self._state_history, self._uncertainty_history)
+            for s, u in zip(self._state_history, self._uncertainty_history, strict=False)
         ])  # (T, n_aug)
         A = np.array(self._action_history[:-1])  # (T-1, m)
         T = len(A)

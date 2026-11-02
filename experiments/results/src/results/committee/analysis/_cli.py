@@ -201,10 +201,15 @@ def _run_thread_gather(args) -> None:
     is cheap and needs no trained models.
     """
     import json
-    from results.committee.analysis.thread_regret import read_thread_csv
+
     from results.committee.analysis.thread_figures import (
-        render_a1, render_a2, render_a3, render_ablation, render_b1,
+        render_a1,
+        render_a2,
+        render_a3,
+        render_ablation,
+        render_b1,
     )
+    from results.committee.analysis.thread_regret import read_thread_csv
 
     out = args.output_dir
     stem = f"thread_{args.thread}_regret"
@@ -290,7 +295,7 @@ def _run_corr_random(args) -> None:
     print(f"[corr-random] clusters at threshold={args.cluster_threshold}: "
           f"{n_clusters}")
     for cid in sorted(set(labels.tolist())):
-        members = [n for n, l in zip(result.agent_names, labels) if l == cid]
+        members = [n for n, lab in zip(result.agent_names, labels, strict=False) if lab == cid]
         print(f"  cluster {cid}: {', '.join(members)}")
 
     out = args.output_dir
@@ -302,7 +307,7 @@ def _run_corr_random(args) -> None:
     )
     render_heatmap(
         result,
-        title=f"Reward correlation - random rollouts, cluster-ordered",
+        title="Reward correlation - random rollouts, cluster-ordered",
         output_path=out / "correlation_random_clustered.png",
         cluster_labels=labels,
     )
@@ -333,7 +338,7 @@ def _run_corr_trained(args) -> None:
     print(f"[corr-trained] clusters at threshold={args.cluster_threshold}: "
           f"{n_clusters}")
     for cid in sorted(set(labels.tolist())):
-        members = [n for n, l in zip(result.agent_names, labels) if l == cid]
+        members = [n for n, lab in zip(result.agent_names, labels, strict=False) if lab == cid]
         print(f"  cluster {cid}: {', '.join(members)}")
 
     out = args.output_dir
@@ -345,7 +350,7 @@ def _run_corr_trained(args) -> None:
     )
     render_heatmap(
         result,
-        title=f"Reward correlation - trained policies, cluster-ordered",
+        title="Reward correlation - trained policies, cluster-ordered",
         output_path=out / "correlation_trained_clustered.png",
         cluster_labels=labels,
     )
@@ -386,6 +391,7 @@ def _run_density(args) -> None:
 
 def _run_regret(args) -> None:
     import json
+
     from results.committee.analysis.regret import (
         paired_test,
         render_regret_figure,
@@ -422,7 +428,8 @@ def _run_regret(args) -> None:
 
 def _run_learning_curves(args) -> None:
     from results.committee.analysis.learning_curves import (
-        load_learning_curves, render_learning_curves_figure,
+        load_learning_curves,
+        render_learning_curves_figure,
         write_learning_curves_csv,
     )
 
@@ -475,7 +482,7 @@ def _run_thread_b_shard_ablations(args, voter, result, tag, ablate_only) -> None
         )
         rows = ["dropped_agent,episode_seed,terminal_regret"]
         for name, arr in ablation.items():
-            for es, v in zip(result.seeds, arr):
+            for es, v in zip(result.seeds, arr, strict=False):
                 rows.append(f"{name},{es},{v:.6f}")
         (args.output_dir / f"{csv_stem}{tag}.csv").write_text(
             "\n".join(rows) + "\n"
@@ -484,12 +491,15 @@ def _run_thread_b_shard_ablations(args, voter, result, tag, ablate_only) -> None
 
 def _run_thread_b(args) -> None:
     import json
-    from results.committee.analysis.thread_regret import (
-        paired_terminal_test, run_thread_b, run_thread_b_ablation,
-        write_thread_csv,
-    )
+
     from results.committee.analysis.thread_figures import (
-        render_ablation, render_b1,
+        render_ablation,
+        render_b1,
+    )
+    from results.committee.analysis.thread_regret import (
+        run_thread_b,
+        run_thread_b_ablation,
+        write_thread_csv,
     )
 
     print(f"[thread-b] problem={args.problem} models={args.models_dir} "
@@ -551,7 +561,7 @@ def _run_thread_b(args) -> None:
             )
             ablation_rows = ["dropped_agent,episode_seed,terminal_regret"]
             for name, arr in ablation.items():
-                for es, v in zip(result.seeds, arr):
+                for es, v in zip(result.seeds, arr, strict=False):
                     ablation_rows.append(f"{name},{es},{v:.6f}")
             (out / csv_name).write_text("\n".join(ablation_rows) + "\n")
     print(f"[thread-b] wrote outputs to {out}/")
@@ -559,11 +569,15 @@ def _run_thread_b(args) -> None:
 
 def _run_thread_a(args) -> None:
     import json
-    from results.committee.analysis.thread_regret import (
-        run_thread_a, write_thread_csv,
-    )
+
     from results.committee.analysis.thread_figures import (
-        render_a1, render_a2, render_a3,
+        render_a1,
+        render_a2,
+        render_a3,
+    )
+    from results.committee.analysis.thread_regret import (
+        run_thread_a,
+        write_thread_csv,
     )
 
     print(f"[thread-a] problem={args.problem} models={args.models_dir} "

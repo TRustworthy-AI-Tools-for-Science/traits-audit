@@ -1,7 +1,6 @@
 """Tests for traits_audit.stability.windowed (ported from battery-forecast exp3/exp4)."""
 import numpy as np
 import pytest
-
 from traits_audit.stability.dmdc import (
     detrend_trajectory,
     dmdc_r2,
@@ -21,10 +20,10 @@ N_ACTION = 6
 class TestScoreDmdcR2:
     def test_matches_manual_detrend_then_score(self):
         """Contract/drift-guard: score_dmdc_r2 must exactly match manually
-        detrending aug via traits_audit.dmdc._detrend_trajectory (the same
+        detrending aug via traits_audit.stability.dmdc.detrend_trajectory (the same
         private helper fit_dmdc uses internally) and scoring dmdc_r2 against
         that. If this ever fails after a traits_audit upgrade,
-        _detrend_trajectory's behavior (or existence) has changed and
+        detrend_trajectory's behavior (or existence) has changed and
         score_dmdc_r2 needs to be revisited."""
         rng = np.random.default_rng(0)
         aug = rng.standard_normal((12, 6))
@@ -61,7 +60,7 @@ class TestScoreDmdcR2:
 
 class TestStabilityConvergenceWindowed:
     def test_window_none_matches_dm_stability_convergence(self):
-        """window=None must reproduce traits_audit.dmdc.stability_convergence
+        """window=None must reproduce traits_audit.stability.dmdc.stability_convergence
         exactly (growing prefix, unbounded) -- the original behaviour."""
         rng = np.random.default_rng(0)
         aug = rng.standard_normal((20, 6))
@@ -114,7 +113,7 @@ class TestStabilityConvergenceWindowedPydmd:
         production.
 
         Note: the function detrends each window before fitting (see its
-        docstring -- matches traits_audit.dmdc.fit_dmdc's own default
+        docstring -- matches traits_audit.stability.dmdc.fit_dmdc's own default
         behavior, and fixes the same coordinate-frame R^2 issue found
         elsewhere this session), which is why min_obs=30 (past the
         detrender's warmup=20) is used here rather than 10 -- the
@@ -156,7 +155,7 @@ class TestStabilityConvergenceWindowedPydmd:
         T, window, min_obs = 25, 6, 5
         actions = rng.uniform(-1, 1, size=(T, 2))
         aug = rng.standard_normal((T + 1, 3))
-        conv, conv_r2, _, _, _ = stability_convergence_windowed_pydmd(
+        conv, _conv_r2, _, _, _ = stability_convergence_windowed_pydmd(
             aug, actions, min_obs=min_obs, window=window, svd_rank=2
         )
         from pydmd import DMDc
@@ -238,7 +237,7 @@ class TestStabilityConvergenceWindowedPydmd:
         T = 40
         actions = rng.standard_normal((T, N_ACTION))
         aug = rng.standard_normal((T + 1, 2 * N_PARAMS))
-        conv, conv_r2, log_eig_spectra, _, _ = stability_convergence_windowed_pydmd(
+        conv, _conv_r2, log_eig_spectra, _, _ = stability_convergence_windowed_pydmd(
             aug, actions, min_obs=5, window=None, svd_rank=4
         )
         for i, spec in enumerate(log_eig_spectra):
@@ -307,7 +306,7 @@ class TestStabilityConvergenceWindowedPydmd:
             aug[t + 1, 0] = 0.6 * aug[t, 0] + 1.0 * actions[t, 0]
             aug[t + 1, 1] = 0.5 * aug[t, 1] + 1.0 * actions[t, 1]
             aug[t + 1, 2:] = rng.standard_normal(2) * 1e-6
-        conv, conv_r2, _, effective_rank, _ = stability_convergence_windowed_pydmd(
+        _conv, _conv_r2, _, effective_rank, _ = stability_convergence_windowed_pydmd(
             aug, actions, min_obs=20, window=None, svd_rank=4,
             rank_mode="energy", energy_threshold=0.90,
         )
@@ -323,7 +322,7 @@ class TestStabilityConvergenceWindowedPydmd:
         T = 40
         actions = rng.standard_normal((T, N_ACTION))
         aug = rng.standard_normal((T + 1, 2 * N_PARAMS))  # noisy, flat-ish spectrum
-        conv, conv_r2, _, effective_rank, _ = stability_convergence_windowed_pydmd(
+        _conv, _conv_r2, _, effective_rank, _ = stability_convergence_windowed_pydmd(
             aug, actions, min_obs=5, window=None, svd_rank=2,
             rank_mode="energy", energy_threshold=0.90,
         )
@@ -336,7 +335,7 @@ class TestStabilityConvergenceWindowedPydmd:
         T = 60
         actions = rng.standard_normal((T, N_ACTION))
         aug = rng.standard_normal((T + 1, 2 * N_PARAMS))
-        conv, conv_r2, _, effective_rank, _ = stability_convergence_windowed_pydmd(
+        _conv, _conv_r2, _, effective_rank, _ = stability_convergence_windowed_pydmd(
             aug, actions, min_obs=5, window=None, svd_rank=4, rank_mode="fixed",
         )
         finite_ranks = effective_rank[np.isfinite(effective_rank)]
@@ -352,7 +351,7 @@ class TestStabilityConvergenceWindowedPydmd:
         T = 40
         actions = rng.standard_normal((T, N_ACTION))
         aug = rng.standard_normal((T + 1, 2 * N_PARAMS))
-        conv, conv_r2, _, _, raw_eigs = stability_convergence_windowed_pydmd(
+        conv, _conv_r2, _, _, raw_eigs = stability_convergence_windowed_pydmd(
             aug, actions, min_obs=5, window=None, svd_rank=4
         )
         assert len(raw_eigs) == len(conv)
@@ -375,7 +374,7 @@ class TestStabilityConvergenceWindowedPydmd:
         T = 60
         actions = rng.standard_normal((T, N_ACTION))
         aug = rng.standard_normal((T + 1, 2 * N_PARAMS))
-        conv, conv_r2, _, _, raw_eigs = stability_convergence_windowed_pydmd(
+        _conv, _conv_r2, _, _, raw_eigs = stability_convergence_windowed_pydmd(
             aug, actions, min_obs=5, window=None, svd_rank=4
         )
         any_imaginary = any(
@@ -409,7 +408,7 @@ class TestStabilityConvergenceWindowedPydmd:
             aug[t + 1, 0] = 0.6 * aug[t, 0] + 1.0 * actions[t, 0]
             aug[t + 1, 1] = 0.5 * aug[t, 1] + 1.0 * actions[t, 1]
             aug[t + 1, 2:] = rng.standard_normal(2) * 1e-6
-        conv, conv_r2, _, effective_rank, _ = stability_convergence_windowed_pydmd(
+        _conv, _conv_r2, _, effective_rank, _ = stability_convergence_windowed_pydmd(
             aug, actions, min_obs=20, window=None, svd_rank=4,
             rank_mode="energy", energy_threshold=0.90,
         )

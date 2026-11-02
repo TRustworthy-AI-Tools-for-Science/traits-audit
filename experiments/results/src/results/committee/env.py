@@ -27,7 +27,7 @@ Action: Box(low=0, high=1, shape=(d,)) — the next x to query.
 """
 from __future__ import annotations
 
-from typing import Callable, Optional, Union
+from typing import Callable, ClassVar, Optional, Union
 
 import gymnasium as gym
 import numpy as np
@@ -35,7 +35,6 @@ from gymnasium import spaces
 
 from results.committee.problems import ForresterProblem, Problem, get_problem
 from results.committee.rewards import RewardComputer
-
 
 # Forrester layout, kept for callers that import these directly.
 GRID_SIZE = 200
@@ -76,7 +75,7 @@ class CommitteeEnv(gym.Env):
         ``problems.PROBLEMS``. Defaults to Forrester.
     """
 
-    metadata = {"render_modes": []}
+    metadata: ClassVar[dict] = {"render_modes": []}
 
     def __init__(
         self,

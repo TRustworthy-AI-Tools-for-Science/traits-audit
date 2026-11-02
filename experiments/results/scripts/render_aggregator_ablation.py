@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
@@ -23,7 +24,7 @@ from scipy.stats import binomtest, false_discovery_control, wilcoxon
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
 
-from results.committee.analysis import style as st
+from results.committee.analysis import style as st  # noqa: E402  (needs the sys.path insert above)
 
 PROBLEMS = {
     "forrester": ("_results/committee_v1", "thread_a_regret_all.csv",
@@ -52,7 +53,7 @@ def render(problem: str) -> None:
     fig, axes = plt.subplots(1, len(RULES), figsize=(23, 7.2), sharey=True)
     any_data = False
 
-    for ax, rule in zip(axes, RULES):
+    for ax, rule in zip(axes, RULES, strict=False):
         path = base_dir / f"thread_a_ablation_{rule}.csv"
         if not path.exists():
             ax.set_title(f"committee:{rule}\n(missing)", fontsize=st.TITLE_FS - 3)
@@ -120,7 +121,7 @@ def render(problem: str) -> None:
                   else float(binomtest(n_pos, len(vals), 0.5).pvalue))
 
         y = np.arange(len(names))
-        for i, (v, e, p) in enumerate(zip(vals, errs, ps)):
+        for i, (v, e, p) in enumerate(zip(vals, errs, ps, strict=False)):
             sig = p < 0.05
             col = st.VERMILLION if v > 0 else st.BLUISH_GREEN
             ax.barh(i, v, color=col, alpha=0.95 if sig else 0.30,

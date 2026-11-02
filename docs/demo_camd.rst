@@ -194,7 +194,7 @@ Rather than differentiating a scalar surrogate at a fixed operating point
 :math:`F(x) = x - \alpha\nabla\hat{f}(x)` and its Jacobian
 :math:`J = I - \alpha H_f`), CAMD characterises stability from the
 *observed* AL trajectory itself, via Dynamic Mode Decomposition with Control
-(DMDc, :func:`traits_audit.dmdc.fit_dmdc`; Proctor, Brunton & Kutz, 2016).  Each queried batch
+(DMDc, :func:`traits_audit.stability.dmdc.fit_dmdc`; Proctor, Brunton & Kutz, 2016).  Each queried batch
 contributes one row to an augmented state
 
 .. math::
@@ -213,7 +213,7 @@ eigenvalues came out close to the real axis (see the pole diagram).
 :math:`|\lambda_{\max}(A_r)| < 1` means the fitted dynamics are contractive;
 :math:`> 1` means they are expansive.
 
-Per-step values come from :func:`traits_audit.dmdc.stability_convergence`,
+Per-step values come from :func:`traits_audit.stability.dmdc.stability_convergence`,
 which refits :math:`A_r` on a **growing prefix** of the trajectory
 (:math:`\tilde{s}_0 \dots \tilde{s}_t`) at each step :math:`t`, tracking how
 the identified dynamics evolve as evidence accumulates.  The first few steps
@@ -222,7 +222,7 @@ reported as NaN — ``LyapunovStabilityCheck`` (see below) drops these rather
 than counting them as unstable.  Every DMDc fit here — both the per-prefix
 fits and the final whole-trajectory fit used for the pole diagram and
 Lyapunov-function contour below — centers the augmented-state trajectory
-before fitting by default (:mod:`traits_audit.detrend`), rather than fitting
+before fitting by default (:mod:`traits_audit.stability.detrend`), rather than fitting
 on raw, uncentered coordinates.
 
 ``LyapunovStabilityCheck`` is wired into the audit pipeline at its default
@@ -422,7 +422,7 @@ Lyapunov evolution over the campaign
    :alt: Growing-prefix Lyapunov exponent and surrogate std over active learning steps
 
 Dual y-axis: orange = growing-prefix :math:`|\lambda_{\max}(A_r(t))|` (left),
-blue = committee std (right).  :func:`traits_audit.dmdc.stability_convergence`
+blue = committee std (right).  :func:`traits_audit.stability.dmdc.stability_convergence`
 refits :math:`A_r` on the augmented-state trajectory up to step :math:`t` at
 every step; the earliest refits are naturally volatile (few points feeding a
 rank-5 fit) — :math:`|\lambda_{\max}|` opens near 1.85, briefly dips toward

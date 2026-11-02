@@ -21,13 +21,12 @@ from typing import Union
 
 import numpy as np
 
-from results.committee.problems import ForresterProblem, Problem, get_problem
-from results.committee.rewards import REWARD_REGISTRY
 from results.committee.analysis.rollouts import (
     run_rollout,
     sac_policy,
 )
-
+from results.committee.problems import ForresterProblem, Problem, get_problem
+from results.committee.rewards import REWARD_REGISTRY
 
 AGENT_NAMES: list[str] = list(REWARD_REGISTRY.keys())
 
@@ -200,7 +199,7 @@ def render_headline_figure(
     dim = problem.dim
 
     n_agents = len(AGENT_NAMES)
-    fig, axes, nrows, ncols = _panel_grid(n_agents)
+    fig, axes, _nrows, ncols = _panel_grid(n_agents)
     edges = np.linspace(0.0, 1.0, n_bins + 1)
     target_xy = None  # set below for `color`; gates that figure's legend
 
@@ -233,14 +232,14 @@ def render_headline_figure(
         labels = list(problem.input_names)
         colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
 
-    for ax, agent in zip(axes, AGENT_NAMES):
+    for ax, agent in zip(axes, AGENT_NAMES, strict=False):
         pooled = np.atleast_2d(
             np.asarray(result.queries_by_agent[agent]).reshape(-1, dim)
         )
         if dim == 1:
             ax.hist(pooled[:, 0], bins=edges, density=True, color="C0",
                     alpha=0.45, label="pooled (5 seeds)")
-            for s, qs in result.queries_by_agent_seed[agent].items():
+            for _s, qs in result.queries_by_agent_seed[agent].items():
                 counts, _ = np.histogram(qs, bins=edges, density=True)
                 ax.step(edges[:-1], counts, where="post",
                         color="black", alpha=0.25, linewidth=0.7)

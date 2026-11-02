@@ -12,11 +12,10 @@ Does NOT touch:
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from collections import defaultdict
+from pathlib import Path
 
 import numpy as np
-
 
 # ---------------------------------------------------------------------------
 # Density.
@@ -24,7 +23,9 @@ import numpy as np
 
 def replot_density() -> None:
     from results.committee.analysis.density import (
-        AGENT_NAMES, DensityResult, render_headline_figure,
+        AGENT_NAMES,
+        DensityResult,
+        render_headline_figure,
     )
 
     csv = Path("_results/committee_v0/query_density.csv")
@@ -32,7 +33,7 @@ def replot_density() -> None:
         n: defaultdict(list) for n in AGENT_NAMES
     }
     with csv.open() as fh:
-        header = fh.readline()
+        fh.readline()  # skip header
         for line in fh:
             agent, seed, x = line.strip().split(",")
             by_agent_seed[agent][int(seed)].append(float(x))
@@ -63,7 +64,8 @@ def replot_density() -> None:
 
 def replot_regret() -> None:
     from results.committee.analysis.regret import (
-        RegretResult, render_regret_figure,
+        RegretResult,
+        render_regret_figure,
     )
 
     csv = Path("_results/committee_v0/regret.csv")
@@ -106,7 +108,6 @@ def _load_thread_csv(csv_path: Path):
     from results.committee.analysis.thread_regret import ThreadResult
 
     rows = csv_path.read_text().splitlines()
-    header = rows[0]
     per_policy_regret: dict[str, dict[int, dict[int, float]]] = defaultdict(
         lambda: defaultdict(dict)
     )
@@ -161,7 +162,8 @@ def _load_lcb_ablation(csv_path: Path) -> dict[str, np.ndarray]:
 
 def replot_thread_b() -> None:
     from results.committee.analysis.thread_figures import (
-        render_ablation, render_b1,
+        render_ablation,
+        render_b1,
     )
 
     out_dir = Path("_results/committee_v1_threadB")
@@ -208,7 +210,9 @@ def replot_thread_b() -> None:
 
 def replot_thread_a() -> None:
     from results.committee.analysis.thread_figures import (
-        render_a1, render_a2, render_a3,
+        render_a1,
+        render_a2,
+        render_a3,
     )
 
     out_dir = Path("_results/committee_v1_threadA")

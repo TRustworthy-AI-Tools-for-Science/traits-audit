@@ -25,9 +25,9 @@ import numpy as np
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
 
-from results.committee.analysis.thread_regret import run_thread_b_ablation
-from results.committee.analysis.votes import CommitteeVoter
-from results.committee.problems import get_problem
+from results.committee.analysis.thread_regret import run_thread_b_ablation  # noqa: E402  (needs the sys.path insert above)
+from results.committee.analysis.votes import CommitteeVoter  # noqa: E402  (needs the sys.path insert above)
+from results.committee.problems import get_problem  # noqa: E402  (needs the sys.path insert above)
 
 # Forrester's models live under committee_v0_5M even though its figures go to
 # _results/committee_v1 -- the HPC scripts special-case this, so we do too.

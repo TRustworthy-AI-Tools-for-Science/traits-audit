@@ -17,19 +17,19 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 __all__ = [
+    "DOUBLE_COL",
     "PUBLICATION_RCPARAMS",
     "SINGLE_COL",
-    "DOUBLE_COL",
-    "style_context",
     "apply_publication_style",
-    "publication_style",
-    "letters",
-    "save_fig",
-    "draw_unit_circle",
-    "set_square",
     "box",
-    "signed_log_colorbar",
+    "draw_unit_circle",
+    "letters",
     "maybe_log",
+    "publication_style",
+    "save_fig",
+    "set_square",
+    "signed_log_colorbar",
+    "style_context",
 ]
 
 SINGLE_COL = 3.5

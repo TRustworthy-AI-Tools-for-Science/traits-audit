@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Sequence
 
-__all__ = ["PlotStyle", "DEFAULT_STYLE", "resolve_style", "TAB10"]
+__all__ = ["DEFAULT_STYLE", "TAB10", "PlotStyle", "resolve_style"]
 
 #: matplotlib's ``tab10`` palette, spelled out so the default style needs no matplotlib import.
 TAB10 = [

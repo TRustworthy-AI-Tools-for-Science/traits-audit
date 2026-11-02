@@ -26,13 +26,12 @@ onto an arbitrary plane. The contours are therefore computed on a throwaway
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional, Union
+from typing import Union
 
 import numpy as np
 
 from results.committee.analysis.density import AGENT_NAMES, DensityResult
 from results.committee.problems import Problem, get_problem
-
 
 #: Colormaps for the two pages. Distinct hue families so the floor and the
 #: wall stay separable even where the two landscapes overlap in shape.
@@ -55,7 +54,7 @@ def _contour_paths(GX, GY, Z, levels, cmap):
         colors = cs.to_rgba(cs.levels)
         out = [
             (np.asarray(v), color)
-            for segs, color in zip(cs.allsegs, colors)
+            for segs, color in zip(cs.allsegs, colors, strict=False)
             for v in segs
             if len(v) > 1
         ]

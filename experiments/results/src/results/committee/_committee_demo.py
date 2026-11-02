@@ -16,25 +16,26 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
-
 from traits_audit import AuditHook, AuditPipeline
-from results.cal_demo import BootstrapSurrogate, oracle as forrester_oracle, lcb
 from traits_audit.checks import (
     CalibrationErrorCheck,
     ConformalCoverageCheck,
     CRPSCheck,
+    IntervalCoverageCheck,
+    IntervalScoreCheck,
     NegativeLogLikelihoodCheck,
     PITUniformityCheck,
-    IntervalScoreCheck,
-    IntervalCoverageCheck,
-    VarianceAlignmentCheck,
-    UncertaintyEvolutionCheck,
     UncertaintyAnomalyCheck,
+    UncertaintyEvolutionCheck,
+    VarianceAlignmentCheck,
     VarianceErrorCorrelationCheck,
 )
+
+from results.cal_demo import BootstrapSurrogate, lcb
+from results.cal_demo import oracle as forrester_oracle
 from results.committee.agents import CommitteeAgent, make_agent
 from results.committee.aggregate import uniform_random_pick
-from results.committee.env import CommitteeEnv, DEFAULT_EPISODE_LENGTH
+from results.committee.env import DEFAULT_EPISODE_LENGTH
 from results.committee.rewards import REWARD_REGISTRY
 
 
@@ -105,7 +106,7 @@ def _run_committee_episode(
         proposals_per_step.append(all_proposals)
 
         action = np.array([x_chosen], dtype=np.float32)
-        obs, reward, terminated, truncated, info = env.step(action)
+        obs, _reward, terminated, truncated, info = env.step(action)
         y_q = info["y_q"]
         mu_q = info["mu_q"]
         sigma_q = info["sigma_q"]

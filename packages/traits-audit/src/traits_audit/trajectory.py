@@ -1,7 +1,7 @@
 """Trajectory records and cross-demo DMDc analysis for AL policy comparison.
 
 This module standardises how the traits-audit demos (and any AL loop) emit the
-per-step data that :mod:`traits_audit.dmdc` consumes, so that a single analysis
+per-step data that :mod:`traits_audit.stability.dmdc` consumes, so that a single analysis
 harness can compute the policy-comparison metrics uniformly across domains.
 
 The core object is :class:`TrajectoryRecord`. Each AL loop appends one

@@ -13,7 +13,6 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-
 pytest.importorskip(
     "gymnasium",
     reason="committee extra not installed (gymnasium missing)",
@@ -21,23 +20,16 @@ pytest.importorskip(
 
 from results.committee.rewards import (
     REWARD_REGISTRY,
-    RunningZScore,
-    _SignalDeltaReward,
     CRPSReward,
-    NLLReward,
-    IntervalScoreReward,
-    CalibrationErrorReward,
-    ConformalCoverageReward,
-    PITUniformityReward,
     IntervalCoverageReward,
-    VarianceAlignmentReward,
-    VarErrCorrelationReward,
-    KuleshovCalibrationReward,
-    ENCEReward,
-    CalibrationError1StdReward,
-    UncertaintyEvolutionReward,
-    UncertaintyAnomalyReward,
     MahalanobisOODReward,
+    PITUniformityReward,
+    RunningZScore,
+    UncertaintyAnomalyReward,
+    UncertaintyEvolutionReward,
+    VarErrCorrelationReward,
+    VarianceAlignmentReward,
+    _SignalDeltaReward,
 )
 
 

@@ -7,38 +7,13 @@ import numpy as np
 
 from ..base import AuditCategory, AuditCheck, AuditResult
 from ..stability.lyapunov_eq import (
-    compute_lyapunov,
     eigenvalues_and_stability,
     make_gd_predictor,
     numerical_jacobian,
     numerical_jacobian_batched,
 )
 
-__all__ = [
-    "LyapunovStabilityCheck",
-    "compute_lyapunov",
-    "eigenvalues_and_stability",
-    "make_gd_predictor",
-    "numerical_jacobian",
-    "numerical_jacobian_batched",
-]
-
-
-# ── Backward-compatible private adapters ─────────────────────────────────────
-# The shared implementations live in stability.lyapunov_eq; these keep the
-# 1-argument ``predictor(state)`` calling convention used by older callers.
-
-def _numerical_jacobian(predictor, state: np.ndarray, dx: float = 1e-4) -> np.ndarray:
-    """n×n Jacobian of predictor(state) → ℝⁿ via central differences."""
-    return numerical_jacobian(lambda s, _a: predictor(s), state, None, dx)
-
-
-def _gd_predictor(f_scalar, alpha: float = 0.01, eps: float = 1e-5):
-    """Wrap f: ℝⁿ → ℝ as the discrete gradient-descent step x_{t+1} = x_t − α∇f."""
-    return make_gd_predictor(f_scalar, alpha=alpha, eps=eps)
-
-
-_numerical_jacobian_batched = numerical_jacobian_batched
+__all__ = ["LyapunovStabilityCheck"]
 
 
 # ── Check ─────────────────────────────────────────────────────────────────────
@@ -176,7 +151,7 @@ class LyapunovStabilityCheck(AuditCheck):
         for cache keys), skips PCA when it cannot be fit, and reuses any per-row
         value already in ``cache`` (a caller-owned dict) — see class docstring.
         When ``surrogate_fn_batched`` is given, each new point's Jacobian is
-        computed via one batched call (see ``_numerical_jacobian_batched``)
+        computed via one batched call (see ``numerical_jacobian_batched``)
         instead of ``4n²`` scalar ``surrogate_fn`` calls (optionally threaded
         via ``max_workers``). Returns ``(lm, info)``.
         """
@@ -236,7 +211,7 @@ class LyapunovStabilityCheck(AuditCheck):
                 # One batched call per point (4n^2 perturbed states at once)
                 # instead of 4n^2 tiny scalar calls -- see class docstring.
                 for i in need:
-                    J = _numerical_jacobian_batched(f_use_batched, work_states[i], alpha=self.alpha)
+                    J = numerical_jacobian_batched(f_use_batched, work_states[i], alpha=self.alpha)
                     store[offset + i] = eigenvalues_and_stability(J)["lambda_max"]
             else:
                 predictor = make_gd_predictor(f_use, alpha=self.alpha)

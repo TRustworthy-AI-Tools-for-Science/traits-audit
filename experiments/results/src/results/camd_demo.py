@@ -464,7 +464,6 @@ def run(
     _use_mlflow = mlflow_uri is not None
     if _use_mlflow:
         import mlflow as _mlflow
-
         from traits_audit.mlflow_logger import MLflowLogger
         _mlflow.set_tracking_uri(mlflow_uri)
         _mlflow.set_experiment("traits_audit_platforms")
@@ -723,6 +722,7 @@ def run(
     # collapse instead of separating. Action is the genuine queried PCA point
     # (pca_coords_list), not a placeholder.
     from traits_audit import trajectory as _traj
+
     from results.mechanism_check import print_mechanism_check
 
     if mechanism_null:
@@ -750,6 +750,7 @@ def run(
     # above) can be given the real lambda_max series via the precomputed route.
     print("\n[2/3] Lyapunov stability analysis …")
     from traits_audit.stability import dmdc as dm
+
     from results.viz import (
         check_grid_figures,
         plot_audit_evolution,

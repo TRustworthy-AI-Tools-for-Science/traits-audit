@@ -24,7 +24,6 @@ from results.committee.analysis.thread_regret import (
     paired_terminal_test,
 )
 
-
 # ---------------------------------------------------------------------------
 # Shared helpers.
 # ---------------------------------------------------------------------------
@@ -274,7 +273,7 @@ def render_a2(
     for ax, w, title in zip(
         axes,
         [indep_n, invreg_n],
-        ["independence-weighted", "inverse-regret-weighted"],
+        ["independence-weighted", "inverse-regret-weighted"], strict=False,
     ):
         for a in agents:
             ax.scatter(w[a], solo_regret_terminal[a], s=110,

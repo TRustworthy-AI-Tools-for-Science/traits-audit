@@ -24,8 +24,6 @@ from typing import Optional, Union
 
 import numpy as np
 
-from results.committee.problems import Problem
-from results.committee.rewards import REWARD_REGISTRY
 from results.committee.analysis.rollouts import (
     RolloutTrace,
     random_policy,
@@ -33,7 +31,8 @@ from results.committee.analysis.rollouts import (
     sac_policy,
     score_trace,
 )
-
+from results.committee.problems import Problem
+from results.committee.rewards import REWARD_REGISTRY
 
 AGENT_NAMES: list[str] = list(REWARD_REGISTRY.keys())
 
@@ -89,7 +88,7 @@ def random_rollout_correlation(
     """Cross-agent reward correlation under uniform-random acquisition."""
     rng = np.random.default_rng(seed)
     traces: list[RolloutTrace] = []
-    for ep in range(n_episodes):
+    for _ep in range(n_episodes):
         ep_seed = int(rng.integers(0, 2**31 - 1))
         ep_rng = np.random.default_rng(ep_seed + 1)
         traces.append(run_rollout(
@@ -187,7 +186,7 @@ def cluster_agents(
     condensed = squareform(dist, checks=False)
     Z = linkage(condensed, method="average")
     labels = fcluster(Z, t=threshold, criterion="distance")
-    return labels, int(len(np.unique(labels)))
+    return labels, len(np.unique(labels))
 
 
 # -- Rendering -------------------------------------------------------------

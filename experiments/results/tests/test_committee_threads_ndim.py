@@ -121,7 +121,7 @@ def test_policies_return_one_point_of_the_right_dimension(name, dim):
         committee_agree_policy(voter),
         committee_disagree_policy(voter),
         committee_uniform_policy(voter, np.random.default_rng(1)),
-        committee_weighted_policy(voter, {n: 1.0 for n in voter.agent_names}),
+        committee_weighted_policy(voter, dict.fromkeys(voter.agent_names, 1.0)),
     ]
     for pol in policies:
         action = pol(None, env)
@@ -177,9 +177,6 @@ def test_weighted_rejects_all_zero_weights():
 
 def test_masked_voter_drops_an_agent_row_not_a_coordinate():
     """The ablation's mask must remove a whole agent, keeping (K-1, dim)."""
-    from results.committee.analysis.thread_regret import (
-        run_thread_b_ablation,
-    )
     prefs = np.arange(12, dtype=float).reshape(4, 3) / 12.0
     voter = _StubVoter(prefs)
 
@@ -211,7 +208,8 @@ def _fake_result(policies, n_seeds=3, n_steps=5, seed=0):
 
 def test_thread_csv_round_trips(tmp_path):
     from results.committee.analysis.thread_regret import (
-        read_thread_csv, write_thread_csv,
+        read_thread_csv,
+        write_thread_csv,
     )
     result = _fake_result(["random", "LCB", "LCB+votes"])
     path = tmp_path / "thread_b_regret.csv"
@@ -230,7 +228,8 @@ def test_thread_csv_round_trips(tmp_path):
 def test_merged_shards_equal_a_single_whole_run(tmp_path):
     """Two shards written separately must merge back to the whole result."""
     from results.committee.analysis.thread_regret import (
-        read_thread_csv, write_thread_csv,
+        read_thread_csv,
+        write_thread_csv,
     )
     whole = _fake_result(["random", "LCB", "max-sigma", "LCB+votes"])
 
@@ -257,7 +256,8 @@ def test_merged_shards_equal_a_single_whole_run(tmp_path):
 def test_merging_shards_with_mismatched_seeds_is_rejected(tmp_path):
     """Paired tests are invalid across different seeds -- must not merge."""
     from results.committee.analysis.thread_regret import (
-        read_thread_csv, write_thread_csv,
+        read_thread_csv,
+        write_thread_csv,
     )
     a = _fake_result(["random"], seed=1)
     b = _fake_result(["LCB"], seed=2)
@@ -313,8 +313,8 @@ def test_color_target_is_read_from_the_simulator():
 def test_surface3d_renders_for_2d_and_rejects_other_dims(tmp_path):
     import matplotlib
     matplotlib.use("Agg")
-    from results.committee.analysis.surface3d import render_surface3d
     from results.committee.analysis.density import AGENT_NAMES, DensityResult
+    from results.committee.analysis.surface3d import render_surface3d
 
     def _result(dim):
         rng = np.random.default_rng(0)

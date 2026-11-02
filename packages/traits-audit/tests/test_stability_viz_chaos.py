@@ -5,7 +5,6 @@ import sys
 import matplotlib
 import numpy as np
 import pytest
-
 from traits_audit.stability.viz import chaos_plots as cp
 from traits_audit.stability.viz.style import PlotStyle
 

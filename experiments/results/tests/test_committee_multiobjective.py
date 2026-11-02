@@ -16,7 +16,6 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Regression guards for the existing arms.
 # ---------------------------------------------------------------------------
@@ -179,8 +178,8 @@ def test_mo_reward_differs_when_objectives_differ():
 def test_mo_hypervolume_matches_mobo_demo():
     """The deliberate 6-line copy must track the demo's original."""
     pytest.importorskip("botorch")
-    from results.mobo_demo import _REF_POINT, _hypervolume
     from results.committee.problems import get_problem
+    from results.mobo_demo import _REF_POINT, _hypervolume
 
     p = get_problem("branin-currin-mo")
     np.testing.assert_allclose(p.ref_point, _REF_POINT.numpy())
@@ -270,7 +269,9 @@ def test_mo_score_trace_is_finite():
     """
     pytest.importorskip("botorch")
     from results.committee.analysis.rollouts import (
-        random_policy, run_rollout, score_trace,
+        random_policy,
+        run_rollout,
+        score_trace,
     )
     from results.committee.problems import get_problem
 

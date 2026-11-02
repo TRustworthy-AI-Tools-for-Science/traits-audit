@@ -38,7 +38,6 @@ import warnings
 from pathlib import Path
 
 import numpy as np
-
 from results.policies import (
     AuditBayesianDynamicsPolicy,
     AuditStateSpacePolicy,
@@ -115,7 +114,7 @@ DEFAULT_STEERING = ["CalibrationError", "NLL", "VarianceErrorCorrelation", "Sign
 def metric_snapshot(y_ref, mu, sd) -> tuple[dict[str, float], dict[str, str]]:
     """Badness of every metric on the reference grid, plus each check's category."""
     hist = [{"y_true": a, "y_pred_mean": b, "y_pred_std": c, "uncertainty": c}
-            for a, b, c in zip(y_ref.tolist(), mu.tolist(), sd.tolist())]
+            for a, b, c in zip(y_ref.tolist(), mu.tolist(), sd.tolist(), strict=False)]
     out, cats = {}, {}
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -225,7 +224,7 @@ def run_campaign(policy_name: str, seed: int, args, steering: list[str]) -> list
 
     # Replay warm-start transitions into the policy (random actions = good excitation).
     if stateful:
-        for (t, snap, s), x_next in zip(warm[:-1], x_obs[warm[0][0]:]):
+        for (t, snap, s), x_next in zip(warm[:-1], x_obs[warm[0][0]:], strict=False):
             model.fit(x_obs[:t], y_obs[:t], np.random.default_rng([seed, 2, t]))
             mu_x, sd_x = model.predict(np.array([x_next]))
             u = np.array([x_next, (mu_x[0] - y_mu) / y_sd, sd_x[0] / y_sd])
@@ -241,13 +240,13 @@ def run_campaign(policy_name: str, seed: int, args, steering: list[str]) -> list
             row[f"raw:{k}"], row[f"z:{k}"] = snap[k], z[k]
         return row
 
-    for t, snap, s in warm:
+    for t, snap, _s in warm:
         rows.append(record(t, "warm", False, snap))
 
     snap, cats, s = snapshot(len(x_obs))
     for t in range(len(x_obs), args.steps):
         mu_g, sd_g = model.predict(grid)
-        cands = [np.array([g, (m - y_mu) / y_sd, d / y_sd]) for g, m, d in zip(grid, mu_g, sd_g)]
+        cands = [np.array([g, (m - y_mu) / y_sd, d / y_sd]) for g, m, d in zip(grid, mu_g, sd_g, strict=False)]
         v = vec(snap, steering)
         probe = np.random.default_rng([seed, 3, t]).random() < args.probe
         if policy is None or probe:

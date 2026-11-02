@@ -1,5 +1,4 @@
 import pytest
-
 from traits_audit.base import AuditCategory, AuditCheck, AuditReport, AuditResult
 
 

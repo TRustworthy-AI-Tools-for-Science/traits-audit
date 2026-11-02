@@ -1,7 +1,20 @@
+import os
+import subprocess
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "packages" / "traits-audit" / "src"))
+_DOCS = Path(__file__).parent
+sys.path.insert(0, str(_DOCS.parent / "packages" / "traits-audit" / "src"))
+
+# ── Generated figures ─────────────────────────────────────────────────────────
+# The built-in-metric reference figures are regenerated on every build (~2 s,
+# numpy/scipy/matplotlib only) rather than committed to git.
+subprocess.run(
+    [sys.executable, str(_DOCS / "scripts" / "visualize_builtin_metrics.py"),
+     "--out", str(_DOCS / "_static" / "built_in_metrics")],
+    check=True,
+    env={**os.environ, "MPLBACKEND": "Agg"},
+)
 
 # ── Project metadata ─────────────────────────────────────────────────────────
 project   = "traits-audit"

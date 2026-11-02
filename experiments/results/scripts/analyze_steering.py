@@ -152,7 +152,7 @@ def _figure(runs, policies, cfg, out):
         ds = [d for (pq, _), d in runs.items() if pq == q]
         n = min(len(d["step"]) for d in ds)
         step = ds[0]["step"][:n]
-        for ax, key in zip(axes, ("regret", "S", "H")):
+        for ax, key in zip(axes, ("regret", "S", "H"), strict=False):
             m = np.mean([d[key][:n] for d in ds], axis=0)
             ax.plot(step, m, label=q, lw=1.4 if q != cfg.get("null", "random") else 1.0)
     axes[0].set_yscale("log")

@@ -30,7 +30,7 @@ Reuses ``DensityResult`` from :mod:`.density`, so it renders from the
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional, Union
+from typing import Union
 
 import numpy as np
 
@@ -41,7 +41,6 @@ from results.committee.analysis.density import (
     _panel_grid,
 )
 from results.committee.problems import Problem, get_problem
-
 
 # One colour per input channel. For the colour problem these are deliberately
 # the literal R/G/B rather than the Okabe-Ito palette: a reader should not
@@ -85,10 +84,10 @@ def render_channel_marginals(
               else st.OKABE_ITO[1:1 + dim])
     target = getattr(problem, "target", None)
 
-    fig, axes, nrows, ncols = _panel_grid(len(AGENT_NAMES))
+    fig, axes, _nrows, ncols = _panel_grid(len(AGENT_NAMES))
     edges = np.linspace(0.0, 1.0, n_bins + 1)
 
-    for ax, agent in zip(axes, AGENT_NAMES):
+    for ax, agent in zip(axes, AGENT_NAMES, strict=False):
         pooled = np.asarray(result.queries_by_agent[agent]).reshape(-1, dim)
         for d in range(dim):
             ax.hist(pooled[:, d], bins=edges, density=True, histtype="step",

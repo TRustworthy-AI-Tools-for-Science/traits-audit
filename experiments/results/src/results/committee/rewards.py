@@ -23,7 +23,6 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 import numpy as np
-
 from traits_audit.checks import (
     CalibrationError1StdCheck,
     CalibrationErrorCheck,

@@ -1,5 +1,4 @@
 import numpy as np
-
 from traits_audit.checks._replicates import build_replicate_groups
 
 

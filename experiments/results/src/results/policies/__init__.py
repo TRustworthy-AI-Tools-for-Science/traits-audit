@@ -74,35 +74,35 @@ Usage
 """
 
 from .base import BasePolicy, OracleFailure, resistance_degradation
-from .random import RandomPolicy
-from .greedy import GreedyPolicy
 from .constant import ConstantPolicy
+from .greedy import GreedyPolicy
 from .lcb import LCBPolicy
-from .state_space import StateSpacePolicy
-from .state_space_bayes import BayesianDynamicsPolicy
 from .qbc import QBCPolicy
+from .random import RandomPolicy
+from .state_space import StateSpacePolicy
 from .state_space_audit import (
-    AuditStateSpacePolicy,
-    AuditBayesianDynamicsPolicy,
-    make_audit_health_vector,
-    drt_peak_mismatch_result,
     AUDIT_HEALTH_FIELDS,
+    AuditBayesianDynamicsPolicy,
+    AuditStateSpacePolicy,
+    drt_peak_mismatch_result,
+    make_audit_health_vector,
 )
+from .state_space_bayes import BayesianDynamicsPolicy
 
 __all__ = [
+    "AUDIT_HEALTH_FIELDS",
+    "AuditBayesianDynamicsPolicy",
+    "AuditStateSpacePolicy",
     "BasePolicy",
-    "OracleFailure",
+    "BayesianDynamicsPolicy",
     "ConstantPolicy",
-    "RandomPolicy",
     "GreedyPolicy",
     "LCBPolicy",
-    "StateSpacePolicy",
-    "BayesianDynamicsPolicy",
+    "OracleFailure",
     "QBCPolicy",
-    "AuditStateSpacePolicy",
-    "AuditBayesianDynamicsPolicy",
-    "make_audit_health_vector",
+    "RandomPolicy",
+    "StateSpacePolicy",
     "drt_peak_mismatch_result",
-    "AUDIT_HEALTH_FIELDS",
+    "make_audit_health_vector",
     "resistance_degradation",
 ]

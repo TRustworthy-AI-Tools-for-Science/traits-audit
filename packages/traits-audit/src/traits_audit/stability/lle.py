@@ -28,10 +28,10 @@ from scipy.spatial import cKDTree
 from scipy.stats import wilcoxon
 
 __all__ = [
-    "rosenstein_divergence",
+    "classify_lle_regime",
     "compute_lyapunov_exponent",
     "rolling_lyapunov_exponent",
-    "classify_lle_regime",
+    "rosenstein_divergence",
 ]
 
 
@@ -151,8 +151,8 @@ def compute_lyapunov_exponent(
     maxt_eff = max(3, min(maxt, T - window_eff - 2))
     d = rosenstein_divergence(aug_states, maxt=maxt_eff, window=window_eff)
     k = np.arange(len(d))
-    i0 = max(1, int(round(fit_start_frac * len(d))))
-    i1 = max(i0 + 2, int(round(fit_end_frac * len(d))))
+    i0 = max(1, round(float(fit_start_frac * len(d))))
+    i1 = max(i0 + 2, round(float(fit_end_frac * len(d))))
     i1 = min(i1, len(d))
     coeffs = np.polyfit(k[i0:i1], d[i0:i1], 1)
     fitted = np.polyval(coeffs, k[i0:i1])

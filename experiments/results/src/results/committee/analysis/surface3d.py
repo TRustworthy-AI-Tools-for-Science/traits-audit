@@ -24,7 +24,7 @@ Two rendering decisions the Branin surface forces:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional, Union
+from typing import Union
 
 import numpy as np
 
@@ -36,7 +36,7 @@ from results.committee.problems import Problem, get_problem
 def _log_ticks(zmin: float, zmax: float) -> tuple[list[float], list[str]]:
     """Decade ticks in log10 space, labelled in the original units."""
     lo, hi = int(np.floor(np.log10(zmin))), int(np.ceil(np.log10(zmax)))
-    vals = [v for v in range(lo, hi + 1)]
+    vals = list(range(lo, hi + 1))
     labels = [f"$10^{{{v}}}$" if abs(v) > 2 else f"{10.0 ** v:g}" for v in vals]
     return [float(v) for v in vals], labels
 

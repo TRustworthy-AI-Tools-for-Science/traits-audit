@@ -27,19 +27,18 @@ time rather than assuming 1-D.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Callable, Optional, Union
+from dataclasses import dataclass
+from typing import Callable, Union
 
 import numpy as np
 
 from results.committee.env import (
-    CommitteeEnv,
     DEFAULT_EPISODE_LENGTH,
     DEFAULT_WARMSTART,
+    CommitteeEnv,
 )
 from results.committee.problems import Problem
 from results.committee.rewards import REWARD_REGISTRY
-
 
 Policy = Callable[[np.ndarray, "CommitteeEnv"], np.ndarray]
 

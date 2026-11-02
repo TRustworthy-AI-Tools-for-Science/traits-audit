@@ -9,7 +9,6 @@ passing" green as an evaluated, healthy result.
 """
 import numpy as np
 import pytest
-
 import traits_audit.checks as checks_module
 from results.viz import _CHECK_ABBREV, _fig_check_grid, _result_status
 from traits_audit.base import AuditCategory, AuditResult

@@ -1,8 +1,7 @@
-"""Tests for traits_audit.stability.lyapunov_eq and the backward-compat module aliases."""
+"""Tests for traits_audit.stability.lyapunov_eq."""
 import numpy as np
 import pytest
 from scipy.linalg import solve_discrete_lyapunov
-
 from traits_audit.stability.lyapunov_eq import (
     compute_lyapunov,
     eigenvalues_and_stability,
@@ -31,7 +30,8 @@ def test_numerical_jacobian_passes_action_through_unchanged():
 
 def test_gd_predictor_jacobian_is_I_minus_alpha_hessian():
     H = np.array([[2.0, 0.5], [0.5, 1.0]])
-    f = lambda x: 0.5 * x @ H @ x
+    def f(x):
+        return 0.5 * x @ H @ x
     J = numerical_jacobian(make_gd_predictor(f, alpha=0.1), np.array([0.4, -0.3]), None, dx=1e-3)
     np.testing.assert_allclose(J, np.eye(2) - 0.1 * H, atol=1e-4)
 
@@ -39,8 +39,10 @@ def test_gd_predictor_jacobian_is_I_minus_alpha_hessian():
 def test_batched_jacobian_matches_scalar_nested_computation():
     rng = np.random.default_rng(0)
     W = rng.standard_normal((4, 4))
-    f_scalar = lambda x: float(np.sin(x @ W @ x) + 0.1 * np.sum(x ** 3))
-    f_batched = lambda X: np.array([f_scalar(r) for r in X])
+    def f_scalar(x):
+        return float(np.sin(x @ W @ x) + 0.1 * np.sum(x ** 3))
+    def f_batched(X):
+        return np.array([f_scalar(r) for r in X])
     state = rng.standard_normal(4)
     J_seq = numerical_jacobian(make_gd_predictor(f_scalar, alpha=0.02), state)
     J_bat = numerical_jacobian_batched(f_batched, state, alpha=0.02)
@@ -86,18 +88,5 @@ def test_compute_lyapunov_returns_none_when_solver_raises(monkeypatch):
 
 
 def test_compute_lyapunov_does_not_swallow_eigvals_failures():
-    with pytest.raises(Exception):
+    with pytest.raises(np.linalg.LinAlgError):
         compute_lyapunov(np.array([[np.nan, 0.0], [0.0, 1.0]]))
-
-
-def test_old_module_paths_alias_the_new_modules():
-    import traits_audit
-    import traits_audit.dmdc as old_dmdc
-    import traits_audit.detrend as old_detrend
-    from traits_audit.stability import dmdc as new_dmdc, detrend as new_detrend
-    assert old_dmdc is new_dmdc and old_detrend is new_detrend
-    assert traits_audit.dmdc is new_dmdc
-    assert old_dmdc._detrend_trajectory is new_dmdc.detrend_trajectory
-    from traits_audit.dmdc import fit_dmdc
-    from traits_audit.detrend import RegimeDetrender              # noqa: F401
-    assert fit_dmdc is new_dmdc.fit_dmdc and RegimeDetrender is new_detrend.RegimeDetrender

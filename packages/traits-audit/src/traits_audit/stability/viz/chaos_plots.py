@@ -23,24 +23,32 @@ import numpy as np
 from .common import (
     DOUBLE_COL,
     SINGLE_COL,
-    box as _box,
-    draw_unit_circle as _draw_unit_circle,
     publication_style,
+)
+from .common import (
+    box as _box,
+)
+from .common import (
+    draw_unit_circle as _draw_unit_circle,
+)
+from .common import (
     save_fig as _save,
+)
+from .common import (
     set_square as _set_square,
 )
 from .style import PlotStyle, resolve_style
 
 __all__ = [
     "plot_early_vs_late_lambda_max",
+    "plot_effective_rank_evolution",
     "plot_lle_distribution",
+    "plot_local_linear_stability_spectrum",
     "plot_local_linearity_evolution",
+    "plot_poles",
     "plot_rolling_lyapunov_evolution",
     "plot_trend_evolution",
     "plot_trend_rolling_lyapunov_evolution",
-    "plot_local_linear_stability_spectrum",
-    "plot_effective_rank_evolution",
-    "plot_poles",
 ]
 
 
@@ -64,7 +72,7 @@ def _color_violins_by_policy(violin_result: dict, policies: list[str], style: Pl
         policies]`` construction).
     style : supplies the per-policy colors.
     """
-    for body, policy in zip(violin_result["bodies"], policies):
+    for body, policy in zip(violin_result["bodies"], policies, strict=False):
         color = style.color(policy)
         body.set_facecolor(color)
         body.set_edgecolor(color)

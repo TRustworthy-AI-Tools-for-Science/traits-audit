@@ -1,5 +1,4 @@
 import numpy as np
-
 from traits_audit.checks.ergodic import (
     DMDcSpectralRadiusCheck,
     EnsembleIndependenceDeficitCheck,

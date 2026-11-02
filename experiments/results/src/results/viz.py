@@ -15,8 +15,7 @@ from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
-
-from traits_audit.checks.lyapunov import (
+from traits_audit.stability.lyapunov_eq import (
     compute_lyapunov,
     eigenvalues_and_stability,
     numerical_jacobian,
@@ -1475,7 +1474,7 @@ def _fig_metric_correlations(
                     corr_matrix[i, j] = 0.0
 
     # Create figure
-   
+
     fig, ax = plt.subplots(figsize=(3.5, 3.5))
 
     mask = np.triu(np.ones_like(corr_matrix, dtype=bool), k=0)

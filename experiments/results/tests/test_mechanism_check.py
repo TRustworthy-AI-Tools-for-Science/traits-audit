@@ -1,6 +1,5 @@
 """Smoke tests for the internal demo mechanism-check printer."""
 import numpy as np
-
 from results.mechanism_check import print_mechanism_check
 from traits_audit.trajectory import TrajectoryRecord, analyze_trajectory
 

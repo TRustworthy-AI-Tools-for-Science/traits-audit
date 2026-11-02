@@ -89,7 +89,7 @@ def plot_calibration_error(out_dir: Path) -> None:
 
     fig, (ax_h, ax_u) = plt.subplots(1, 2, figsize=(7, 3.5))
 
-    for ax, obs, ce, title in (
+    for ax, obs, ce, _title in (
         (ax_h, obs_h, ce_h, "Healthy"),
         (ax_u, obs_u, ce_u, "Unhealthy — overconfident model"),
     ):
@@ -98,7 +98,7 @@ def plot_calibration_error(out_dir: Path) -> None:
 
         ax.plot([0, 1], [0, 1], color=GRAY, lw=1, ls="--",
                 label="Perfect calibration")
-        for lv, ob in zip(levels, obs):
+        for lv, ob in zip(levels, obs, strict=False):
             ax.plot([lv, lv], [lv, ob], color=c, lw=0.9, alpha=0.5)
         ax.scatter(levels, obs, color=c, zorder=4, s=36, label="Observed")
 
@@ -204,7 +204,7 @@ def plot_variance_alignment(out_dir: Path) -> None:
 
     fig, (ax_h, ax_u) = plt.subplots(1, 2, figsize=(7, 3.5))
 
-    for ax, sigma_sq, ratio, title in (
+    for ax, sigma_sq, ratio, _title in (
         (ax_h, sigma_sq_h, ratio_h, "Healthy"),
         (ax_u, sigma_sq_u, ratio_u, "Unhealthy — inflated uncertainty"),
     ):
@@ -266,7 +266,7 @@ def plot_uncertainty_evolution(out_dir: Path) -> None:
 
     fig, (ax_h, ax_u) = plt.subplots(1, 2, figsize=(7, 3.5))
 
-    for ax, u, fit, rel, title in (
+    for ax, u, fit, rel, _title in (
         (ax_h, u_h, fit_h, rel_h, "Healthy"),
         (ax_u, u_u, fit_u, rel_u, "Unhealthy — collapsing uncertainty"),
     ):
@@ -318,7 +318,7 @@ def plot_uncertainty_anomaly(out_dir: Path) -> None:
 
     spike_positions = np.array([10, 22, 36, 50])  # 4 / 60 = 6.7 % → FAIL
 
-    for ax, add_spikes, title in (
+    for ax, add_spikes, _title in (
         (ax_h, False, "Healthy"),
         (ax_u, True,  "Unhealthy — anomalous spikes"),
     ):
@@ -389,7 +389,7 @@ def plot_variance_error_correlation(out_dir: Path) -> None:
 
     fig, (ax_h, ax_u) = plt.subplots(1, 2, figsize=(7, 3.5))
 
-    for ax, error, rho, title in (
+    for ax, error, rho, _title in (
         (ax_h, error_h, rho_h, "Healthy"),
         (ax_u, error_u, rho_u, "Unhealthy — confident where wrong"),
     ):
@@ -526,7 +526,6 @@ def plot_lyapunov_stability(out_dir: Path) -> None:
     min_stable_frac   = 0.5
 
     def _make_eigs(n_stable: int, n_unstable: int):
-        n = n_stable + n_unstable
         # Stable cluster: |λ| drawn from U(0.10, 0.88)
         r_s = rng.uniform(0.10, 0.88, n_stable * n_eigs_per_point)
         θ_s = rng.uniform(0, 2 * np.pi, n_stable * n_eigs_per_point)
@@ -728,8 +727,8 @@ def plot_pit_uniformity(out_dir: Path) -> None:
         ks, p = kstest(pit, "uniform")
         return pit, float(ks), float(p)
 
-    pit_h, ks_h, p_h = _pit_stats(sigma_h)
-    pit_u, ks_u, p_u = _pit_stats(sigma_u)
+    pit_h, _ks_h, p_h = _pit_stats(sigma_h)
+    pit_u, _ks_u, p_u = _pit_stats(sigma_u)
 
     fig, (ax_h, ax_u) = plt.subplots(1, 2, figsize=(7, 3.5))
 

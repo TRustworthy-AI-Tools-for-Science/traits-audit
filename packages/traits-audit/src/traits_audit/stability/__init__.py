@@ -7,6 +7,13 @@ from . import action_hygiene, detrend, dmdc, lle, lyapunov_eq, regime, windowed
 from .detrend import DetrendResult, RegimeDetrender
 
 __all__ = [
-    "action_hygiene", "detrend", "dmdc", "lle", "lyapunov_eq", "regime", "windowed",
-    "DetrendResult", "RegimeDetrender",
+    "DetrendResult",
+    "RegimeDetrender",
+    "action_hygiene",
+    "detrend",
+    "dmdc",
+    "lle",
+    "lyapunov_eq",
+    "regime",
+    "windowed",
 ]

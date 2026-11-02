@@ -7,7 +7,6 @@ import matplotlib
 matplotlib.use("Agg")
 import numpy as np
 import pytest
-
 from traits_audit.stability.viz import dmdc_plots as dp
 from traits_audit.stability.viz.style import PlotStyle
 

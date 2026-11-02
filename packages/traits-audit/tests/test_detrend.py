@@ -1,4 +1,4 @@
-"""Tests for traits_audit.detrend — per-regime EMA state detrending.
+"""Tests for traits_audit.stability.detrend — per-regime EMA state detrending.
 
 Ported from battery-oracle's PyBaMMOracle._detrend_state tests when the
 detrending logic moved into this package as RegimeDetrender, generalized to
@@ -6,8 +6,7 @@ accept regime vectors of any dimensionality (not hardcoded to 6).
 """
 import numpy as np
 import pytest
-
-from traits_audit.detrend import DetrendResult, RegimeDetrender
+from traits_audit.stability.detrend import DetrendResult, RegimeDetrender
 
 
 class TestRegimeDetrender:

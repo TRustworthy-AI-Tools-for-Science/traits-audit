@@ -21,12 +21,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 
 from results.committee.rewards import REWARD_REGISTRY
-
 
 AGENT_NAMES: list[str] = list(REWARD_REGISTRY.keys())
 
@@ -153,6 +151,7 @@ def render_learning_curves_figure(
     loaded seed appear (see ``load_learning_curves``).
     """
     import matplotlib.pyplot as plt
+
     from results.committee.analysis import style as st
     from results.committee.analysis.density import _panel_grid
 
@@ -161,12 +160,12 @@ def render_learning_curves_figure(
     # Project font: serif (matches results.viz._RCPARAMS). Scoped to
     # this figure via rc_context so we don't mutate global rcParams.
     with plt.rc_context({"font.family": "serif"}):
-        fig, axes, nrows, ncols = _panel_grid(len(agents))
+        fig, axes, _nrows, ncols = _panel_grid(len(agents))
         # Scale step axis to thousands.
         grid_K = result.step_grid / 1e3
         x_max = float(grid_K.max())
 
-        for ax, agent in zip(axes, agents):
+        for ax, agent in zip(axes, agents, strict=False):
             per_seed = result.smoothed_by_agent_seed[agent]
             stacked = np.stack(list(per_seed.values()), axis=0)   # (n_seeds, G)
             median = np.median(stacked, axis=0)
@@ -203,6 +202,6 @@ def write_learning_curves_csv(
     rows = ["agent,seed,step,smoothed_reward"]
     for agent, per_seed in result.smoothed_by_agent_seed.items():
         for s, vals in per_seed.items():
-            for st_val, v in zip(result.step_grid, vals):
+            for st_val, v in zip(result.step_grid, vals, strict=False):
                 rows.append(f"{agent},{s},{int(st_val)},{v:.6f}")
     output_path.write_text("\n".join(rows) + "\n")

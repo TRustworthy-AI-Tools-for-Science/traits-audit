@@ -117,6 +117,11 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+from traits_audit.stability.lyapunov_eq import (
+    eigenvalues_and_stability,
+    make_gd_predictor,
+    numerical_jacobian,
+)
 
 from results.viz import (
     _fig_calibration_curves_all,
@@ -125,11 +130,6 @@ from results.viz import (
     _fig_state_heatmap,
     check_grid_figures,
     plot_convergence,
-)
-from traits_audit.checks.lyapunov import (
-    eigenvalues_and_stability,
-    make_gd_predictor,
-    numerical_jacobian,
 )
 
 # ── Oracle: Forrester (2008), heteroscedastic, shared by all four scenarios ──
@@ -596,15 +596,14 @@ def _run_scenario(
     historical_uncertainties: list | None = None,
 ) -> object:
     import mlflow
-
     from traits_audit import AuditPipeline, refit
-    from traits_audit import dmdc as dm
     from traits_audit.checks import DecisionFlipRateCheck
     from traits_audit.credal import (
         CredalSet,  # noqa: F401  (documents the representation used below)
     )
     from traits_audit.pipeline_attribution import StageUncertainty
     from traits_audit.provenance import TypeBLedger
+    from traits_audit.stability import dmdc as dm
 
     oracle_rng = np.random.default_rng(seed)
     surrogate_rng = np.random.default_rng(seed + 2**31)

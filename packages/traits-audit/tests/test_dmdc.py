@@ -1,12 +1,11 @@
-"""Tests for traits_audit.dmdc — DMDc fitting and stability diagnostics.
+"""Tests for traits_audit.stability.dmdc — DMDc fitting and stability diagnostics.
 
 Synthetic systems use a known stable/unstable A_r so that eigenvalue-based
 assertions are exact, not just "didn't crash".
 """
 import numpy as np
 import pytest
-
-from traits_audit.dmdc import (
+from traits_audit.stability.dmdc import (
     bootstrap_eig_ci,
     compute_gramians,
     dmdc_r2,

@@ -1,5 +1,4 @@
 import numpy as np
-
 from traits_audit.bootstrap import moving_block_bootstrap_ci
 
 

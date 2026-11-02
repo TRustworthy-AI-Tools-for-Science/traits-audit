@@ -24,21 +24,23 @@ on disk are not perturbed.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Optional, Union
 
 import numpy as np
 
-from results.committee.env import (
-    CommitteeEnv,
-    DEFAULT_EPISODE_LENGTH,
-    DEFAULT_WARMSTART,
+from results.committee.analysis.policies_ext import (
+    committee_agree_policy,
+    committee_disagree_policy,
+    committee_uniform_policy,
+    committee_weighted_policy,
+    independence_weights,
+    inverse_regret_weights,
+    lcb_with_votes_policy,
+    max_sigma_with_votes_policy,
 )
-from results.committee.problems import ForresterProblem, Problem, get_problem
-from results.committee.rewards import REWARD_REGISTRY
 from results.committee.analysis.regret import (
-    AGENT_NAMES,
     _trace_to_regret,
 )
 from results.committee.analysis.rollouts import (
@@ -50,17 +52,13 @@ from results.committee.analysis.rollouts import (
     sac_policy,
 )
 from results.committee.analysis.votes import CommitteeVoter
-from results.committee.analysis.policies_ext import (
-    committee_agree_policy,
-    committee_disagree_policy,
-    committee_uniform_policy,
-    committee_weighted_policy,
-    independence_weights,
-    inverse_regret_weights,
-    lcb_with_votes_policy,
-    max_sigma_with_votes_policy,
+from results.committee.env import (
+    DEFAULT_EPISODE_LENGTH,
+    DEFAULT_WARMSTART,
+    CommitteeEnv,
 )
-
+from results.committee.problems import ForresterProblem, Problem, get_problem
+from results.committee.rewards import REWARD_REGISTRY
 
 # ---------------------------------------------------------------------------
 # Rollout-with-diagnostics: drop-in for run_rollout that also captures the
@@ -328,30 +326,30 @@ def run_thread_b_ablation(
             return np.delete(prefs, self._mask, axis=0)
 
     if policy == "LCB+votes":
-        make_policy = lambda sub: lcb_with_votes_policy(
-            sub, vote_weight=vote_weight,
-        )
+        def make_policy(sub):
+            return lcb_with_votes_policy(sub, vote_weight=vote_weight)
     elif policy == "max-sigma+votes":
-        make_policy = lambda sub: max_sigma_with_votes_policy(
-            sub, vote_weight=vote_weight,
-        )
+        def make_policy(sub):
+            return max_sigma_with_votes_policy(sub, vote_weight=vote_weight)
     # Aggregator rules: ablate a member out of the committee itself, rather
     # than out of a vote-feature vector handed to a base rule.
     elif policy == "committee:uniform":
-        make_policy = lambda sub: committee_uniform_policy(
-            sub, np.random.default_rng(rng_seed + 999),
-        )
+        def make_policy(sub):
+            return committee_uniform_policy(sub, np.random.default_rng(rng_seed + 999))
     elif policy == "committee:agree":
-        make_policy = lambda sub: committee_agree_policy(sub)
+        def make_policy(sub):
+            return committee_agree_policy(sub)
     elif policy == "committee:disagree":
-        make_policy = lambda sub: committee_disagree_policy(sub)
+        def make_policy(sub):
+            return committee_disagree_policy(sub)
     elif policy in ("committee:weighted-indep", "committee:weighted-invreg"):
         if weights is None:
             raise ValueError(f"{policy!r} needs `weights`.")
         # committee_weighted_policy renormalises over whatever names it is
         # given, so with agent_names masked the surviving 14 weights are
         # rescaled to sum to 1 automatically.
-        make_policy = lambda sub: committee_weighted_policy(sub, weights)
+        def make_policy(sub):
+            return committee_weighted_policy(sub, weights)
     else:
         raise ValueError(f"Unknown ablation target policy: {policy!r}")
 
@@ -368,7 +366,8 @@ def run_thread_b_ablation(
             continue
         print(f"[ablation:{policy}] drop {name} ...")
         sub = _MaskedVoter(voter, k)
-        pol_factory = lambda es, _sub=sub: make_policy(_sub)
+        def pol_factory(es, _sub=sub):
+            return make_policy(_sub)
         sr = np.zeros(len(seeds), dtype=float)
         for i, es in enumerate(seeds):
             pol = pol_factory(es)
@@ -417,7 +416,6 @@ def run_thread_a(
     regret without re-reading the source files; the agent name is returned so
     the A1 figure can label and test against the right reference.
     """
-    import json
 
     from stable_baselines3 import SAC
 

@@ -1,5 +1,4 @@
 import pytest
-
 from traits_audit.checks.provenance import TypeBMassFractionCheck
 from traits_audit.provenance import TypeBLedger
 

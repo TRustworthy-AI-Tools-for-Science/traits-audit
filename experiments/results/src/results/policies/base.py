@@ -135,7 +135,7 @@ class BasePolicy(ABC):
 
     # ── Hook for stateful policies ────────────────────────────────────────
 
-    def observe(self, state: np.ndarray, action: np.ndarray) -> None:
+    def observe(self, state: np.ndarray, action: np.ndarray) -> None:  # noqa: B027  (optional hook, no-op by default)
         """Record an observed ``(state, action)`` transition.
 
         Called automatically by :meth:`run` after each iteration.

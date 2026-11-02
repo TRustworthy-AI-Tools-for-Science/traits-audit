@@ -84,7 +84,6 @@ import logging
 from typing import Callable, List, Optional
 
 import numpy as np
-
 from traits_audit.base import AuditCategory, AuditResult
 
 from .state_space import StateSpacePolicy
@@ -356,7 +355,7 @@ def drt_peak_mismatch_result(
         peaks, _ = find_peaks(gamma, height=threshold)
         mismatches.append(abs(len(peaks) - n_ecm_elements))
 
-    mismatch = int(round(float(np.mean(mismatches)))) if mismatches else 0
+    mismatch = round(float(np.mean(mismatches))) if mismatches else 0
     passed = mismatch == 0
     label = "single" if spectrum_idx is not None else f"mean over {len(indices)} spectra"
     return AuditResult(

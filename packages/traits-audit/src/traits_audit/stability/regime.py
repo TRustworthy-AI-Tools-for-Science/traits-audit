@@ -5,7 +5,7 @@ import numpy as np
 
 from .dmdc import detrend_trajectory
 
-__all__ = ["split_regime_labels", "extract_background_trend"]
+__all__ = ["extract_background_trend", "split_regime_labels"]
 
 
 def split_regime_labels(n_steps: int, split_fraction: float = 0.5) -> np.ndarray:
@@ -22,7 +22,7 @@ def split_regime_labels(n_steps: int, split_fraction: float = 0.5) -> np.ndarray
     """
     if n_steps < 2:
         raise ValueError(f"n_steps must be >= 2, got {n_steps}")
-    cut = int(round(n_steps * split_fraction))
+    cut = round(float(n_steps * split_fraction))
     cut = max(1, min(cut, n_steps - 1))  # keep both regimes non-empty
     return np.array([0] * cut + [1] * (n_steps - cut))
 

@@ -1,6 +1,5 @@
 import numpy as np
 import pytest
-
 from traits_audit.checks.attribution import StageVarianceAttributionCheck
 from traits_audit.pipeline_attribution import (
     StageUncertainty,

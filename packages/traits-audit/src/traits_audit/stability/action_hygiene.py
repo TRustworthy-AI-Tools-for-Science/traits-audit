@@ -60,16 +60,16 @@ def compute_global_action_kept_mask(
     for actions in action_arrays:
         if actions is None or len(actions) < 2:
             continue
-        actions = np.asarray(actions, dtype=np.float64)
-        col_real = actions.std(axis=0) >= std_floor
+        arr = np.asarray(actions, dtype=np.float64)
+        col_real = arr.std(axis=0) >= std_floor
         any_real = col_real if any_real is None else (any_real | col_real)
     if any_real is None:
         raise RuntimeError("No trajectories with usable actions found -- cannot "
                             "determine the global action-column mask.")
     names = (list(feature_names) if feature_names is not None
              else list(range(len(any_real))))[:len(any_real)]
-    kept_names = [n for n, k in zip(names, any_real) if k]
-    dropped_names = [n for n, k in zip(names, any_real) if not k]
+    kept_names = [n for n, k in zip(names, any_real, strict=False) if k]
+    dropped_names = [n for n, k in zip(names, any_real, strict=False) if not k]
     print(f"  Global action-column mask (std >= {std_floor} in at least one "
           f"trajectory): kept {kept_names}, dropped {dropped_names}")
     return any_real

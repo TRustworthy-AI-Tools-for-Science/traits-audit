@@ -28,7 +28,7 @@ engine: ``(obs, env) -> np.ndarray shape (1,)``.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable
 
 import numpy as np
 
@@ -37,7 +37,6 @@ from results.committee.analysis.rollouts import (
     _reduce_objectives,
 )
 from results.committee.analysis.votes import CommitteeVoter
-
 
 Policy = Callable[[np.ndarray, "object"], np.ndarray]
 
@@ -229,13 +228,13 @@ def independence_weights(
     with p.open() as fh:
         reader = csv.reader(fh)
         header = next(reader)
-        rows = [r for r in reader]
+        rows = list(reader)
     # Expect square matrix with first column the row label.
     col_names = header[1:]
     matrix = {}
     for row in rows:
         rname = row[0]
-        for cname, v in zip(col_names, row[1:]):
+        for cname, v in zip(col_names, row[1:], strict=False):
             matrix[(rname, cname)] = float(v)
     # Mean |rho| off-diagonal per agent.
     indep = {}

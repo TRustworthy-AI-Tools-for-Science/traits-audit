@@ -32,7 +32,6 @@ import numpy as np
 
 from results.committee.rewards import REWARD_REGISTRY
 
-
 AGENT_NAMES: list[str] = list(REWARD_REGISTRY.keys())
 
 

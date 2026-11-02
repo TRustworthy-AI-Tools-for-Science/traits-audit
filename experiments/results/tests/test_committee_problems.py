@@ -45,7 +45,7 @@ def test_poly_surrogate_reduces_to_bootstrap_surrogate_in_1d():
     legacy = BootstrapSurrogate(degree=5, n_estimators=10, rng=np.random.default_rng(1)).fit(x, y)
     poly = PolyBootstrapSurrogate(dim=1, degree=5, n_estimators=10, rng=np.random.default_rng(1)).fit(x, y)
     grid = np.linspace(0, 1, 50)
-    for a, b in zip(legacy.predict(grid), poly.predict(grid)):
+    for a, b in zip(legacy.predict(grid), poly.predict(grid), strict=False):
         np.testing.assert_allclose(a, b, rtol=1e-10, atol=1e-12)
 
 
@@ -82,7 +82,7 @@ def _color_problem_or_skip():
 
     problem = get_problem("color")
     try:
-        problem.rgb_max  # triggers the simulator import
+        _ = problem.rgb_max  # triggers the simulator import
     except ImportError:
         pytest.skip("self-driving-lab-demo not installed")
     return problem
@@ -148,7 +148,9 @@ def test_trace_to_regret_matches_legacy_forrester_computation():
     """The generalized _trace_to_regret(..., problem) must reproduce the
     original hardcoded-Forrester formula bit for bit."""
     from results.committee.analysis.regret import (
-        FORRESTER_TRUE_MIN, _forrester_clean, _trace_to_regret,
+        FORRESTER_TRUE_MIN,
+        _forrester_clean,
+        _trace_to_regret,
     )
     from results.committee.analysis.rollouts import random_policy, run_rollout
     from results.committee.problems import ForresterProblem
@@ -193,7 +195,11 @@ def test_baseline_policies_finite_on_every_problem(problem_name, policy_name):
     elif problem_name == "branin-currin":
         pytest.importorskip("botorch")
     from results.committee.analysis.rollouts import (
-        lcb_policy, max_sigma_policy, random_policy, run_rollout, score_trace,
+        lcb_policy,
+        max_sigma_policy,
+        random_policy,
+        run_rollout,
+        score_trace,
     )
 
     policy = {
@@ -209,13 +215,13 @@ def test_baseline_policies_finite_on_every_problem(problem_name, policy_name):
 def _write_fake_tb_scalar(tb_dir, run_name: str, tag: str, steps, values):
     """Write a minimal real TB event file so learning_curves.py's
     EventAccumulator can read it back — avoids depending on a real SAC run."""
-    from tensorboard.summary.writer.event_file_writer import EventFileWriter
     from tensorboard.compat.proto import event_pb2, summary_pb2
+    from tensorboard.summary.writer.event_file_writer import EventFileWriter
 
     run_dir = tb_dir / run_name / "SAC_1"
     run_dir.mkdir(parents=True, exist_ok=True)
     writer = EventFileWriter(str(run_dir))
-    for step, value in zip(steps, values):
+    for step, value in zip(steps, values, strict=False):
         summary = summary_pb2.Summary(
             value=[summary_pb2.Summary.Value(tag=tag, simple_value=float(value))]
         )
@@ -230,6 +236,7 @@ def test_load_learning_curves_skips_missing_agents_instead_of_crashing():
     pytest.importorskip("tensorboard")
     import tempfile
     from pathlib import Path
+
     from results.committee.analysis.learning_curves import load_learning_curves
 
     with tempfile.TemporaryDirectory() as d:
@@ -249,8 +256,10 @@ def test_render_learning_curves_figure_scales_panel_grid():
     pytest.importorskip("tensorboard")
     import tempfile
     from pathlib import Path
+
     from results.committee.analysis.learning_curves import (
-        LearningCurveResult, render_learning_curves_figure,
+        LearningCurveResult,
+        render_learning_curves_figure,
     )
 
     grid = np.linspace(0, 900, 10)

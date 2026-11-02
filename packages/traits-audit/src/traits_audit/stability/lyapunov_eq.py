@@ -11,13 +11,13 @@ import numpy as np
 from scipy.linalg import solve_discrete_lyapunov
 
 __all__ = [
+    "compute_lyapunov",
+    "eigenvalues_and_stability",
+    "lyapunov_P",
+    "make_gd_predictor",
     "numerical_jacobian",
     "numerical_jacobian_batched",
-    "eigenvalues_and_stability",
     "rescale_to_stable",
-    "lyapunov_P",
-    "compute_lyapunov",
-    "make_gd_predictor",
 ]
 
 

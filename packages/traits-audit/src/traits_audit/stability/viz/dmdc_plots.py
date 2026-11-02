@@ -2,7 +2,7 @@
 
 Pure rendering: every function takes plain numpy/dict data and an ``out_dir``,
 and returns the saved figure path(s). No DMDc fitting or hypothesis-test logic
-lives here; see :mod:`traits_audit.dmdc` for the analysis itself.
+lives here; see :mod:`traits_audit.stability.dmdc` for the analysis itself.
 
 Every multi-panel figure is split into one file per panel (``figX_a``,
 ``figX_b``, ...) so each PNG is a single, self-contained, publication-ready
@@ -53,18 +53,18 @@ from .common import (
 from .style import PlotStyle, resolve_style
 
 __all__ = [
+    "plot_convergence_robustness",
+    "plot_coupling_network_combined",
+    "plot_dmdc_quality",
+    "plot_gramians",
+    "plot_lyapunov_all_models",
+    "plot_lyapunov_timeseries",
+    "plot_matrix_heatmaps",
+    "plot_modal_equations",
     "plot_poles",
     "plot_poles_combined",
-    "plot_stability_plane",
-    "plot_lyapunov_timeseries",
-    "plot_lyapunov_all_models",
-    "plot_gramians",
-    "plot_convergence_robustness",
-    "plot_matrix_heatmaps",
-    "plot_coupling_network_combined",
-    "plot_modal_equations",
     "plot_rank_dataset",
-    "plot_dmdc_quality",
+    "plot_stability_plane",
 ]
 
 #: marker size per model in :func:`plot_poles_combined` (unknown models get 20)
@@ -106,7 +106,7 @@ def plot_poles(eig_dict: dict, out_dir: Path, stem: str = "fig1",
     style = resolve_style(style)
     models = style.models(eig_dict)
     paths = []
-    for letter, model in zip(letters(len(models)), models):
+    for letter, model in zip(letters(len(models)), models, strict=False):
         fig, ax = plt.subplots(figsize=(SINGLE_COL, SINGLE_COL))
         draw_unit_circle(ax)
         has_native = False
@@ -268,7 +268,7 @@ def plot_lyapunov_timeseries(series: dict, v_safe: float, out_dir: Path,
     style = resolve_style(style)
     models = style.models(series)
     paths = []
-    for letter, model in zip(letters(len(models)), models):
+    for letter, model in zip(letters(len(models)), models, strict=False):
         fig, ax = plt.subplots(figsize=(SINGLE_COL, SINGLE_COL))
         all_means = []
         for policy in style.policies(series[model]):
@@ -371,7 +371,7 @@ def plot_gramians(gramians: dict, out_dir: Path,
     style = resolve_style(style)
     models = style.models(gramians)
     paths = []
-    for letter, model in zip(letters(len(models)), models):
+    for letter, model in zip(letters(len(models)), models, strict=False):
         fig, ax = plt.subplots(figsize=(SINGLE_COL, SINGLE_COL))
         policies = style.policies(gramians[model])
         x = np.arange(len(policies))
@@ -391,7 +391,7 @@ def plot_gramians(gramians: dict, out_dir: Path,
         ax.set_xticks(x)
         labels = ax.set_xticklabels(policies, rotation=45, ha="right", fontsize=7)
         if stability_margin is not None:
-            for label, policy in zip(labels, policies):
+            for label, policy in zip(labels, policies, strict=False):
                 if stability_margin.get(policy, 1.0) < 0:
                     label.set_color(style.red)
 
@@ -652,7 +652,7 @@ def plot_modal_equations(mode_results: dict, out_dir: Path,
     Parameters
     ----------
     mode_results : dict[policy] -> list of mode dicts (from
-        ``traits_audit.dmdc.modal_decomposition``), already sorted by ``|λ|``.
+        ``traits_audit.stability.dmdc.modal_decomposition``), already sorted by ``|λ|``.
     """
     style = resolve_style(style)
     fig, ax = plt.subplots(figsize=(SINGLE_COL, SINGLE_COL))
@@ -675,7 +675,7 @@ def plot_modal_equations(mode_results: dict, out_dir: Path,
                 labels.append("")
         offs = x + (k - 0.5) * width
         ax.bar(offs, mags, width=width, color=colors, alpha=0.8)
-        for xi, lab in zip(offs, labels):
+        for xi, lab in zip(offs, labels, strict=False):
             if lab:
                 ax.annotate(lab, (xi, 0.02), rotation=90, fontsize=5, va="bottom", ha="center")
     ax.axhline(1.0, color="k", lw=0.8, ls="--")
@@ -757,7 +757,6 @@ def plot_rank_dataset(rank_sens: dict, default_r: int, cross_dataset: dict, out_
 
 @publication_style
 def plot_dmdc_quality(r2_dict: dict, pseudospectra: dict, out_dir: Path,
-                       reference_model: str | None = None,
                        style: PlotStyle | None = None) -> list[Path]:
     """``fig11_a``: DMDc R² bar chart.
     ``fig11_b_<model>``: pseudospectra contours per policy (small-multiples
@@ -771,7 +770,6 @@ def plot_dmdc_quality(r2_dict: dict, pseudospectra: dict, out_dir: Path,
     pseudospectra : dict
         ``pseudospectra[model][policy]`` is a dict with keys ``"RE"``,
         ``"IM"``, ``"sigma_min"`` and ``"eigenvalues"``.
-    reference_model : unused, kept for backward-compatible call sites.
 
     References
     ----------
@@ -814,7 +812,7 @@ def plot_dmdc_quality(r2_dict: dict, pseudospectra: dict, out_dir: Path,
     models = style.models(pseudospectra)
     paths = [save_fig(fig_a, out_dir, "fig11_a")]
     legend_patches = [Patch(facecolor=c, edgecolor="none", alpha=0.55, label=lab)
-                       for c, lab in zip(fragility_colors, _FRAGILITY_LABELS)]
+                       for c, lab in zip(fragility_colors, _FRAGILITY_LABELS, strict=False)]
 
     for model in models:
         ps_model = pseudospectra[model]

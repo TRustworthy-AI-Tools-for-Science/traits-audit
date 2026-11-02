@@ -1,12 +1,11 @@
 """Tests for traits_audit.stability.action_hygiene (ported from battery-forecast exp4)."""
 import numpy as np
 import pytest
-
-from traits_audit.stability.dmdc import detrend_trajectory
 from traits_audit.stability.action_hygiene import (
     compute_global_action_kept_mask,
     drop_degenerate_action_columns,
 )
+from traits_audit.stability.dmdc import detrend_trajectory
 
 
 class TestComputeGlobalActionKeptMask:
@@ -113,7 +112,7 @@ class TestDropDegenerateActionColumns:
         mechanism, not just that the helper behaves reasonably alone.
 
         Separately confirmed (not asserted below, but worth recording):
-        traits_audit.dmdc.fit_dmdc's own numpy.linalg.lstsq(rcond=None)
+        traits_audit.stability.dmdc.fit_dmdc's own numpy.linalg.lstsq(rcond=None)
         does NOT reproduce this severe blowup on the same fixture (its
         SVD-based pseudoinverse already floors near-zero singular values
         near machine precision) -- B_r stays sane (~0.13) even on raw,

@@ -26,9 +26,13 @@ behavior-preserving refactor of code that was spread across traits-audit and
 battery-forecast's Experiments 3 and 4):
 
 - ``traits_audit.dmdc`` and ``traits_audit.detrend`` moved to
-  ``traits_audit.stability.dmdc`` / ``traits_audit.stability.detrend``; the
-  old import paths remain as aliases. ``detrend_trajectory`` is now public
-  (``_detrend_trajectory`` kept as an alias).
+  ``traits_audit.stability.dmdc`` / ``traits_audit.stability.detrend``. The
+  old import paths have been removed (no aliases). ``detrend_trajectory`` is
+  now public.
+- ``traits_audit.checks.lyapunov`` exports only ``LyapunovStabilityCheck``;
+  import the Jacobian / Lyapunov helpers from
+  ``traits_audit.stability.lyapunov_eq``. The unused ``reference_model``
+  argument of ``plot_dmdc_quality`` was removed.
 - New ``stability.lyapunov_eq``: the single implementation of the numerical
   Jacobian (scalar and batched), discrete Lyapunov ``P`` / spectral-radius
   rescaling and the gradient-descent predictor, previously copied in

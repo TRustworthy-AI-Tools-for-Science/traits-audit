@@ -1,6 +1,5 @@
 import numpy as np
 import pytest
-
 from traits_audit.checks.procedural import (
     DataVarianceShareCheck,
     MisspecificationResidualFloorCheck,

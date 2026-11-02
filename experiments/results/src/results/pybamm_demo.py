@@ -465,7 +465,6 @@ def run(
     _use_mlflow = mlflow_uri is not None
     if _use_mlflow:
         import mlflow as _mlflow
-
         from traits_audit.mlflow_logger import MLflowLogger
         _mlflow.set_tracking_uri(mlflow_uri)
         _mlflow.set_experiment("traits_audit_platforms")
@@ -720,6 +719,7 @@ def run(
 
     # ── Controllability-Gramian mechanism check ───────────────────────────────
     from traits_audit import trajectory as _traj
+
     from results.mechanism_check import print_mechanism_check
 
     unc_vectors = [
@@ -736,6 +736,8 @@ def run(
 
     # ── Phase 3: Lyapunov stability analysis ──────────────────────────────────
     print("\n[3/3] Lyapunov stability analysis + final audit …")
+    from traits_audit.stability.lyapunov_eq import make_gd_predictor
+
     from results.viz import (
         check_grid_figures,
         plot_audit_evolution,
@@ -745,7 +747,6 @@ def run(
         run_dmdc_lyapunov_analysis,
         run_lyapunov_analysis,
     )
-    from traits_audit.checks.lyapunov import make_gd_predictor
 
     op_states = np.array(queried_n)
 

@@ -9,7 +9,6 @@ Data helpers use fixed seeds for reproducibility.  Each check gets:
 """
 import numpy as np
 import pytest
-
 from traits_audit.checks import (
     CalibrationErrorCheck,
     ConformalCoverageCheck,
@@ -542,14 +541,14 @@ def test_lyapunov_concurrent_respects_cache_across_calls():
 
 
 def test_lyapunov_batched_jacobian_matches_scalar_nested_computation():
-    # _numerical_jacobian_batched must reproduce _numerical_jacobian(
-    # _gd_predictor(f_scalar, alpha), state) exactly (same math, issued as one
+    # numerical_jacobian_batched must reproduce numerical_jacobian(
+    # make_gd_predictor(f_scalar, alpha), state) exactly (same math, issued as one
     # batched call instead of 4n^2 scalar ones) -- this is the numerical
     # contract the whole batching optimization depends on.
-    from traits_audit.checks.lyapunov import (
-        _numerical_jacobian_batched,
+    from traits_audit.stability.lyapunov_eq import (
         make_gd_predictor,
         numerical_jacobian,
+        numerical_jacobian_batched,
     )
 
     rng = np.random.default_rng(7)
@@ -565,7 +564,7 @@ def test_lyapunov_batched_jacobian_matches_scalar_nested_computation():
 
     predictor = make_gd_predictor(f_scalar, alpha=0.02)
     J_seq = numerical_jacobian(predictor, state)
-    J_batched = _numerical_jacobian_batched(f_batched, state, alpha=0.02)
+    J_batched = numerical_jacobian_batched(f_batched, state, alpha=0.02)
 
     np.testing.assert_allclose(J_seq, J_batched, rtol=1e-10, atol=1e-12)
 

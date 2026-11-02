@@ -96,9 +96,6 @@ def detrend_trajectory(states: np.ndarray, regimes: np.ndarray | None = None) ->
     return out
 
 
-#: Backward-compatible alias (this function was private before being made public).
-_detrend_trajectory = detrend_trajectory
-
 
 def _detrend_pairs_pooled(aug_t: np.ndarray, aug_t1: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Order-invariant centering for explicit (possibly resampled, out-of-order)

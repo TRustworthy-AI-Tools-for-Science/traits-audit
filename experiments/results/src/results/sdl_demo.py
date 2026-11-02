@@ -255,7 +255,6 @@ def run(
     # ── MLflow ────────────────────────────────────────────────────────────────
     if mlflow_uri is not None:
         import mlflow as _mlflow
-
         from traits_audit.mlflow_logger import MLflowLogger
         _mlflow.set_tracking_uri(mlflow_uri)
         _mlflow.set_experiment("traits_audit_platforms")
@@ -356,7 +355,7 @@ def run(
     lambda_max_history: list[float]  = []
 
     # ── Step 4: Active learning loop ──────────────────────────────────────────
-    from traits_audit.checks.lyapunov import (
+    from traits_audit.stability.lyapunov_eq import (
         eigenvalues_and_stability,
         make_gd_predictor,
         numerical_jacobian,
@@ -445,6 +444,8 @@ def run(
 
     # ── Lyapunov analysis ─────────────────────────────────────────────────────
     print("\n[3/3] Lyapunov stability analysis + final audit …")
+    from traits_audit.stability.lyapunov_eq import make_gd_predictor
+
     from results.viz import (
         check_grid_figures,
         plot_audit_evolution,
@@ -455,7 +456,6 @@ def run(
         run_dmdc_lyapunov_analysis,
         run_lyapunov_analysis,
     )
-    from traits_audit.checks.lyapunov import make_gd_predictor
 
     op_states = np.array(queried_points)
 
