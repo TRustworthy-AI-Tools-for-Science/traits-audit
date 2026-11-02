@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .base import AuditCheck, AuditReport
+from .validation import find_unpaired_checks
 
 
 class AuditPipeline:
@@ -34,6 +35,19 @@ class AuditPipeline:
         self.checks = checks
         self.verbose = verbose
 
+    def validate_config(self) -> list[str]:
+        """
+        Check the configured check list for missing "contextualizing twins"
+        (see :mod:`traits_audit.validation`) — metrics from
+        ``METRIC_TAXONOMY_AUDIT.md`` that the literature says are liable to be
+        misread when reported alone (e.g. Lyapunov lambda_max without DMDc's
+        rho(A), RSE without DUG). Returns a list of human-readable warnings;
+        empty when nothing is missing. Advisory only — never raises, and
+        ``run`` calls this automatically and stores the result in
+        ``report.metadata["pairing_warnings"]`` rather than failing the run.
+        """
+        return find_unpaired_checks(self.checks)
+
     def run(
         self,
         history: list[dict[str, Any]],
@@ -59,6 +73,7 @@ class AuditPipeline:
         AuditReport
         """
         report = AuditReport(metadata=metadata or {})
+        report.metadata["pairing_warnings"] = self.validate_config()
         for check in self.checks:
             result = check.run(history, **kwargs)
             report.results.append(result)
@@ -86,7 +101,7 @@ class AuditPipeline:
         path = Path(path)
         data = report.to_dict()
         if merge and path.exists():
-            existing = json.loads(path.read_text())
+            existing = json.loads(path.read_text(encoding="utf-8"))
             # Replace by check name so repeated saves don't accumulate duplicates.
             existing_by_name = {r["name"]: r for r in existing.get("results", [])}
             for r in data["results"]:
@@ -99,4 +114,4 @@ class AuditPipeline:
             existing["passed"] = existing["n_failed"] == 0
             data = existing
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data, indent=2))
+        path.write_text(json.dumps(data, indent=2), encoding="utf-8")

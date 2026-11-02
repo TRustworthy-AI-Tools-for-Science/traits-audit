@@ -1,9 +1,10 @@
 """Calibration checks."""
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any
 
 import numpy as np
+from scipy import stats as _stats
 
 from ..base import AuditCategory, AuditCheck, AuditResult
 
@@ -13,6 +14,22 @@ def _require(name: str, history: list, kwargs: dict, history_key: str | None = N
     Pull a named array from kwargs, falling back to extracting from history.
     Returns None if the data is not available — callers must handle this and
     return a Skipped AuditResult rather than raising.
+
+    A history entry may store either a scalar (one value per step) or an
+    array (a whole batch evaluated that step — e.g. an active-learning loop
+    that queries several points per iteration) under ``key``, and batches
+    are not required to be the same length across steps: the final step of
+    a loop is routinely shorter than the rest (a candidate pool that
+    doesn't divide evenly by the batch size, an early-stopped loop, …).
+    Concatenating each entry via ``np.atleast_1d`` + ``np.concatenate``
+    handles scalars, uniform batches, and ragged batches alike. The
+    previous implementation, ``np.asarray(vals).ravel()``, required
+    ``np.asarray`` to first build one rectangular array out of all step
+    entries, which raises ``ValueError`` the moment two steps' array-valued
+    entries differ in length — a real, live crash risk for any loop with a
+    variable batch size, and the reason at least one demo stopped passing
+    per-step batch arrays to ``hook.on_step`` entirely (losing per-step
+    calibration monitoring as a result) rather than working around it here.
     """
     if name in kwargs and kwargs[name] is not None:
         return np.asarray(kwargs[name]).ravel()
@@ -20,7 +37,7 @@ def _require(name: str, history: list, kwargs: dict, history_key: str | None = N
     vals = [h[key] for h in history if key in h]
     if not vals:
         return None
-    return np.asarray(vals).ravel()
+    return np.concatenate([np.atleast_1d(v) for v in vals])
 
 
 class CalibrationErrorCheck(AuditCheck):
@@ -55,9 +72,7 @@ class CalibrationErrorCheck(AuditCheck):
     def category(self) -> AuditCategory:
         return AuditCategory.ALEATORIC_MODEL
 
-    def run(self, history: List[Dict[str, Any]], **kwargs) -> AuditResult:
-        from scipy import stats
-
+    def run(self, history: list[dict[str, Any]], **kwargs) -> AuditResult:
         y_true = _require("y_true", history, kwargs)
         mu     = _require("y_pred_mean", history, kwargs)
         sigma  = _require("y_pred_std", history, kwargs)
@@ -70,7 +85,7 @@ class CalibrationErrorCheck(AuditCheck):
 
         levels = np.linspace(0.0, 1.0, self.n_bins + 2)[1:-1]
         observed = [
-            float((np.abs(y_true - mu) <= stats.norm.ppf((1 + p) / 2) * sigma).mean())
+            float((np.abs(y_true - mu) <= _stats.norm.ppf((1 + p) / 2) * sigma).mean())
             for p in levels
         ]
         ce = float(np.mean(np.abs(np.array(observed) - levels)))
@@ -93,8 +108,6 @@ def _calibration_stats(y_true, mu, sigma, n_bins: int = 10):
     metric as its own pipeline row while computing the full set once. Returns
     ``None`` when there are no valid (finite, positive-sigma) points.
     """
-    from scipy import stats as _st
-
     r = np.asarray(y_true, float).ravel() - np.asarray(mu, float).ravel()
     s = np.asarray(sigma, float).ravel()
     valid = np.isfinite(r) & np.isfinite(s) & (s > 0)
@@ -104,7 +117,7 @@ def _calibration_stats(y_true, mu, sigma, n_bins: int = 10):
 
     # Kuleshov (2018) calibration error: |observed - expected| coverage, averaged.
     levels = np.linspace(0.0, 1.0, n_bins + 2)[1:-1]
-    observed = np.array([float((np.abs(r) <= _st.norm.ppf((1 + p) / 2) * s).mean())
+    observed = np.array([float((np.abs(r) <= _stats.norm.ppf((1 + p) / 2) * s).mean())
                          for p in levels])
     ce = float(np.mean(np.abs(observed - levels)))
     _trapz = getattr(np, "trapezoid", None) or getattr(np, "trapz", None)  # np.trapz removed in NumPy 2.x
@@ -158,7 +171,7 @@ class KuleshovCalibrationCheck(AuditCheck):
     def category(self) -> AuditCategory:
         return AuditCategory.ALEATORIC_MODEL
 
-    def run(self, history: List[Dict[str, Any]], **kwargs) -> AuditResult:
+    def run(self, history: list[dict[str, Any]], **kwargs) -> AuditResult:
         y_true = _require("y_true", history, kwargs)
         mu     = _require("y_pred_mean", history, kwargs)
         sigma  = _require("y_pred_std", history, kwargs)
@@ -196,7 +209,7 @@ class ENCECheck(AuditCheck):
     def category(self) -> AuditCategory:
         return AuditCategory.ALEATORIC_MODEL
 
-    def run(self, history: List[Dict[str, Any]], **kwargs) -> AuditResult:
+    def run(self, history: list[dict[str, Any]], **kwargs) -> AuditResult:
         y_true = _require("y_true", history, kwargs)
         mu     = _require("y_pred_mean", history, kwargs)
         sigma  = _require("y_pred_std", history, kwargs)
@@ -232,7 +245,7 @@ class CalibrationError1StdCheck(AuditCheck):
     def category(self) -> AuditCategory:
         return AuditCategory.ALEATORIC_MODEL
 
-    def run(self, history: List[Dict[str, Any]], **kwargs) -> AuditResult:
+    def run(self, history: list[dict[str, Any]], **kwargs) -> AuditResult:
         y_true = _require("y_true", history, kwargs)
         mu     = _require("y_pred_mean", history, kwargs)
         sigma  = _require("y_pred_std", history, kwargs)

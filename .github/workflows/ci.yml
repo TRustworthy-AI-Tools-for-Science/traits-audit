@@ -58,7 +58,7 @@ jobs:
         run: uv pip install --system ".[mlflow]"
 
       - name: Run demo smoke test
-        run: ta-demo --steps 10 --seed 0
+        run: ta-cal-demo --steps 10 --seed 0
 
   docs:
     runs-on: ubuntu-latest

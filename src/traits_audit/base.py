@@ -10,15 +10,36 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 class AuditCategory(str, Enum):
-    """Broad classification of the uncertainty source a check addresses."""
-    ALEATORIC_IRREDUCIBLE = "aleatoric_irreducible"
-    ALEATORIC_MODEL       = "aleatoric_model"
-    EPISTEMIC             = "epistemic"
-    UNKNOWN               = "unknown"
+    """
+    Broad classification of the uncertainty source a check addresses.
+
+    The first three values are the aleatoric/epistemic (reducibility) taxonomy
+    class from ``.claude/METRIC_TAXONOMY_AUDIT.md`` §3 — that scheme was
+    already exactly what this enum encoded, so it keeps its original three-way
+    split rather than gaining a redundant fourth member. The remaining values
+    each correspond to one of the other seven classification schemes surveyed
+    there (random/systematic, Type A/Type B, ergodic/non-ergodic,
+    variability/ignorance, model/approximation/misspecification/procedural,
+    locus in the chain, reduction under replication). ``UNKNOWN`` is reserved
+    for checks the audit explicitly identifies as NOT belonging to any of the
+    eight classes (e.g. cross-cutting diagnostics like the tail index) rather
+    than as a generic fallback.
+    """
+    ALEATORIC_IRREDUCIBLE       = "aleatoric_irreducible"
+    ALEATORIC_MODEL             = "aleatoric_model"
+    EPISTEMIC                   = "epistemic"
+    RANDOM_SYSTEMATIC           = "random_systematic"
+    TYPE_A_TYPE_B               = "type_a_type_b"
+    ERGODIC_NON_ERGODIC         = "ergodic_non_ergodic"
+    VARIABILITY_IGNORANCE       = "variability_ignorance"
+    MODEL_PROCEDURAL            = "model_procedural"
+    LOCUS_IN_CHAIN              = "locus_in_chain"
+    REDUCTION_UNDER_REPLICATION = "reduction_under_replication"
+    UNKNOWN                     = "unknown"
 
 
 @dataclass
@@ -27,17 +48,17 @@ class AuditResult:
     name:      str
     passed:    bool
     category:  AuditCategory
-    value:     Optional[float]       = None
-    threshold: Optional[Any]         = None
+    value:     float | None       = None
+    threshold: Any | None         = None
     message:   str                   = ""
-    details:   Dict[str, Any]        = field(default_factory=dict)
+    details:   dict[str, Any]        = field(default_factory=dict)
 
 
 @dataclass
 class AuditReport:
     """Aggregated results from one pipeline run."""
-    results:  List[AuditResult]  = field(default_factory=list)
-    metadata: Dict[str, Any]     = field(default_factory=dict)
+    results:  list[AuditResult]  = field(default_factory=list)
+    metadata: dict[str, Any]     = field(default_factory=dict)
 
     @property
     def passed(self) -> bool:
@@ -59,7 +80,7 @@ class AuditReport:
             lines.append(f"  [{tag}] {r.name}{val}: {r.message}")
         return "\n".join(lines)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "passed":   self.passed,
             "n_passed": self.n_passed,
@@ -115,4 +136,4 @@ class AuditCheck(ABC):
     def category(self) -> AuditCategory: ...
 
     @abstractmethod
-    def run(self, history: List[Dict[str, Any]], **kwargs) -> AuditResult: ...
+    def run(self, history: list[dict[str, Any]], **kwargs) -> AuditResult: ...

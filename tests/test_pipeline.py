@@ -1,5 +1,5 @@
 import json
-import pytest
+
 from traits_audit.base import AuditCategory, AuditCheck, AuditResult
 from traits_audit.pipeline import AuditPipeline
 
@@ -80,9 +80,25 @@ def test_metadata_stored_in_report():
     assert report.metadata["experiment"] == "smoke"
 
 
-def test_metadata_defaults_to_empty_dict():
+def test_metadata_defaults_to_pairing_warnings_only():
+    # run() always populates metadata["pairing_warnings"] (see
+    # AuditPipeline.validate_config()); with no taxonomy-paired checks
+    # configured, that list is empty.
     report = AuditPipeline([_PassCheck()]).run([])
-    assert report.metadata == {}
+    assert report.metadata == {"pairing_warnings": []}
+
+
+def test_validate_config_flags_unpaired_lyapunov():
+    from traits_audit.checks.lyapunov import LyapunovStabilityCheck
+
+    pipeline = AuditPipeline([LyapunovStabilityCheck()])
+    warnings = pipeline.validate_config()
+    assert any("DMDcSpectralRadius" in w for w in warnings)
+
+
+def test_validate_config_empty_for_unrelated_checks():
+    pipeline = AuditPipeline([_PassCheck(), _FailCheck()])
+    assert pipeline.validate_config() == []
 
 
 # ── save() ───────────────────────────────────────────────────────────────────
@@ -129,4 +145,5 @@ def test_save_accepts_string_path(tmp_path):
     pipeline = AuditPipeline([_PassCheck()])
     out = str(tmp_path / "report.json")
     pipeline.save(pipeline.run([]), out, merge=False)
-    assert json.loads(open(out).read())["passed"] is True
+    with open(out) as fh:
+        assert json.loads(fh.read())["passed"] is True

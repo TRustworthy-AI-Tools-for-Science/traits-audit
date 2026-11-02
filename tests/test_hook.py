@@ -1,5 +1,6 @@
-import pytest
 import numpy as np
+import pytest
+
 from traits_audit.base import AuditCategory, AuditCheck, AuditResult
 from traits_audit.hook import AuditHook
 from traits_audit.pipeline import AuditPipeline
@@ -67,7 +68,7 @@ def test_on_end_returns_report():
 
 def test_report_property_raises_before_on_end():
     with pytest.raises(RuntimeError, match="on_end"):
-        _make_hook().report
+        _make_hook().report  # noqa: B018
 
 
 def test_on_end_kwargs_forwarded_to_checks():
@@ -89,9 +90,8 @@ def test_context_manager_sets_report():
 
 def test_context_manager_skips_pipeline_on_exception():
     hook = _make_hook()
-    with pytest.raises(ValueError):
-        with hook:
-            raise ValueError("boom")
+    with pytest.raises(ValueError), hook:
+        raise ValueError("boom")
     with pytest.raises(RuntimeError):
         _ = hook.report
 

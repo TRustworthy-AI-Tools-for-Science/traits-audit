@@ -1,34 +1,36 @@
 """Lyapunov stability check for surrogate model landscape analysis."""
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import numpy as np
 
 from ..base import AuditCategory, AuditCheck, AuditResult
 from ..stability.lyapunov_eq import (
+    compute_lyapunov,
+    eigenvalues_and_stability,
     make_gd_predictor,
     numerical_jacobian,
     numerical_jacobian_batched,
 )
 
+__all__ = [
+    "LyapunovStabilityCheck",
+    "compute_lyapunov",
+    "eigenvalues_and_stability",
+    "make_gd_predictor",
+    "numerical_jacobian",
+    "numerical_jacobian_batched",
+]
 
-# ── Pure computation helpers (numpy-only, no matplotlib) ─────────────────────
-# Thin adapters over the shared implementations in stability.lyapunov_eq; the
-# private names are kept because the check (and its tests) use the 1-argument
-# ``predictor(state)`` calling convention.
 
-def _numerical_jacobian(
-    predictor,
-    state: np.ndarray,
-    dx: float = 1e-4,
-) -> np.ndarray:
+# ── Backward-compatible private adapters ─────────────────────────────────────
+# The shared implementations live in stability.lyapunov_eq; these keep the
+# 1-argument ``predictor(state)`` calling convention used by older callers.
+
+def _numerical_jacobian(predictor, state: np.ndarray, dx: float = 1e-4) -> np.ndarray:
     """n×n Jacobian of predictor(state) → ℝⁿ via central differences."""
     return numerical_jacobian(lambda s, _a: predictor(s), state, None, dx)
-
-
-def _eigenvalues(J: np.ndarray) -> np.ndarray:
-    return np.abs(np.linalg.eigvals(J))
 
 
 def _gd_predictor(f_scalar, alpha: float = 0.01, eps: float = 1e-5):
@@ -140,9 +142,9 @@ class LyapunovStabilityCheck(AuditCheck):
         stability_threshold: float = 1.0,
         min_stable_fraction: float = 0.5,
         alpha: float = 0.01,
-        n_pca: Optional[int] = None,
-        window: Optional[int] = None,
-        max_workers: Optional[int] = None,
+        n_pca: int | None = None,
+        window: int | None = None,
+        max_workers: int | None = None,
     ):
         self.stability_threshold = stability_threshold
         self.min_stable_fraction = min_stable_fraction
@@ -157,7 +159,13 @@ class LyapunovStabilityCheck(AuditCheck):
 
     @property
     def category(self) -> AuditCategory:
-        return AuditCategory.EPISTEMIC
+        # Ergodic/non-ergodic (METRIC_TAXONOMY_AUDIT.md §2.1, §4.4): this
+        # characterises the *local* dynamics of the uncertainty landscape
+        # along the campaign trajectory, not an aleatoric/epistemic split.
+        # Must be paired with DMDcSpectralRadiusCheck (global spectral
+        # radius of the same trajectory) — see checks/ergodic.py and
+        # validation.NAME_PAIRS.
+        return AuditCategory.ERGODIC_NON_ERGODIC
 
     def _compute_lambda_max(
         self, surrogate_fn, op_states: np.ndarray, cache=None, surrogate_fn_batched=None
@@ -229,13 +237,13 @@ class LyapunovStabilityCheck(AuditCheck):
                 # instead of 4n^2 tiny scalar calls -- see class docstring.
                 for i in need:
                     J = _numerical_jacobian_batched(f_use_batched, work_states[i], alpha=self.alpha)
-                    store[offset + i] = float(_eigenvalues(J).max())
+                    store[offset + i] = eigenvalues_and_stability(J)["lambda_max"]
             else:
-                predictor = _gd_predictor(f_use, alpha=self.alpha)
+                predictor = make_gd_predictor(f_use, alpha=self.alpha)
 
                 def _one_point(i: int):
-                    J = _numerical_jacobian(predictor, work_states[i])
-                    return i, float(_eigenvalues(J).max())
+                    J = numerical_jacobian(predictor, work_states[i])
+                    return i, eigenvalues_and_stability(J)["lambda_max"]
 
                 if self.max_workers and self.max_workers > 1:
                     from concurrent.futures import ThreadPoolExecutor
@@ -250,8 +258,8 @@ class LyapunovStabilityCheck(AuditCheck):
         lm = np.array([store[offset + i] for i in range(m)], dtype=float)
         return lm, info
 
-    def run(self, history: List[Dict[str, Any]], **kwargs) -> AuditResult:
-        info: Dict[str, Any] = {}
+    def run(self, history: list[dict[str, Any]], **kwargs) -> AuditResult:
+        info: dict[str, Any] = {}
         # Route 1: precomputed lambda_max array (honour the window at aggregation)
         if "lambda_max" in kwargs and kwargs["lambda_max"] is not None:
             lm = np.asarray(kwargs["lambda_max"], dtype=float).ravel()
@@ -321,7 +329,7 @@ class LyapunovStabilityCheck(AuditCheck):
         if notes:
             message += "  [" + "; ".join(notes) + "]"
 
-        details: Dict[str, Any] = {
+        details: dict[str, Any] = {
             "lambda_max_mean": float(lm.mean()),
             "lambda_max_max": float(lm.max()),
             "lambda_max_min": float(lm.min()),

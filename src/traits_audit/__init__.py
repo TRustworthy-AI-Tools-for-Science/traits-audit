@@ -21,7 +21,16 @@ Quick import
 """
 __version__ = "0.2.0"
 
-from . import dmdc, stability  # noqa: F401  (dmdc kept for backward compat)
+from . import (  # dmdc kept for backward compat; prefer stability.dmdc
+    bootstrap,
+    credal,
+    dmdc,
+    pipeline_attribution,
+    provenance,
+    refit,
+    stability,
+    validation,
+)
 from .base import AuditCategory, AuditCheck, AuditReport, AuditResult
 from .checks.lyapunov import LyapunovStabilityCheck
 from .stability.detrend import DetrendResult, RegimeDetrender
@@ -30,16 +39,22 @@ from .mlflow_logger import MLflowLogger
 from .pipeline import AuditPipeline
 
 __all__ = [
+    "AuditCategory",
+    "AuditCheck",
     "AuditHook",
     "AuditPipeline",
-    "AuditCheck",
-    "AuditResult",
     "AuditReport",
-    "AuditCategory",
-    "MLflowLogger",
-    "LyapunovStabilityCheck",
+    "AuditResult",
     "DetrendResult",
+    "LyapunovStabilityCheck",
+    "MLflowLogger",
     "RegimeDetrender",
+    "bootstrap",
+    "credal",
     "dmdc",
+    "pipeline_attribution",
+    "provenance",
+    "refit",
     "stability",
+    "validation",
 ]
