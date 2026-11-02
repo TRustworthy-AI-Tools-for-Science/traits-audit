@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "traits-audit-nmi2026"
+version = "0.1.0"
+description = "Reproduction code for the NMI 2026 steerable-uncertainty paper (built on traits-audit)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [
+    { name = "Ashley Dale", email = "trustworthyai4sci@gmail.com" },
+]
+# Shared by every case study.
+dependencies = [
+    "traits-audit[mlflow]",
+    "matplotlib",
+    "numpy",
+    "scikit-learn",
+    "scipy>=1.10.0",
+    "plotly",
+    "kaleido>=0.2.1",
+]
+
+[project.scripts]
+ta-cal-demo          = "nmi2026.cal_demo:main"
+ta-sdl-demo          = "nmi2026.sdl_demo:main"
+ta-camd-demo         = "nmi2026.camd_demo:main"
+ta-pybamm-demo       = "nmi2026.pybamm_demo:main"
+ta-mobo-demo         = "nmi2026.mobo_demo:main"
+ta-committee-train   = "nmi2026.committee.train_solo:main"
+ta-committee-demo    = "nmi2026.committee._committee_demo:main"
+ta-committee-analyze = "nmi2026.committee.analysis._cli:main"
+
+# One extra per case study; `all` reproduces everything.
+[project.optional-dependencies]
+sdl       = ["botorch>=0.18.0", "self-driving-lab-demo", "ax-platform>=1.3.0"]
+mobo      = ["botorch>=0.18.0"]
+pybamm    = ["botorch>=0.18.0", "pybamm"]
+camd      = ["camd==2022.8.24", "pandas", "pymatgen", "matminer", "django", "PuLP"]
+committee = ["botorch>=0.18.0", "stable-baselines3>=2.3", "gymnasium>=0.29", "torch>=2.1", "tensorboard", "self-driving-lab-demo"]
+all       = ["traits-audit-nmi2026[sdl,mobo,pybamm,camd,committee]"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nmi2026"]

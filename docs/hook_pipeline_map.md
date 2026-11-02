@@ -28,7 +28,7 @@ it observes in each demo.
 
 ---
 
-## Demo 1 — 1-D Calibration Benchmark (`ta-demo`)
+## Demo 1 — 1-D Calibration Benchmark (`ta-cal-demo`)
 
 **AL pipeline per step:**
 

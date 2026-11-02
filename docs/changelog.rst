@@ -1,8 +1,25 @@
 Changelog
 =========
 
-0.2.0 (2026-10-09)
--------------------
+0.2.0 (unreleased)
+------------------
+
+Repository split into a library and a paper-reproduction package:
+
+- ``traits-audit`` (``packages/traits-audit``) is now only the generic audit
+  library. Core dependencies are numpy, scipy, scikit-learn and matplotlib;
+  ``botorch`` and ``kaleido`` are no longer required.
+- The case-study demos (``ta-cal-demo``, ``ta-sdl-demo``, ``ta-mobo-demo``,
+  ``ta-pybamm-demo``, ``ta-camd-demo``), the committee-RL study and the figure
+  code moved to the new ``traits-audit-nmi2026`` package
+  (``experiments/nmi2026``). Imports such as ``traits_audit._viz`` and
+  ``traits_audit.committee`` are now ``nmi2026.viz`` / ``nmi2026.committee``.
+- ``ta-demo`` is a new minimal quickstart that needs only core dependencies.
+- New checks for complete metric coverage: replication, procedural, ergodic,
+  credal, aleatoric/epistemic, tail, decision, provenance and attribution
+  (see :doc:`checks`).
+- Removed the ``mlflow_logger`` dependency on demo plotting code.
+
 
 Stability analysis consolidated into :mod:`traits_audit.stability` (a
 behavior-preserving refactor of code that was spread across traits-audit and

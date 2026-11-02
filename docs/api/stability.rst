@@ -2,7 +2,6 @@ Stability analysis
 ==================
 
 .. automodule:: traits_audit.stability
-   :members:
 
 .. automodule:: traits_audit.stability.dmdc
    :members:

@@ -7,7 +7,8 @@ on:
     branches: [main]
 
 jobs:
-  test:
+  library:
+    name: library (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -25,24 +26,29 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v3
 
-      - name: Install package
-        run: uv pip install --system ".[dev]"
+      # Install the built wheel, not the source tree, so the tests see exactly
+      # what PyPI users get (core deps only, plus the optional extras).
+      - name: Build and install wheel
+        run: |
+          uv build --package traits-audit -o dist
+          uv pip install --system "$(ls dist/*.whl)[dev,stability]"
 
-      - name: Run tests
+      - name: Run library tests
+        working-directory: packages/traits-audit
         run: pytest tests/ -v --cov=traits_audit --cov-report=xml
+
+      - name: Quickstart smoke test
+        run: ta-demo --steps 20 --seed 0
 
       - name: Upload coverage to Codecov
         if: matrix.python-version == '3.12'
         uses: codecov/codecov-action@v4
         with:
-          files: coverage.xml
+          files: packages/traits-audit/coverage.xml
           fail_ci_if_error: false
 
-  smoke:
+  experiment:
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: test
-
     steps:
       - uses: actions/checkout@v4
 
@@ -54,11 +60,11 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v3
 
-      - name: Install package with MLflow extras
-        run: uv pip install --system ".[mlflow]"
+      - name: Install workspace (locked) with experiment extras
+        run: uv sync --locked --all-packages --extra mobo --extra committee
 
-      - name: Run demo smoke test
-        run: ta-cal-demo --steps 10 --seed 0
+      - name: Run experiment tests
+        run: uv run --no-sync pytest experiments/nmi2026/tests -v
 
   docs:
     runs-on: ubuntu-latest
@@ -74,7 +80,7 @@ jobs:
         uses: astral-sh/setup-uv@v3
 
       - name: Install package with docs extras
-        run: uv pip install --system ".[docs]"
+        run: uv pip install --system "./packages/traits-audit[docs]"
 
       - name: Build Sphinx docs
         run: make -C docs html SPHINXOPTS="-W"

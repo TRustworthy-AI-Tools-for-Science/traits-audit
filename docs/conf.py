@@ -1,13 +1,13 @@
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "packages" / "traits-audit" / "src"))
 
 # ── Project metadata ─────────────────────────────────────────────────────────
 project   = "traits-audit"
 author    = "Ashley Dale"
 copyright = "2026, Ashley Dale"
-release   = "0.1.3"
+release   = "0.2.0"
 
 # ── Extensions ────────────────────────────────────────────────────────────────
 extensions = [
@@ -24,6 +24,7 @@ napoleon_google_docstring       = False
 napoleon_use_param              = True
 napoleon_use_rtype              = True
 napoleon_preprocess_types       = True
+napoleon_use_ivar               = True   # avoid duplicate attribute entries for dataclasses
 
 # ── Autodoc ───────────────────────────────────────────────────────────────────
 autodoc_member_order            = "bysource"

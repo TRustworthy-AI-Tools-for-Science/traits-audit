@@ -1,7 +1,13 @@
 .. _demo-calibration:
 
-Calibration scenarios demo (``ta-demo``)
-=========================================
+Calibration scenarios demo (``ta-cal-demo``)
+============================================
+
+.. note::
+
+   The case studies are reproduction code for the paper and live in the
+   ``traits-audit-nmi2026`` experiment package (``experiments/nmi2026`` in the
+   repository), not in the ``traits-audit`` library.
 
 This demo compares four active learning runs side-by-side for a function minimization
 task using active learning. This demonstrates how the
@@ -10,8 +16,8 @@ well-calibrated baseline, an overconfident system and an underconfident system.
 
 .. code-block:: bash
 
-   ta-demo                                          # all four scenarios, 100 steps (default)
-   ta-demo --steps 250 --seed 0                     # used to generate the figures on this page
+   ta-cal-demo                                          # all four scenarios, 100 steps (default)
+   ta-cal-demo --steps 250 --seed 0                     # used to generate the figures on this page
 
 
 Introduction

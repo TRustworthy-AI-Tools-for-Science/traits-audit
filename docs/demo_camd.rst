@@ -261,7 +261,7 @@ total: 25 seed + 100 steps × 4 per step).
    so this project's ``pyproject.toml`` overrides those dependencies to
    modern, installable versions (``[tool.uv] override-dependencies``)
    rather than vendoring a patched build. With that in place,
-   ``pip install "traits-audit[camd]"`` / ``uv sync --extra camd`` installs
+   ``pip install "traits-audit-nmi2026[camd]"`` / ``uv sync --extra camd`` installs
    the real ``camd`` package and this demo uses its
    ``AgentStabilityAdaBoost`` agent directly; the sklearn ``BaggingRegressor``
    fallback path described below only activates if ``camd`` genuinely isn't

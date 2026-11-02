@@ -1,52 +1,39 @@
-# TRAITS Audit
+# traits-audit
 
-<p align="center">
-  <img src="docs/_static/logo.svg" alt="traits-audit logo" width="200">
-</p>
+This repository contains two things:
 
-![version](https://img.shields.io/badge/version-0.1.3-blue)
-![python](https://img.shields.io/badge/python-3.11%2B-blue)
-![license](https://img.shields.io/badge/license-MIT-green)
-![tests](https://github.com/TRustworthy-AI-Tools-for-Science/traits-audit/actions/workflows/ci.yml/badge.svg)
-![docs](https://github.com/TRustworthy-AI-Tools-for-Science/traits-audit/actions/workflows/docs-pages.yml/badge.svg)
+| Directory | What it is | Who it is for |
+|---|---|---|
+| [`packages/traits-audit`](packages/traits-audit) | **The `traits-audit` library**: a generic, passive uncertainty-audit pipeline for any active-learning loop. Published to PyPI. | Anyone who wants to audit the uncertainty of their own AL / BO / SDL campaign. |
+| [`experiments/nmi2026`](experiments/nmi2026) | **Paper reproduction code**: the case studies and RL steering study behind the NMI 2026 paper, built on the library. | Reviewers and readers reproducing the paper's results. |
 
-A flexible uncertainty audit pipeline that hooks into any pre-existing active learning loop.
+Documentation for the library lives in [`docs/`](docs) and is published at
+**https://trustworthy-ai-tools-for-science.github.io/traits-audit/**.
 
-## Installation
+## Using the library
 
 ```bash
-# uv workspace (recommended — installs all demos + mlflow, editable)
-uv sync
-
-# standalone pip install
-pip install "."
-pip install ".[mlflow,camd,pybamm,sdl]"   # with all demo extras
+pip install traits-audit
+ta-demo
 ```
 
-## Quickstart
+See [`packages/traits-audit/README.md`](packages/traits-audit/README.md).
+
+## Developing / reproducing the paper
+
+The repository is a [uv](https://docs.astral.sh/uv/) workspace:
 
 ```bash
-ta-cal-demo                          # 100 AL steps, 4 calibration scenarios
-ta-cal-demo --steps 60 --seed 7
+uv sync                                    # library + experiment (core) + dev tools
+uv sync --all-extras                       # + every case study's heavy dependencies
+uv run pytest packages/traits-audit/tests  # library tests
+uv run pytest experiments/nmi2026/tests    # experiment tests
 ```
 
-The demo runs a bootstrap-ensemble surrogate on the Forrester benchmark with LCB
-acquisition, fully wired to the audit pipeline.
+To reproduce the paper, see
+[`experiments/nmi2026/README.md`](experiments/nmi2026/README.md). Results are
+not tracked in git. They are archived with a frozen copy of the code on Zenodo.
 
-## Documentation
+## License
 
-Full API reference, built-in checks, custom check examples, and worked case studies:
-
-**https://trustworthy-ai-tools-for-science.github.io/traits-audit/**
-
-## Citation
-
-```bibtex
-@software{dale2026traitsaudit,
-  author  = {Dale, Ashley},
-  title   = {{TRAITS Audit}: A Passive Uncertainty Audit Framework for Active Learning Loops},
-  year    = {2026},
-  url     = {https://github.com/TRustworthy-AI-Tools-for-Science/traits-audit},
-  version = {0.1.3},
-}
-```
+MIT. See [LICENSE](LICENSE).

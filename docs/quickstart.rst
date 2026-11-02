@@ -13,19 +13,24 @@ Install the package and run:
 
    ta-demo
 
-The demo runs a 100-step active learning loop in which a bootstrap-ensemble
-polynomial surrogate learns a 1-D target function via lower-confidence-bound
-acquisition.  At each step the loop pushes predictions to
-:class:`~traits_audit.hook.AuditHook`, which triggers an intermediate audit
-every 10 steps.
+The demo runs a 60-step active learning loop in which a bootstrap ensemble of
+cubic polynomials learns a noisy 1-D function by uncertainty sampling.  Each
+step pushes the prediction for the queried point to
+:class:`~traits_audit.hook.AuditHook`; the pipeline audits the history at the
+end and prints a report.
 
 Options:
 
 .. code-block:: bash
 
-   ta-demo --steps 60 --seed 7       # more steps, different seed
-   ta-demo --check-every 5           # intermediate audit every 5 steps
+   ta-demo --std-scale 0.3          # over-confident surrogate: calibration checks fail
+   ta-demo --std-scale 3.0          # under-confident surrogate
+   ta-demo --steps 100 --seed 7
    ta-demo --help
+
+The full case studies from the paper (``ta-cal-demo``, ``ta-sdl-demo``, …)
+are in the separate ``traits-audit-nmi2026`` experiment package; see
+:doc:`installation`.
 
 
 Minimal example
