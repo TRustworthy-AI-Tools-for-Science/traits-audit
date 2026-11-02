@@ -64,7 +64,7 @@ jobs:
         run: uv sync --locked --all-packages --extra mobo --extra committee
 
       - name: Run experiment tests
-        run: uv run --no-sync pytest experiments/nmi2026/tests -v
+        run: uv run --no-sync pytest experiments/results/tests -v
 
   docs:
     runs-on: ubuntu-latest

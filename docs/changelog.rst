@@ -11,9 +11,9 @@ Repository split into a library and a paper-reproduction package:
   ``botorch`` and ``kaleido`` are no longer required.
 - The case-study demos (``ta-cal-demo``, ``ta-sdl-demo``, ``ta-mobo-demo``,
   ``ta-pybamm-demo``, ``ta-camd-demo``), the committee-RL study and the figure
-  code moved to the new ``traits-audit-nmi2026`` package
-  (``experiments/nmi2026``). Imports such as ``traits_audit._viz`` and
-  ``traits_audit.committee`` are now ``nmi2026.viz`` / ``nmi2026.committee``.
+  code moved to the new ``traits-audit-results`` package
+  (``experiments/results``). Imports such as ``traits_audit._viz`` and
+  ``traits_audit.committee`` are now ``results.viz`` / ``results.committee``.
 - ``ta-demo`` is a new minimal quickstart that needs only core dependencies.
 - New checks for complete metric coverage: replication, procedural, ergodic,
   credal, aleatoric/epistemic, tail, decision, provenance and attribution

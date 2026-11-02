@@ -33,11 +33,11 @@ mlartifacts/
 # Generated outputs
 figures/
 runs/
-results/
+/results/
 _nb_results/
 
 # Results are never tracked: they are published, together with a frozen copy
-# of this code, as a Zenodo deposit (see experiments/nmi2026/README.md).
+# of this code, as a Zenodo deposit (see experiments/results/README.md).
 _results/
 
 # Ashley's manuscript repo (daleas0120/paper-traits-audit), cloned here for

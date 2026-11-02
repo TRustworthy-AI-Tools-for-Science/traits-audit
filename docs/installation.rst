@@ -44,7 +44,7 @@ From source (uv workspace)
 
 The repository is a uv workspace holding the library
 (``packages/traits-audit``) and the paper reproduction code
-(``experiments/nmi2026``):
+(``experiments/results``):
 
 .. code-block:: bash
 
@@ -55,7 +55,7 @@ The repository is a uv workspace holding the library
 
 The case-study demos (``ta-cal-demo``, ``ta-sdl-demo``, ``ta-mobo-demo``,
 ``ta-pybamm-demo``, ``ta-camd-demo``) belong to the experiment package, not
-the library. See ``experiments/nmi2026/README.md``.
+the library. See ``experiments/results/README.md``.
 
 
 Verifying the install

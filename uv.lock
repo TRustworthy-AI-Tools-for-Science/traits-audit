@@ -13,7 +13,7 @@ resolution-markers = [
 [manifest]
 members = [
     "traits-audit",
-    "traits-audit-nmi2026",
+    "traits-audit-results",
 ]
 overrides = [
     { name = "awscli", specifier = ">=1.32" },
@@ -30,7 +30,7 @@ dev = [
     { name = "pytest-cov", specifier = ">=5" },
     { name = "ruff" },
     { name = "traits-audit", extras = ["mlflow", "stability"], editable = "packages/traits-audit" },
-    { name = "traits-audit-nmi2026", editable = "experiments/nmi2026" },
+    { name = "traits-audit-results", editable = "experiments/results" },
 ]
 docs = [{ name = "traits-audit", extras = ["docs"], editable = "packages/traits-audit" }]
 
@@ -5951,9 +5951,9 @@ requires-dist = [
 provides-extras = ["mlflow", "stability", "docs", "dev"]
 
 [[package]]
-name = "traits-audit-nmi2026"
+name = "traits-audit-results"
 version = "0.1.0"
-source = { editable = "experiments/nmi2026" }
+source = { editable = "experiments/results" }
 dependencies = [
     { name = "kaleido" },
     { name = "matplotlib" },
@@ -6041,7 +6041,7 @@ requires-dist = [
     { name = "tensorboard", marker = "extra == 'committee'" },
     { name = "torch", marker = "extra == 'committee'", specifier = ">=2.1" },
     { name = "traits-audit", extras = ["mlflow"], editable = "packages/traits-audit" },
-    { name = "traits-audit-nmi2026", extras = ["sdl", "mobo", "pybamm", "camd", "committee"], marker = "extra == 'all'", editable = "experiments/nmi2026" },
+    { name = "traits-audit-results", extras = ["sdl", "mobo", "pybamm", "camd", "committee"], marker = "extra == 'all'", editable = "experiments/results" },
 ]
 provides-extras = ["sdl", "mobo", "pybamm", "camd", "committee", "all"]
 

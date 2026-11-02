@@ -29,7 +29,7 @@ Options:
    ta-demo --help
 
 The full case studies from the paper (``ta-cal-demo``, ``ta-sdl-demo``, …)
-are in the separate ``traits-audit-nmi2026`` experiment package; see
+are in the separate ``traits-audit-results`` experiment package; see
 :doc:`installation`.
 
 

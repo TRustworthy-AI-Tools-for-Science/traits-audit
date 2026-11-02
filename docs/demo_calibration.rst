@@ -6,7 +6,7 @@ Calibration scenarios demo (``ta-cal-demo``)
 .. note::
 
    The case studies are reproduction code for the paper and live in the
-   ``traits-audit-nmi2026`` experiment package (``experiments/nmi2026`` in the
+   ``traits-audit-results`` experiment package (``experiments/results`` in the
    repository), not in the ``traits-audit`` library.
 
 This demo compares four active learning runs side-by-side for a function minimization

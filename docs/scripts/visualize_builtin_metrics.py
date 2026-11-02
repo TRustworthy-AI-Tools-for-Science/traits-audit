@@ -18,7 +18,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy import stats as sp_stats
 
-# ── Publication style (mirrors experiments/nmi2026/src/nmi2026/viz.py _RCPARAMS) ───────────
+# ── Publication style (mirrors experiments/results/src/results/viz.py _RCPARAMS) ───────────
 plt.rcParams.update({
     "font.family":     "serif",
     "font.size":       10,

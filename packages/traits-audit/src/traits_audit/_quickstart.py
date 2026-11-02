@@ -7,7 +7,7 @@ history at the end and prints a report.  Pass ``--std-scale`` below 1 to make
 the surrogate over-confident and watch the calibration checks fail.
 
 Needs only the core dependencies (numpy, scipy, scikit-learn, matplotlib).
-The full paper case studies live in the separate ``nmi2026`` experiment
+The full paper case studies live in the separate ``results`` experiment
 package.
 """
 from __future__ import annotations

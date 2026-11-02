@@ -1,16 +1,16 @@
 # Workspace root — not itself a package.
 #
 #   packages/traits-audit   generic, reusable uncertainty-audit library (PyPI)
-#   experiments/nmi2026     reproduction code for the NMI 2026 paper
+#   experiments/results     reproduction code for the NMI 2026 paper
 #
 # `uv sync` installs both (editable) plus dev tools; see README.md.
 
 [tool.uv.workspace]
-members = ["packages/traits-audit", "experiments/nmi2026"]
+members = ["packages/traits-audit", "experiments/results"]
 
 [tool.uv.sources]
 traits-audit = { workspace = true }
-traits-audit-nmi2026 = { workspace = true }
+traits-audit-results = { workspace = true }
 
 [tool.uv]
 # Only the workspace root's overrides are honoured by uv; they are needed by
@@ -39,7 +39,7 @@ override-dependencies = [
 [dependency-groups]
 dev = [
     "traits-audit[mlflow,stability]",
-    "traits-audit-nmi2026",
+    "traits-audit-results",
     "pytest>=8",
     "pytest-cov>=5",
     "ruff",
