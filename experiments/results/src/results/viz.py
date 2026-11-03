@@ -15,6 +15,13 @@ from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
+from traits_audit import plotting as _ta_plot
+from traits_audit.plotting import (
+    CHECK_ABBREVIATIONS,
+    filter_stage_reports,
+    result_status,
+    split_trackable_checks,
+)
 from traits_audit.stability.lyapunov_eq import (
     compute_lyapunov,
     eigenvalues_and_stability,
@@ -39,50 +46,6 @@ plt.rcParams.update(_RCPARAMS)
 
 
 # ── Plotly figure constants ─────────────────────────────────────────────────
-
-#: Short labels for check names used on the x-axis of the check-grid heatmap
-#: and the metric-correlation matrix. Every ``AuditCheck.name`` in the
-#: package should have an entry here — a missing one falls back to the full
-#: name (check grid) or a hard 12-char truncation (correlation matrix), both
-#: of which get visually cramped or ambiguous fast.
-_CHECK_ABBREV: dict[str, str] = {
-    # Total-predictive-distribution checks (pre-existing).
-    "CalibrationError":            "CE",
-    "KuleshovCalibrationError":    "KCE",
-    "ENCE":                        "ENCE",
-    "CalibrationError1Std":        "CE1Sig",
-    "ConformalCoverage":           "CC",
-    "CRPS":                        "CRPS",
-    "IntervalCoverage":            "IC",
-    "IntervalScore":               "IS",
-    "NegativeLogLikelihood":       "NLL",
-    "PITUniformity":               "PITU",
-    "UncertaintyEvolution":        "UE",
-    "UncertaintyAnomalies":        "UA",
-    "VarianceAlignment":           "VA",
-    "VarianceErrorCorrelation":    "VEC",
-    "LyapunovStability":           "LYS",
-    "MahalanobisOOD":              "MOOD",
-    # Taxonomy-audit additions (METRIC_TAXONOMY_AUDIT.md §4).
-    "SignedBias":                  "SB",
-    "ReplicationShrinkageExponent": "RSE",
-    "DarkUncertaintyGap":          "DUG",
-    "TypeBMassFraction":           "TBMF",
-    "ReducibilityRealisationRatio": "RRR",
-    "AleatoricFloorConsistency":   "AFC",
-    "EnsembleIndependenceDeficit": "EID",
-    "DMDcSpectralRadius":          "Rho",
-    "ResidualPersistenceHalfLife": "RHL",
-    "ImprecisionWidthFraction":    "IWF",
-    "EnvelopeViolationRate":       "EV",
-    "ProceduralVarianceShare":     "PVS",
-    "DataVarianceShare":           "DVS",
-    "MisspecificationResidualFloor": "MRF",
-    "StageVarianceAttribution":    "SVA",
-    "DecisionFlipRate":            "DFR",
-    "TailIndex":                   "TI",
-    "ScoreDecomposition":          "SD",
-}
 
 #: Per-step scalar keys recorded by the audit hook and shown in the state heatmap.
 _STATE_KEYS = ["uncertainty", "pool_sigma_mean", "pool_sigma_max", "abs_error"]
@@ -529,14 +492,8 @@ def plot_uncertainty_evolution(
     out_dir: Path,
 ) -> None:
     """Per-step surrogate uncertainty over the AL loop (fig4)."""
-    fig, ax = plt.subplots(figsize=(3.5, 3.5))
-    ax.plot(np.arange(len(uncertainties)), uncertainties, color="C0")
-    ax.set_xlabel("Step")
-    ax.set_ylabel("Surrogate std")
-    ax.set_title(model_label, fontsize=9)
-    ax.grid(False)
-    fig.tight_layout()
-    _save(fig, out_dir, "fig4_uncertainty_evolution")
+    _save(_ta_plot.plot_uncertainty_evolution(uncertainties, title=model_label),
+          out_dir, "fig4_uncertainty_evolution")
 
 
 def plot_lyapunov_evolution(
@@ -583,102 +540,14 @@ def plot_audit_evolution(
 ) -> None:
     """Per-check metric vs AL step, one subplot per check (fig6).
 
-    Each subplot shows the metric value at every snapshot step.  Dots are
-    coloured green (pass), red (fail), or grey (report-only — the check
-    reported a value but has no configured threshold, e.g. ``CRPSCheck()``
-    with the default ``threshold=None``; a bare "always green" dot there
-    would misrepresent an unevaluated score as a healthy one).  A dashed
-    black horizontal line marks the pass/fail threshold where one is
-    defined; for ``IntervalCoverage`` the acceptable band bounds are drawn
-    as two lines.  Report-only checks show no threshold line, since they
-    have none.
-
-    ``pipeline`` is re-run from scratch at every snapshot step, so pass a
-    lightweight subset (fast checks only) rather than the demo's full
-    pipeline once it includes refit sweeps or bootstrap CIs — those are
-    affordable once per run, not once per snapshot times every AL step.
+    See :func:`traits_audit.plotting.plot_audit_evolution`.
     """
-    n_steps = len(history)
-    if n_steps < snapshot_every:
-        return
-
-    snap_steps = list(range(snapshot_every, n_steps + 1, snapshot_every))
-    if snap_steps[-1] != n_steps:
-        snap_steps.append(n_steps)
-
-    records: dict[str, tuple[list, list]] = {}
-    status_at: dict[str, list[str]] = {}
-    thresholds: dict[str, Any] = {}
-    tolerances: dict[str, float] = {}
-
-    for k in snap_steps:
-        sub = history[:k]
-        try:
-            report = pipeline.run(sub)
-        except Exception:
-            continue
-        for r in report.results:
-            if r.value is None:
-                continue
-            _, status = _result_status(r)
-            records.setdefault(r.name, ([], []))[0].append(k)
-            records[r.name][1].append(r.value)
-            status_at.setdefault(r.name, []).append(status)
-            if r.name not in thresholds and r.threshold is not None:
-                thresholds[r.name] = r.threshold
-            if r.name not in tolerances and r.details:
-                tol = r.details.get("tolerance")
-                if tol is not None:
-                    tolerances[r.name] = tol
-
-    if not records:
-        return
-
-    check_names = list(records.keys())
-    n_checks = len(check_names)
-    ncols = 3
-    nrows = (n_checks + ncols - 1) // ncols
-
-    fig, axes = plt.subplots(nrows, ncols, figsize=(7.0, nrows * 1.9))
-    axes_flat = np.array(axes).flatten()
-
-    _STATUS_COLOR = {"pass": "#27ae60", "fail": "#c0392b", "report_only": "#9a9a9a", "skipped": "#9a9a9a"}
-
-    for i, name in enumerate(check_names):
-        ax = axes_flat[i]
-        xs, ys = records[name]
-        statuses = status_at.get(name, ["pass"] * len(xs))
-        colors = [_STATUS_COLOR[s] for s in statuses]
-        ax.plot(xs, ys, color="C0", lw=1.2)
-        ax.scatter(xs, ys, c=colors, s=18, zorder=3)
-
-        t = thresholds.get(name)
-        if t is not None:
-            if isinstance(t, tuple):
-                ax.axhline(t[0], color="k", lw=0.8, ls="--", alpha=0.5)
-                ax.axhline(t[1], color="k", lw=0.8, ls="--", alpha=0.5)
-            elif name in tolerances:
-                tol = tolerances[name]
-                ax.axhline(float(t) - tol, color="k", lw=0.8, ls="--", alpha=0.5)
-                ax.axhline(float(t) + tol, color="k", lw=0.8, ls="--", alpha=0.5)
-            else:
-                ax.axhline(float(t), color="k", lw=0.8, ls="--", alpha=0.5)
-
-        title = name.replace("Check", "")
-        if all(s in ("report_only", "skipped") for s in statuses):
-            title += " (report-only)"
-        ax.set_title(title, fontsize=_RCPARAMS["legend.fontsize"])
-        ax.set_xlabel("Step")
-        ax.tick_params(labelsize=_RCPARAMS["xtick.labelsize"])
-        ax.grid(False)
-
-    for j in range(n_checks, len(axes_flat)):
-        axes_flat[j].set_visible(False)
-
-    fig.suptitle(f"{model_label} — Audit checks over AL steps",
-                 fontsize=_RCPARAMS["font.size"])
-    fig.tight_layout()
-    _save(fig, out_dir, "fig6_audit_evolution")
+    fig = _ta_plot.plot_audit_evolution(
+        pipeline, history, snapshot_every=snapshot_every,
+        title=f"{model_label} — Audit checks over AL steps",
+    )
+    if fig is not None:
+        _save(fig, out_dir, "fig6_audit_evolution")
 
 
 def plot_convergence(
@@ -746,83 +615,6 @@ def plot_convergence(
     _save(fig, out_dir, fig_title)
 
 
-# ── Heatmap intensity helper ────────────────────────────────────────────────
-
-def _result_status(result: Any) -> tuple[float, str]:
-    """Map an AuditResult to a (intensity, status) pair.
-
-    ``status`` is one of four values, not two — this is the load-bearing
-    fix for the "report-only checks render as deeply passing" problem:
-    a check with ``threshold=None`` (``CRPSCheck``, ``TailIndexCheck``, …)
-    always sets ``passed=True`` by convention, but that is not the same
-    claim as "deeply passing" — it means the check was never asked to judge
-    anything. Likewise a ``Skipped — …`` message is a pass in
-    ``AuditResult.passed`` but means "no data", not "healthy". Collapsing
-    either into the same green as a genuinely evaluated, healthy result is
-    what produced an overconfident model's NLL (13.47, badly failing by any
-    reasonable bar) painting the identical colour as a calibrated model's
-    NLL (0.26).
-
-    Returns
-    -------
-    (intensity, status)
-        ``intensity`` is only meaningful when ``status in ("pass", "fail")``:
-        1.0 = deeply passing, 0.5 = at the threshold boundary, 0.0 = deeply
-        failing. ``status`` is one of ``"pass"``, ``"fail"``,
-        ``"report_only"`` (threshold is None — never evaluated against a
-        criterion), or ``"skipped"`` (required data was unavailable).
-    """
-    if isinstance(result.message, str) and result.message.startswith("Skipped"):
-        return 0.5, "skipped"
-
-    v = result.value
-    t = result.threshold
-    if t is None:
-        return 0.5, "report_only"
-    if v is None:
-        return (1.0 if result.passed else 0.0), ("pass" if result.passed else "fail")
-
-    name = result.name
-    details = result.details or {}
-    if name in ("CalibrationError", "UncertaintyAnomalies"):
-        # Lower is better; PASS if v ≤ t
-        signed = (t - v) / max(abs(t), 1e-6)
-    elif name == "UncertaintyEvolution":
-        # Higher (less negative) is better; PASS if v ≥ t. Display-span
-        # heuristic, not a duplicated check parameter (UncertaintyEvolution
-        # always reports threshold=0.0, which carries no natural scale).
-        span = max(abs(t) * 3, 0.10)
-        signed = (v - t) / span
-    elif name == "VarianceErrorCorrelation":
-        # Higher is better; PASS if v ≥ t. Same status as above — min_correlation
-        # sets the pass boundary but not a natural display scale.
-        span = max(1.0 - t, 0.30)
-        signed = (v - t) / span
-    elif name == "IntervalCoverage":
-        # t is (lo, hi) band; derive target and tolerance from it. The
-        # check always emits a tuple threshold, so the scalar branch below
-        # is a defensive fallback only, using the check's own default
-        # rather than a hardcoded value that could disagree with it.
-        if isinstance(t, tuple):
-            target = (t[0] + t[1]) / 2
-            tol = max((t[1] - t[0]) / 2, 1e-6)
-        else:
-            tol = details.get("tolerance", 0.1)
-            target = t
-        signed = (tol - abs(v - target)) / tol
-    elif name == "VarianceAlignment":
-        # Toward-target (ideal ratio = 1.0 = t); tolerance read from the
-        # check's own details rather than hardcoded, so this can never
-        # silently disagree with VarianceAlignmentCheck(tolerance=...).
-        tol = details.get("tolerance", 0.5)
-        signed = (tol - abs(v - t)) / tol
-    else:
-        return (1.0 if result.passed else 0.0), ("pass" if result.passed else "fail")
-
-    intensity = float(np.clip(0.5 + 0.5 * np.clip(signed, -1.0, 1.0), 0.0, 1.0))
-    return intensity, ("pass" if result.passed else "fail")
-
-
 # ── Plotly interactive figures ──────────────────────────────────────────────
 
 def _fig_check_grid(
@@ -858,7 +650,7 @@ def _fig_check_grid(
         for r in rep.results:
             if r.name not in check_names:
                 check_names.append(r.name)
-    abbrevs = [_CHECK_ABBREV.get(n, n) for n in check_names]
+    abbrevs = [CHECK_ABBREVIATIONS.get(n, n) for n in check_names]
     stage_labels = [label for label, _ in stage_reports]
 
     # Build [stage][check] intermediate arrays then transpose to [check][stage].
@@ -889,7 +681,7 @@ def _fig_check_grid(
                     "(e.g. it needs data only available once the run ends).</i>"
                 )
                 continue
-            intensity, status = _result_status(result)
+            intensity, status = result_status(result)
             report_or_skip = status in ("report_only", "skipped")
             z_row.append(np.nan if report_or_skip else intensity)
             status_row.append(status)
@@ -1015,64 +807,6 @@ def _fig_check_grid(
     return fig
 
 
-def _split_stage_reports_by_trackability(
-    stage_reports: list[tuple[str, Any]],
-) -> tuple[list, list]:
-    """Partition check names into step-trackable vs final-report-only.
-
-    A check is "final-only" if it is skipped (or absent — see
-    ``_fig_check_grid``'s union-of-names handling) at *every* intermediate
-    stage and only produces a real value in the last stage report. This is
-    the normal, structural situation for any check that needs data only
-    available once the loop ends (``AuditHook.on_step`` only ever receives
-    the per-step kwargs the loop chooses to pass it; a held-out test set,
-    an ensemble evaluation, a replication arm, or a refit sweep is
-    deliberately computed once, post-loop, rather than re-run at every
-    ``check_every`` snapshot, which would be prohibitively expensive for
-    e.g. bootstrap refit checks). Mixing both kinds of check into one grid
-    makes the grid mostly empty cells for any pipeline with more final-only
-    checks than step-trackable ones — this split is what lets each half be
-    rendered at a size that matches how much real data it actually has.
-
-    Returns
-    -------
-    (trackable_names, final_only_names)
-        Both preserve the order names first appear in the final report.
-    """
-    if len(stage_reports) < 2:
-        return [r.name for r in stage_reports[-1][1].results], []
-    *intermediate, (_, final_report) = stage_reports
-    trackable = set()
-    for _, rep in intermediate:
-        for r in rep.results:
-            _, status = _result_status(r)
-            if status != "skipped":
-                trackable.add(r.name)
-    trackable_names, final_only_names = [], []
-    for r in final_report.results:
-        (trackable_names if r.name in trackable else final_only_names).append(r.name)
-    return trackable_names, final_only_names
-
-
-def _filter_stage_reports(stage_reports: list[tuple[str, Any]], names: list) -> list:
-    """Copy of ``stage_reports`` with each report's ``.results`` filtered to
-    ``names`` (preserving ``names``' order). A stage missing a name entirely
-    (e.g. an intermediate report from a pipeline that doesn't yet know about
-    a final-only check) simply omits it — ``_fig_check_grid`` already
-    renders an absent check the same as an explicitly skipped one.
-    """
-    from traits_audit.base import AuditReport
-
-    name_set = set(names)
-    order = {n: i for i, n in enumerate(names)}
-    out = []
-    for label, rep in stage_reports:
-        by_name = {r.name: r for r in rep.results if r.name in name_set}
-        filtered = sorted(by_name.values(), key=lambda r: order[r.name])
-        out.append((label, AuditReport(results=filtered, metadata=rep.metadata)))
-    return out
-
-
 def check_grid_figures(
     stage_reports: list[tuple[str, Any]],
     run_name: str,
@@ -1096,13 +830,13 @@ def check_grid_figures(
         set), just one column wide since there is only ever one stage's
         worth of data for these checks.
     """
-    trackable_names, final_only_names = _split_stage_reports_by_trackability(stage_reports)
-    fig_trackable = _fig_check_grid(_filter_stage_reports(stage_reports, trackable_names), run_name)
+    trackable_names, final_only_names = split_trackable_checks(stage_reports)
+    fig_trackable = _fig_check_grid(filter_stage_reports(stage_reports, trackable_names), run_name)
     fig_final_only = None
     if final_only_names:
         final_stage = [stage_reports[-1]]
         fig_final_only = _fig_check_grid(
-            _filter_stage_reports(final_stage, final_only_names),
+            filter_stage_reports(final_stage, final_only_names),
             f"{run_name} — final-report-only checks",
         )
         if fig_final_only is not None:
@@ -1268,44 +1002,6 @@ def _fig_pareto_scenarios(
     ax.grid(False)
     ax.legend(handles=handles, frameon=False,
             fontsize=_RCPARAMS["legend.fontsize"])
-    fig.tight_layout()
-    return fig
-
-
-def _fig_calibration_curve(result: Any) -> Any | None:
-    """Calibration reliability diagram for ``CalibrationErrorCheck`` results.
-
-    Reads ``confidence_levels`` and ``observed_fractions`` from
-    ``result.details``.  Returns ``None`` if the details are absent.
-    """
-    d = result.details
-    expected = d.get("confidence_levels")
-    observed = d.get("observed_fractions")
-    if expected is None or observed is None:
-        return None
-
-    expected = np.asarray(expected)
-    observed = np.asarray(observed)
-    ce = d.get("calibration_error", float("nan"))
-
-    fig, ax = plt.subplots(figsize=(3.5, 3.5))
-    ax.plot([0, 1], [0, 1], "k--", lw=0.8, alpha=0.5, label="Perfect calibration")
-    ax.plot(expected, observed, color="C0", label="Observed")
-    ax.fill_between(
-        expected, expected, observed,
-        alpha=0.15, color="C1", label="Miscalibration",
-    )
-    if not np.isnan(ce):
-        ax.text(
-            0.05, 0.95, f"CE = {ce:.4f}",
-            transform=ax.transAxes, va="top",
-            bbox={"boxstyle": "round", "facecolor": "wheat", "alpha": 0.5},
-            fontsize=_RCPARAMS["legend.fontsize"],
-        )
-    ax.set_xlabel("Expected coverage")
-    ax.set_ylabel("Observed coverage")
-    ax.legend(frameon=False)
-    ax.grid(False)
     fig.tight_layout()
     return fig
 
@@ -1488,10 +1184,10 @@ def _fig_metric_correlations(
     ax.set_yticks(range(n_checks))
 
     # Abbreviate check names for display. Same fallback as _fig_check_grid
-    # (the bare name) rather than a hard truncation — _CHECK_ABBREV now
+    # (the bare name) rather than a hard truncation — CHECK_ABBREVIATIONS now
     # covers every shipped check, so this only matters for a future
     # third-party check with no registered abbreviation.
-    check_abbrevs = [_CHECK_ABBREV.get(name, name) for name in available_checks]
+    check_abbrevs = [CHECK_ABBREVIATIONS.get(name, name) for name in available_checks]
     ax.set_xticklabels(check_abbrevs, rotation=45, ha="right", fontsize=10)
     ax.set_yticklabels(check_abbrevs, fontsize=10)
 

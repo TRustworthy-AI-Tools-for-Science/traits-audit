@@ -8,5 +8,6 @@ API reference
    pipeline
    checks
    mlflow_logger
+   plotting
    base
    stability

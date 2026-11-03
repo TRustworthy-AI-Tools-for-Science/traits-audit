@@ -75,6 +75,8 @@ import tempfile
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from .plotting import plot_calibration_curve
+
 if TYPE_CHECKING:
     from .base import AuditReport, AuditResult
 
@@ -107,7 +109,7 @@ class MLflowLogger:
         self._explicit_run_id = run_id
         self.prefix = prefix
         self._figure_factories: dict[str, FigureFactory] = {
-            "CalibrationError": self._fig_calibration_curve,
+            "CalibrationError": plot_calibration_curve,
         }
 
     # ------------------------------------------------------------------
@@ -209,44 +211,6 @@ class MLflowLogger:
                     f = fn
                     break
         return f
-
-    @staticmethod
-    def _fig_calibration_curve(result: AuditResult) -> Any | None:
-        """Calibration reliability diagram for ``CalibrationErrorCheck`` results.
-
-        Reads ``confidence_levels`` and ``observed_fractions`` from
-        ``result.details``.  Returns ``None`` if the details are absent.
-        """
-        import matplotlib.pyplot as plt
-        import numpy as np
-
-        d = result.details
-        expected = d.get("confidence_levels")
-        observed = d.get("observed_fractions")
-        if expected is None or observed is None:
-            return None
-
-        expected = np.asarray(expected)
-        observed = np.asarray(observed)
-        ce = d.get("calibration_error", float("nan"))
-
-        fig, ax = plt.subplots(figsize=(3.5, 3.5))
-        ax.plot([0, 1], [0, 1], "k--", lw=0.8, alpha=0.5, label="Perfect calibration")
-        ax.plot(expected, observed, color="C0", label="Observed")
-        ax.fill_between(expected, expected, observed, alpha=0.15, color="C1", label="Miscalibration")
-        if not np.isnan(ce):
-            ax.text(
-                0.05, 0.95, f"CE = {ce:.4f}",
-                transform=ax.transAxes, va="top",
-                bbox={"boxstyle": "round", "facecolor": "wheat", "alpha": 0.5},
-                fontsize=9,
-            )
-        ax.set_xlabel("Expected coverage")
-        ax.set_ylabel("Observed coverage")
-        ax.legend(frameon=False)
-        ax.grid(False)
-        fig.tight_layout()
-        return fig
 
     # ------------------------------------------------------------------
     # Internal helpers

@@ -19,6 +19,13 @@ Repository split into a library and a paper-reproduction package:
   credal, aleatoric/epistemic, tail, decision, provenance and attribution
   (see :doc:`checks`).
 - Removed the ``mlflow_logger`` dependency on demo plotting code.
+- New :mod:`traits_audit.plotting` (matplotlib, core dependencies only):
+  ``plot_check_grid``, ``plot_uncertainty_evolution``,
+  ``plot_audit_evolution`` and ``plot_calibration_curve``, plus the shared
+  display logic ``result_status``, ``CHECK_ABBREVIATIONS``,
+  ``split_trackable_checks`` and ``filter_stage_reports``. Each function
+  returns a figure for the caller to save. ``MLflowLogger`` now uses
+  ``plot_calibration_curve``.
 
 
 Stability analysis consolidated into :mod:`traits_audit.stability` (a
