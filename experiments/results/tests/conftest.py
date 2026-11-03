@@ -36,3 +36,10 @@ def mlflow_stub(monkeypatch):
         monkeypatch.setitem(sys.modules, name, mod)
 
     yield mock
+
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--update-golden", action="store_true", default=False,
+        help="Re-record tests/golden/*.json from the current code (see test_golden.py).",
+    )

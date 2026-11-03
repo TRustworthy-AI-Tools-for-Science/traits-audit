@@ -124,3 +124,18 @@ uv run pytest experiments/results/tests
 ```
 
 Tests whose optional dependencies are missing are skipped, not failed.
+
+### Golden outputs
+
+`tests/test_golden.py` runs each case study at smoke size with a fixed seed and
+compares every audit report, every MLflow metric and the list of output files
+against `tests/golden/<case>.json`. Refactors of the paper code must keep these
+unchanged. To record a case for the first time, or to accept a deliberate change:
+
+```bash
+uv run pytest experiments/results/tests/test_golden.py --update-golden
+```
+
+Record on a machine with the case's extras installed. Torch has no wheels for
+Intel macOS, and `camd` needs `pymatgen` to build, so the SDL, MOBO, PyBaMM and
+CAMD goldens need Linux or Apple-silicon macOS.

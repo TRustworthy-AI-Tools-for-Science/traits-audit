@@ -28,7 +28,7 @@ demos/                                   # for everyone; rendered into the docs
   README.md                              # what each demo teaches + how to run
   01_minimal_loop.py                     # hook.on_step / on_end, print the report
   02_detecting_miscalibration.py         # same loop, over/under-confident surrogate → checks fail
-  03_bayesian_optimization.py            # sklearn GP + LCB acquisition, check_every=N intermediate reports
+  03_bayesian_optimization.py            # BoTorch GP + acquisition, check_every=N intermediate reports (needs botorch)
   04_plotting_a_report.py                # traits_audit.plotting: check grid, uncertainty evolution
   05_stability_of_the_loop.py            # trajectory → DMDc / Lyapunov checks, what ρ(A) means
   06_writing_a_custom_check.py           # subclass AuditCheck
@@ -65,8 +65,10 @@ call them in one line:
 - `plot_uncertainty_evolution(history)` and `plot_audit_evolution(stage_reports)`
 - `plot_calibration_curve(result)`, from `_fig_calibration_curve`
 
-They reuse the existing `traits_audit.stability.viz.style` (`PlotStyle`, `publication_style`)
-so the library has a single styling mechanism.
+The library versions use matplotlib only (decided 2 Nov 2026). The paper's check grid is
+Plotly, so it stays in `results` but now draws on the library's shared status logic
+(`result_status`, `CHECK_ABBREVIATIONS`, `split_trackable_checks`, `filter_stage_reports`).
+Paper figures stay byte-identical.
 
 ## Rules for a demo script
 
@@ -75,8 +77,9 @@ Every file in `demos/` must:
 - **Be one file, read top to bottom**, with numbered `# Step N:` comments. Define no
   classes unless a class is the point (for example, demo 06).
 - **Be about 60–150 lines**, with no private imports (`_foo`) and nothing from `results`.
-- **Use only core dependencies** (numpy, scipy, scikit-learn, matplotlib), except demos 07
-  and 08. Those state their extra on the first docstring line and skip cleanly without it.
+- **Use only core dependencies** (numpy, scipy, scikit-learn, matplotlib), except demos 03
+  (BoTorch), 07 (MLflow) and 08 (an ask/tell framework). Those state their extra on the
+  first docstring line and skip cleanly without it.
 - **Avoid argparse.** Settings are module-level constants (`N_STEPS = 40`, `SEED = 0`)
   that a reader can edit.
 - **Run in under 10 seconds** so the docs build can execute every demo.
@@ -90,13 +93,17 @@ Every file in `demos/` must:
   `traits-audit[docs]` extra). The docs build runs each script and creates its figures, so
   no demo PNGs are committed. A broken demo then fails the `-W` docs build in CI, which
   doubles as a smoke test.
-- **Replace the "Case studies" toctree with "Demos"** (the gallery) plus one short page,
-  "Case studies from the paper". That page summarises the five studies and links to
-  `experiments/results/README.md` and the Zenodo deposit.
-- **Move the narrative in `docs/demo_{calibration,sdl,pybamm,camd}.rst` to
-  `experiments/results/docs/`**, or into the paper supplement (see the open questions). Then
-  delete `docs/_static/demo_*/` (about 6.8 MB). After the earlier cleanup, the only committed
-  binary left in `docs/` is `logo.svg`.
+- **Add a "Demos" toctree (the gallery) before the existing "Case studies" toctree.**
+  The case-study pages stay on the docs site: they show how the package is used on real
+  problems and explain what the results mean.
+- **Rename the case-study pages from `demo_*.rst` to `case_study_*.rst`** so they aren't
+  confused with the gallery, and add redirects for the old URLs. Update their commands to
+  `ta-paper-*` and their module paths to `results.case_studies.*`. Their committed figures
+  in `docs/_static/` stay, because CI can't regenerate them; rename the folders to
+  `case_study_*/` to match.
+- **Track the overlap with the paper.** Some of these results will be folded into the
+  paper. When that happens, each affected page should cite the paper for the result and
+  keep the usage walk-through.
 - **Keep `ta-demo`** (the library's `_quickstart.py`) for pip users. Make
   `demos/01_minimal_loop.py` the same example so there is one canonical first example.
 
@@ -125,8 +132,10 @@ tests and `make -C docs html SPHINXOPTS=-W` all pass.
 ### Phase 2: `demos/` and the gallery
 - Write demos 01–08 against the public API only. Configure sphinx-gallery
   (`examples_dirs="../demos"`, `gallery_dirs="demos"`) and add the docs toctree entry.
-- Make the CI docs job install `traits-audit[docs,mlflow]`. Demo 08's extra is optional:
-  the demo skips cleanly if it is missing.
+- Make the CI docs job install `traits-audit[docs,mlflow]` plus `botorch`, so demos 03 and
+  07 execute in CI. Demo 08's extra is optional: the demo skips cleanly if it is missing.
+  Pin a CPU-only torch wheel in the docs job to keep install time down, and check that
+  demo 03 still runs in under 10 seconds.
 - Add `demos/README.md` and link it from the root README and the quickstart.
 
 ### Phase 3: break up `results/viz.py`
@@ -146,26 +155,21 @@ tests and `make -C docs html SPHINXOPTS=-W` all pass.
   wrappers, and the Lyapunov block (currently repeated in the SDL, MOBO and PyBaMM studies).
 - Split `cal_demo._run_scenario` along its existing section comments: replication arm,
   refit sweeps, provenance, stage attribution, Lyapunov/DMDc.
-- Update `[project.scripts]` and the README command table. The golden test must pass
-  without changes.
+- Rename the commands in `[project.scripts]` to `ta-paper-cal`, `ta-paper-sdl`,
+  `ta-paper-mobo`, `ta-paper-pybamm` and `ta-paper-camd`. Update the README command table,
+  `test_demos.py` (rename it to `test_case_studies.py`), the HPC scripts and the deferred
+  Zenodo command record. The golden test must pass without changes.
 
-### Phase 5: docs move and cleanup
-- Make the docs move described above and delete `docs/_static/demo_*/`.
+### Phase 5: update the case-study pages and clean up
+- Rename and update the case-study pages as described under Docs.
 - Update the changelog and `hook_pipeline_map.md`. Grep for stale references to
-  `ta-*-demo`, `results.viz` and `demo_*.rst`.
+  `ta-*-demo`, `results.viz`, `*_demo.py` and `demo_*.rst`.
 
-## Open questions (decide before Phase 2 / 4)
+## Decisions (2 Nov 2026)
 
-1. **Where should the paper case-study narratives go?** I recommend
-   `experiments/results/docs/` as plain Markdown that GitHub renders, with no Sphinx build.
-   The alternatives are a separate "Paper" section on the docs site, or the paper supplement.
-2. **Should paper CLI names change?** "Demo" now means `demos/`, so `ta-cal-demo` and the
-   other `ta-*-demo` commands are misleading. I recommend renaming them to `ta-paper-cal`,
-   `ta-paper-sdl`, and so on. The cost is updating the paper's methods text and the Zenodo
-   command record (see the deferred release notes).
-3. **Is sphinx-gallery acceptable?** The alternative is plain `literalinclude` pages plus a
-   pytest run of each demo, with figures still generated at build time by a `conf.py` hook,
-   as the built-in-metric figures are now. I recommend sphinx-gallery, since it gives a
-   gallery and downloadable `.py`/`.ipynb` files for free.
-4. **Should the BO demo show BoTorch?** I recommend sklearn GP plus LCB for the core demo,
-   with BoTorch/Ax appearing only in demo 08 as the existing-framework example.
+1. **Case-study write-ups stay on the docs site.** They document how to use the package
+   and what the results mean. Some results will also be folded into the paper.
+2. **The paper commands are renamed to `ta-paper-*`.**
+3. **The docs use sphinx-gallery** to turn `demos/` into pages.
+4. **Demo 03 uses BoTorch.** The docs CI job installs it.
+5. **`traits_audit.plotting` is matplotlib-only.** The paper keeps its Plotly check grid.
