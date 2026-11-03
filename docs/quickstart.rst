@@ -28,6 +28,10 @@ Options:
    ta-demo --steps 100 --seed 7
    ta-demo --help
 
+The same loop, explained step by step, is the first of the :doc:`demos <demos/index>`.
+The other demos add one idea each: detecting miscalibration, a BoTorch loop,
+plotting, loop stability, custom checks, MLflow and framework callbacks.
+
 The full case studies from the paper (``ta-cal-demo``, ``ta-sdl-demo``, …)
 are in the separate ``traits-audit-results`` experiment package; see
 :doc:`installation`.
@@ -66,6 +70,13 @@ Minimal example
 
    report = hook.on_end()
    print(report.summary())
+
+All three checks fail here, and they should. The outcomes vary like
+:math:`\mathcal{N}(0, 1)`, but the model's σ shrinks toward 0.13, so it is
+overconfident (``CalibrationError`` and ``IntervalCoverage``), and its σ
+declines steadily (``UncertaintyEvolution``). In a real loop, a steady decline
+in σ is often expected as data accumulates; see
+:ref:`when UncertaintyEvolutionCheck applies <uncertainty-evolution>`.
 
 What each step does:
 

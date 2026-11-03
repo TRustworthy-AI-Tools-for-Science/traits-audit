@@ -25,14 +25,33 @@ def _uncertainties(history: list, kwargs: dict) -> np.ndarray | None:
 
 class UncertaintyEvolutionCheck(AuditCheck):
     """
-    Flags parameter channels whose forward uncertainty trends too steeply downward.
+    Flags uncertainty channels whose reported uncertainty trends too steeply downward.
 
     **Multi-channel**: ``uncertainties`` may be a scalar series ``(steps,)`` or a
     per-channel matrix ``(steps, n_channels)`` (also read from per-step
     ``history['uncertainty']``). Each channel is assessed independently and flagged
     when its least-squares slope is more negative than ``slope_threshold`` × the
-    channel mean (scale-independent). A decreasing forward-uncertainty trend is
-    physically implausible for a model whose epistemic uncertainty should grow.
+    channel mean (scale-independent).
+
+    **When it applies.** The check fails on *any* sustained decline steeper than
+    ``|slope_threshold|`` of the mean per step, so it only carries information
+    where the uncertainty series is not expected to shrink that fast:
+
+    * forward or forecast uncertainty, which should grow (or hold) as the
+      system evolves away from its last observation;
+    * loops meant to keep exploring (space-filling designs, a pure-exploration
+      phase, UCB with a large κ), where a steep decline is an early sign of
+      premature exploitation: the acquisition has locked onto one region;
+    * monitoring a fixed, deployed model, where σ should not drift down.
+
+    In an ordinary active-learning or Bayesian-optimisation loop that converges,
+    the surrogate's σ at the chosen points *should* fall as data accumulates, and
+    this check will fail. There a FAIL means "the loop is converging", not "the
+    model is wrong". Read it alongside the calibration checks: a fast decline
+    together with failing :class:`IntervalCoverageCheck` or
+    :class:`CalibrationErrorCheck` points to overconfidence, while a decline
+    with good calibration is usually healthy. Either loosen ``slope_threshold``
+    (e.g. ``-0.05``) to flag only a collapse, or leave the check out.
 
     ``value`` = number of flagged channels (0 ⇒ pass). ``details`` carries
     ``n_channels``, ``decreasing_channels`` (list of ``(index, slope)``) and
@@ -172,7 +191,7 @@ class UncertaintyAnomalyCheck(AuditCheck):
             if len(current_u) < 3:
                 return AuditResult(
                     name=self.name, passed=True, category=self.category,
-                    message="Too few steps for anomaly detection.",
+                    message="Skipped — too few steps for anomaly detection (need ≥ 3).",
                 )
             historical_u = current_u
 

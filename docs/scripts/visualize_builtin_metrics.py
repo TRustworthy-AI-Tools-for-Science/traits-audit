@@ -6,8 +6,9 @@ Generates two-panel (healthy / unhealthy) reference figures for each of the
 built-in AuditCheck classes and saves them as PNG files.
 
 Usage (from repo root):
-    python scripts/visualize_builtin_metrics.py
-    python scripts/visualize_builtin_metrics.py --out path/to/output
+    uv run python docs/scripts/visualize_builtin_metrics.py
+    uv run python docs/scripts/visualize_builtin_metrics.py --only uncertainty_evolution
+    uv run python docs/scripts/visualize_builtin_metrics.py --out path/to/output
 """
 from __future__ import annotations
 
@@ -237,50 +238,60 @@ def plot_variance_alignment(out_dir: Path) -> None:
 # 4. UncertaintyEvolutionCheck
 # ─────────────────────────────────────────────────────────────────────────────
 
+def uncertainty_evolution_panels() -> list[tuple[np.ndarray, float, bool]]:
+    """The two series for the uncertainty-evolution figure and their verdicts.
+
+    Returns ``(series, relative_slope, passed)`` for the gradual-decline and
+    collapse panels. The verdict comes from ``UncertaintyEvolutionCheck`` at its
+    default threshold, so the figure cannot drift from the check.
+    """
+    from traits_audit.checks import UncertaintyEvolutionCheck
+
+    rng     = np.random.default_rng(3)
+    n_steps = 40
+    t       = np.arange(n_steps, dtype=float)
+    check   = UncertaintyEvolutionCheck()
+
+    # Gradual decline: within the default −1 % of the mean per step
+    u_h = np.clip(0.80 * np.exp(-0.008 * t) + rng.normal(0, 0.012, n_steps), 0.05, None)
+    # Collapse: σ falls by an order of magnitude, e.g. an acquisition that
+    # locks onto one region
+    u_u = np.clip(0.80 * np.exp(-0.12 * t) + rng.normal(0, 0.006, n_steps), 0.005, None)
+
+    panels = []
+    for u in (u_h, u_u):
+        rel = float(np.polyfit(t, u, 1)[0]) / float(np.mean(u))
+        panels.append((u, rel, check.run([], uncertainties=u).passed))
+    return panels
+
+
 def plot_uncertainty_evolution(out_dir: Path) -> None:
-    """Uncertainty over active-learning steps with linear trend overlay.
+    """Uncertainty over loop steps with linear trend overlay.
 
     UncertaintyEvolutionCheck fits a line to the uncertainty time-series and
-    normalises the slope by the mean uncertainty.  A steep downward relative
-    slope (< −0.05 / step) indicates the model is collapsing to overconfidence
-    faster than the data acquisition can justify.
+    normalises the slope by the mean uncertainty. It fails on a sustained
+    relative decline steeper than ``slope_threshold`` (default −1 % / step).
+    Left: a gradual decline that passes. Right: a collapse that fails.
     """
-    rng       = np.random.default_rng(3)
-    n_steps   = 40
-    t         = np.arange(n_steps, dtype=float)
-    slope_thr = -0.05
+    from traits_audit.checks import UncertaintyEvolutionCheck
 
-    # Healthy: gentle, near-flat decline — normal epistemic reduction
-    u_h   = 0.80 * np.exp(-0.008 * t) + rng.normal(0, 0.012, n_steps)
-    u_h   = np.clip(u_h, 0.05, None)
-    sl_h  = float(np.polyfit(t, u_h, 1)[0])
-    rel_h = sl_h / (float(np.mean(u_h)) + 1e-12)
-    fit_h = np.polyval(np.polyfit(t, u_h, 1), t)
+    slope_thr = UncertaintyEvolutionCheck().slope_threshold
 
-    # Unhealthy: steep collapse — surrogate overconfidence builds rapidly
-    u_u   = 0.80 * np.exp(-0.12 * t) + rng.normal(0, 0.006, n_steps)
-    u_u   = np.clip(u_u, 0.005, None)
-    sl_u  = float(np.polyfit(t, u_u, 1)[0])
-    rel_u = sl_u / (float(np.mean(u_u)) + 1e-12)
-    fit_u = np.polyval(np.polyfit(t, u_u, 1), t)
+    fig, axes = plt.subplots(1, 2, figsize=(7, 3.5))
 
-    fig, (ax_h, ax_u) = plt.subplots(1, 2, figsize=(7, 3.5))
-
-    for ax, u, fit, rel, _title in (
-        (ax_h, u_h, fit_h, rel_h, "Healthy"),
-        (ax_u, u_u, fit_u, rel_u, "Unhealthy — collapsing uncertainty"),
-    ):
-        passed = rel >= slope_thr
-        c = PASS_COLOR if passed else FAIL_COLOR
+    for ax, (u, rel, passed) in zip(axes, uncertainty_evolution_panels(), strict=True):
+        t   = np.arange(len(u), dtype=float)
+        fit = np.polyval(np.polyfit(t, u, 1), t)
+        c   = PASS_COLOR if passed else FAIL_COLOR
 
         ax.plot(t, u,   color=c,    lw=1.2, alpha=0.85, label="Uncertainty")
         ax.plot(t, fit, color=GRAY, lw=1.0, ls="--",    label="Linear trend")
-        ax.set_xlabel("AL step")
+        ax.set_xlabel("Step")
         ax.set_ylabel("Mean predictive uncertainty")
         ax.legend(loc="lower center", bbox_to_anchor=(0.5, 1.0), ncol=2, fontsize=8)
         _ann(ax,
-             f"slope = {rel:+.4f}/step\n"
-             f"thr   ≥ {slope_thr:+.2f}/step",
+             f"slope / mean = {rel:+.4f}/step\n"
+             f"thr          ≥ {slope_thr:+.2f}/step",
              x=0.5, y=-0.28, ha="center", va="top")
         _badge(ax, passed)
 
@@ -835,6 +846,7 @@ _PLOT_FUNCTIONS = [
     plot_variance_error_correlation,
     plot_lyapunov_stability,
 ]
+_FIGURES = {fn.__name__.removeprefix("plot_"): fn for fn in _PLOT_FUNCTIONS}
 
 
 def main() -> None:
@@ -850,13 +862,20 @@ def main() -> None:
         metavar="DIR",
         help="Output directory (default: docs/_static/built_in_metrics).",
     )
+    parser.add_argument(
+        "--only",
+        nargs="+",
+        choices=sorted(_FIGURES),
+        metavar="NAME",
+        help=f"Regenerate only these figures (choices: {', '.join(sorted(_FIGURES))}).",
+    )
     args    = parser.parse_args()
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    for fn in _PLOT_FUNCTIONS:
+    for fn in [_FIGURES[n] for n in args.only] if args.only else _PLOT_FUNCTIONS:
         fn(out_dir)
-        stem = fn.__name__.replace("plot_", "")
+        stem = fn.__name__.removeprefix("plot_")
         print(f"  saved  {stem}.png")
 
     print(f"\nAll figures written to {out_dir}/")

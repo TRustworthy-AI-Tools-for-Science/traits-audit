@@ -113,11 +113,14 @@ def result_status(result: AuditResult) -> tuple[float, str]:
         ``intensity`` is meaningful only for ``"pass"`` / ``"fail"``:
         1.0 = deeply passing, 0.5 = at the threshold, 0.0 = deeply failing.
     """
-    if isinstance(result.message, str) and result.message.startswith("Skipped"):
-        return 0.5, "skipped"
-
     v = result.value
     t = result.threshold
+    if isinstance(result.message, str) and result.message.startswith("Skipped"):
+        return 0.5, "skipped"
+    if v is None and t is None:
+        # Nothing computed and nothing to judge against: a skip whose message
+        # does not follow the "Skipped — …" convention (e.g. a custom check).
+        return 0.5, "skipped"
     if t is None:
         return 0.5, "report_only"
     if v is None:
@@ -129,11 +132,10 @@ def result_status(result: AuditResult) -> tuple[float, str]:
         # Lower is better; PASS if v ≤ t
         signed = (t - v) / max(abs(t), 1e-6)
     elif name == "UncertaintyEvolution":
-        # Higher (less negative) is better; PASS if v ≥ t. The check always
-        # reports threshold=0.0, which carries no natural scale, so use a
-        # display span instead.
-        span = max(abs(t) * 3, 0.10)
-        signed = (v - t) / span
+        # v = number of channels flagged as decreasing; PASS only if v ≤ t (= 0).
+        # A failure is graded by the fraction of channels flagged.
+        n_channels = max(int(details.get("n_channels", 1)), 1)
+        signed = 1.0 if v <= t else -(v - t) / n_channels
     elif name == "VarianceErrorCorrelation":
         # Higher is better; PASS if v ≥ t.
         span = max(1.0 - t, 0.30)
@@ -155,7 +157,11 @@ def result_status(result: AuditResult) -> tuple[float, str]:
         return (1.0 if result.passed else 0.0), ("pass" if result.passed else "fail")
 
     intensity = float(np.clip(0.5 + 0.5 * np.clip(signed, -1.0, 1.0), 0.0, 1.0))
-    return intensity, ("pass" if result.passed else "fail")
+    # The check's own verdict wins: never shade a failure green or a pass red,
+    # even if a check's value convention drifts from the mapping above.
+    if result.passed:
+        return max(intensity, 0.5), "pass"
+    return min(intensity, 0.5), "fail"
 
 
 def split_trackable_checks(
@@ -279,7 +285,9 @@ def plot_check_grid(
             if st in ("pass", "fail"):
                 z[ci, si] = intensity
 
-    fig, ax = plt.subplots(figsize=(max(4.0, 1.6 + 0.55 * n_stages), max(2.0, 0.8 + 0.32 * n_checks)))
+    # Minimum width fits the two-entry legend; per-column width fits "step 100"
+    # labels and bold values; fixed height covers the title, stage labels and legend.
+    fig, ax = plt.subplots(figsize=(max(5.0, 1.6 + 0.75 * n_stages), 1.4 + 0.34 * n_checks))
     cmap = LinearSegmentedColormap.from_list("check_grid", _GRID_STOPS)
     ax.set_facecolor("#dcdcdc")
     ax.imshow(np.ma.masked_invalid(z), cmap=cmap, vmin=0, vmax=1, aspect="auto", interpolation="nearest")

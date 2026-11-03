@@ -20,6 +20,12 @@ your own.
 
 .. toctree::
    :maxdepth: 2
+   :caption: Demos
+
+   demos/index
+
+.. toctree::
+   :maxdepth: 2
    :caption: Case studies
 
    demo_calibration
@@ -50,7 +56,7 @@ At a glance
 
    pipeline = AuditPipeline([
        CalibrationErrorCheck(threshold=0.1),
-       UncertaintyEvolutionCheck(),
+       UncertaintyEvolutionCheck(),   # flags σ collapsing; see Checks for when it applies
    ])
 
    hook = AuditHook(pipeline)

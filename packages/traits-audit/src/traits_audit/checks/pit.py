@@ -75,7 +75,7 @@ class PITUniformityCheck(AuditCheck):
         if n < 20:
             return AuditResult(
                 name=self.name, passed=True, category=self.category,
-                message="Too few samples for PIT uniformity test (need ≥ 20).",
+                message="Skipped — too few samples for PIT uniformity test (need ≥ 20).",
             )
 
         sigma_safe = np.maximum(sigma, 1e-12)

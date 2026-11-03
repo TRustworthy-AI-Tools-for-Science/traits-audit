@@ -74,6 +74,10 @@ ignore = [
     "E501",
 ]
 
+[tool.ruff.lint.per-file-ignores]
+# Demos are read top to bottom; an import may sit at the step that introduces it.
+"demos/*" = ["E402"]
+
 [tool.pylint.messages_control]
 disable = [
     # Naming: single-letter math variables (J, P, mu, sigma, x, n) are standard

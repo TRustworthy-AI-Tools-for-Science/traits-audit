@@ -1,4 +1,6 @@
+import importlib.util
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -29,7 +31,34 @@ extensions = [
     "sphinx.ext.viewcode",
     "sphinx.ext.intersphinx",
     "myst_parser",
+    "sphinx_gallery.gen_gallery",
 ]
+
+# ── Demo gallery (sphinx-gallery) ─────────────────────────────────────────────
+# Every script in ../demos is executed on each build and rendered, with its
+# output and figures, under docs/demos/. A demo whose optional dependency is
+# missing is still rendered but not executed. CI sets
+# TRAITS_AUDIT_DEMOS_STRICT=1 so that a missing dependency fails the build.
+_DEMO_EXTRAS = {
+    "03_bayesian_optimization": "botorch",
+    "07_logging_to_mlflow": "mlflow",
+    "08_existing_framework_callback": "skopt",
+}
+_not_executed = [demo for demo, module in _DEMO_EXTRAS.items() if importlib.util.find_spec(module) is None]
+if _not_executed and os.environ.get("TRAITS_AUDIT_DEMOS_STRICT"):
+    raise RuntimeError(f"Demos missing their optional dependency: {_not_executed}")
+if _not_executed:
+    print(f"sphinx-gallery: not executing {_not_executed} (optional dependency missing)")
+_skip = f"(?!{'|'.join(_not_executed)})" if _not_executed else ""
+
+sphinx_gallery_conf = {
+    "examples_dirs": "../demos",
+    "gallery_dirs": "demos",
+    "filename_pattern": re.escape(os.sep) + _skip + r"\d\d_",
+    "within_subsection_order": "FileNameSortKey",
+    "write_computation_times": False,
+    "download_all_examples": False,
+}
 
 # ── Napoleon (NumPy docstrings) ───────────────────────────────────────────────
 napoleon_numpy_docstring        = True

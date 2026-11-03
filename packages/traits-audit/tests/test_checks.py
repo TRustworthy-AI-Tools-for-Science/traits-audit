@@ -338,7 +338,7 @@ def test_conformal_skips_too_few_samples():
     y_true = mu + sigma * rng.standard_normal(5)
     result = ConformalCoverageCheck().run([], y_true=y_true, y_pred_mean=mu, y_pred_std=sigma)
     assert result.passed
-    assert "Too few" in result.message
+    assert result.message.startswith("Skipped — too few")
 
 
 def test_conformal_details_keys():
@@ -798,7 +798,7 @@ def test_crps_skips_too_few_samples():
     mu = rng.standard_normal(4)
     result = CRPSCheck().run([], y_true=mu + 0.1, y_pred_mean=mu, y_pred_std=np.ones(4))
     assert result.passed
-    assert "Too few" in result.message
+    assert result.message.startswith("Skipped — too few")
 
 
 def test_crps_details_keys():
@@ -860,7 +860,7 @@ def test_nll_skips_too_few_samples():
     mu = rng.standard_normal(4)
     result = NegativeLogLikelihoodCheck().run([], y_true=mu + 0.1, y_pred_mean=mu, y_pred_std=np.ones(4))
     assert result.passed
-    assert "Too few" in result.message
+    assert result.message.startswith("Skipped — too few")
 
 
 def test_nll_details_keys():
@@ -912,7 +912,7 @@ def test_pit_skips_too_few_samples():
     mu = rng.standard_normal(15)
     result = PITUniformityCheck().run([], y_true=mu + 0.1, y_pred_mean=mu, y_pred_std=np.ones(15))
     assert result.passed
-    assert "Too few" in result.message
+    assert result.message.startswith("Skipped — too few")
 
 
 def test_pit_details_keys():
@@ -976,7 +976,7 @@ def test_interval_score_skips_too_few_samples():
     mu = rng.standard_normal(4)
     result = IntervalScoreCheck().run([], y_true=mu + 0.1, y_pred_mean=mu, y_pred_std=np.ones(4))
     assert result.passed
-    assert "Too few" in result.message
+    assert result.message.startswith("Skipped — too few")
 
 
 def test_interval_score_details_keys():

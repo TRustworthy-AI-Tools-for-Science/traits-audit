@@ -67,7 +67,7 @@ Summary table
      - ``y_true``, ``y_pred_mean``, ``y_pred_std``
    * - :class:`~traits_audit.checks.UncertaintyEvolutionCheck`
      - ``epistemic``
-     - Relative slope of uncertainty over iterations
+     - Relative slope of uncertainty over iterations; fails on a sustained decline, so expect a FAIL in a converging loop
      - ``uncertainties`` kwarg or per-step ``uncertainty``
    * - :class:`~traits_audit.checks.UncertaintyAnomalyCheck`
      - ``epistemic``
@@ -322,6 +322,8 @@ that can be satisfied trivially by very wide intervals.
    :no-index:
 
 
+.. _uncertainty-evolution:
+
 Uncertainty evolution checks
 -----------------------------
 
@@ -329,9 +331,21 @@ Uncertainty evolution checks
    :width: 90%
    :alt: Example of uncertainty evolution.
 
-   Imposes a linear constraint on how uncertainty changes as the system evolves. Example
-   shown is for updates during active learning (AL). (Left) Uncertainty decreases linearly
-   as more data is acquired. (Right) Uncertainty decreases monotonically but not linearly.
+   Fits a linear trend to each uncertainty channel and flags a sustained
+   decline steeper than ``slope_threshold`` × the channel mean per step
+   (default −1 %). (Left) A gradual decline that passes. (Right) A rapid
+   collapse, the pattern the check is designed to catch. Regenerate with
+   ``python docs/scripts/visualize_builtin_metrics.py --only uncertainty_evolution``.
+
+When :class:`~traits_audit.checks.UncertaintyEvolutionCheck` applies: it fails
+on *any* sustained decline steeper than 1 % of the mean per step, so it is
+informative only where uncertainty is not expected to shrink that fast. Examples
+are forecast uncertainty, exploration-phase loops, where a collapse signals
+premature exploitation, and a fixed deployed model. In a converging
+active-learning or Bayesian-optimisation loop, σ at the chosen points *should*
+fall, and the check will fail. Read that FAIL alongside the calibration checks,
+loosen ``slope_threshold`` to flag only a collapse, or leave the check out. The
+class reference below gives the details.
 
 .. autoclass:: traits_audit.checks.UncertaintyEvolutionCheck
    :members:

@@ -54,8 +54,8 @@ subclassing `traits_audit.AuditCheck`.
 
 ## Documentation
 
-API reference, the built-in checks, writing custom checks, and worked case
-studies: **https://trustworthy-ai-tools-for-science.github.io/traits-audit/**
+API reference, the built-in checks, writing custom checks, runnable demos and
+worked case studies: **https://trustworthy-ai-tools-for-science.github.io/traits-audit/**
 
 ## Citation
 

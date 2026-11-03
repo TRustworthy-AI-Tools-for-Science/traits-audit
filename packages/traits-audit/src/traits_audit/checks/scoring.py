@@ -90,7 +90,7 @@ class CRPSCheck(AuditCheck):
         if n < 5:
             return AuditResult(
                 name=self.name, passed=True, category=self.category,
-                message="Too few samples for CRPS estimate (need ≥ 5).",
+                message="Skipped — too few samples for CRPS estimate (need ≥ 5).",
             )
 
         sigma_safe = np.maximum(sigma, 1e-12)
@@ -180,7 +180,7 @@ class NegativeLogLikelihoodCheck(AuditCheck):
         if n < 5:
             return AuditResult(
                 name=self.name, passed=True, category=self.category,
-                message="Too few samples for NLL estimate (need ≥ 5).",
+                message="Skipped — too few samples for NLL estimate (need ≥ 5).",
             )
 
         sigma_safe = np.maximum(sigma, 1e-12)
@@ -295,7 +295,7 @@ class IntervalScoreCheck(AuditCheck):
         if n < 5:
             return AuditResult(
                 name=self.name, passed=True, category=self.category,
-                message="Too few samples for Interval Score estimate (need ≥ 5).",
+                message="Skipped — too few samples for Interval Score estimate (need ≥ 5).",
             )
 
         sigma_safe = np.maximum(sigma, 1e-12)

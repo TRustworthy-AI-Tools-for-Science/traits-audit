@@ -14,7 +14,7 @@ import pytest
 import traits_audit.checks as checks_module
 from traits_audit import AuditPipeline
 from traits_audit.base import AuditCategory, AuditReport, AuditResult
-from traits_audit.checks import CalibrationErrorCheck, CRPSCheck, IntervalCoverageCheck
+from traits_audit.checks import CalibrationErrorCheck, CRPSCheck, IntervalCoverageCheck, PITUniformityCheck
 from traits_audit.checks import __all__ as ALL_CHECK_NAMES
 from traits_audit.plotting import (
     CHECK_ABBREVIATIONS,
@@ -105,6 +105,38 @@ def test_interval_coverage_tuple_threshold():
     intensity, status = result_status(r)
     assert status == "pass"
     assert intensity > 0.5
+
+
+def test_uncertainty_evolution_failure_is_drawn_as_failing():
+    # The check reports the number of flagged channels (0 ⇒ pass); an earlier
+    # mapping read it as a slope and shaded a failure dark green.
+    flagged = _result(name="UncertaintyEvolution", value=1.0, threshold=0.0, passed=False,
+                      details={"n_channels": 1})
+    clean = _result(name="UncertaintyEvolution", value=0.0, threshold=0.0, passed=True,
+                    details={"n_channels": 1})
+    assert result_status(flagged) == (0.0, "fail")
+    assert result_status(clean) == (1.0, "pass")
+    half = _result(name="UncertaintyEvolution", value=1.0, threshold=0.0, passed=False,
+                   details={"n_channels": 4})
+    assert 0.0 < result_status(half)[0] < 0.5
+
+
+def test_value_and_threshold_none_is_skipped_whatever_the_message():
+    _, status = result_status(_result(value=None, threshold=None, message="Not enough data."))
+    assert status == "skipped"
+
+
+def test_shipped_too_few_samples_results_are_skipped():
+    r = PITUniformityCheck().run(_history(5))
+    assert r.message.startswith("Skipped")
+    assert result_status(r)[1] == "skipped"
+
+
+def test_verdict_wins_over_value_mapping():
+    # A value on the passing side of the mapping, but the check said FAIL.
+    r = _result(name="CalibrationError", value=0.01, threshold=0.15, passed=False)
+    intensity, status = result_status(r)
+    assert status == "fail" and intensity <= 0.5
 
 
 def test_unknown_check_name_falls_back_to_binary():

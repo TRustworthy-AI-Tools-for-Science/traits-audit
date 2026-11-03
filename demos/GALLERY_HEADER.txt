@@ -1,0 +1,9 @@
+Demos
+=====
+
+Short, runnable scripts that show how to add traits-audit to an experiment.
+Each one is a single file you can read top to bottom, run with
+``python demos/<name>.py`` and copy into your own project.
+
+Start with :doc:`01_minimal_loop`; the rest each add one idea. Demos 03, 07
+and 08 need an optional package, named at the top of each.

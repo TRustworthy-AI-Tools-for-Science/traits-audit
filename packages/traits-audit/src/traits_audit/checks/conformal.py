@@ -93,7 +93,7 @@ class ConformalCoverageCheck(AuditCheck):
         if n < 10:
             return AuditResult(
                 name=self.name, passed=True, category=self.category,
-                message="Too few samples for conformal coverage estimate (need ≥ 10).",
+                message="Skipped — too few samples for conformal coverage estimate (need ≥ 10).",
             )
 
         alpha = 1.0 - self.target_coverage

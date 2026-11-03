@@ -11,3 +11,4 @@ API reference
    plotting
    base
    stability
+   trajectory

@@ -37,7 +37,7 @@ Basic usage
 
    pipeline = AuditPipeline([
        CalibrationErrorCheck(threshold=0.1),
-       UncertaintyEvolutionCheck(),
+       UncertaintyEvolutionCheck(),   # flags σ collapsing; see Checks for when it applies
    ])
 
    mlflow.set_tracking_uri("sqlite:///my_runs.db")

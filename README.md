@@ -5,6 +5,7 @@ This repository contains two things:
 | Directory | What it is | Who it is for |
 |---|---|---|
 | [`packages/traits-audit`](packages/traits-audit) | **The `traits-audit` library**: a generic, passive uncertainty-audit pipeline for any active-learning loop. Published to PyPI. | Anyone who wants to audit the uncertainty of their own AL / BO / SDL campaign. |
+| [`demos`](demos) | **Short, runnable demos** of adding the library to an experiment, also rendered in the docs. | Anyone learning the library. |
 | [`experiments/results`](experiments/results) | **Paper reproduction code**: the case studies and RL steering study behind the NMI 2026 paper, built on the library. | Reviewers and readers reproducing the paper's results. |
 
 Documentation for the library lives in [`docs/`](docs) and is published at
@@ -17,7 +18,8 @@ pip install traits-audit
 ta-demo
 ```
 
-See [`packages/traits-audit/README.md`](packages/traits-audit/README.md).
+See [`packages/traits-audit/README.md`](packages/traits-audit/README.md), then the
+[demos](demos), which go from a minimal loop to MLflow logging and framework callbacks.
 
 ## Developing / reproducing the paper
 

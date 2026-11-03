@@ -26,6 +26,26 @@ Repository split into a library and a paper-reproduction package:
   ``split_trackable_checks`` and ``filter_stage_reports``. Each function
   returns a figure for the caller to save. ``MLflowLogger`` now uses
   ``plot_calibration_curve``.
+- New ``demos/`` folder: eight short, runnable scripts (minimal loop,
+  miscalibration, BoTorch, plotting, loop stability, custom checks, MLflow,
+  framework callbacks), rendered in the docs by sphinx-gallery (added to the
+  ``docs`` extra). Demo 01 is the ``ta-demo`` example.
+- Fixed check-grid colours: a failing ``UncertaintyEvolution`` was shaded as
+  deeply passing (its value is now a count of flagged channels, not a slope),
+  and a cell's shade now always agrees with the check's verdict. This also
+  corrects the paper's check-grid figures.
+- Checks skipped for too few samples (PIT, conformal coverage, CRPS, NLL,
+  interval score, uncertainty anomalies) now say ``Skipped — too few …``, so
+  plots draw them as skipped rather than report-only. A result with neither a
+  value nor a threshold is also treated as skipped.
+- Documented when ``UncertaintyEvolutionCheck`` applies. It fails on any
+  sustained decline in σ, so a converging active-learning or BO loop fails
+  it. The docstring, the Checks page and the quickstart now say so, and the
+  Checks page figure caption no longer presents a decline as the expected
+  case. ``docs/scripts/visualize_builtin_metrics.py`` now takes that figure's
+  verdicts and threshold from the check itself, and ``--only NAME`` regenerates
+  a single figure.
+- New API page for :mod:`traits_audit.trajectory`.
 
 
 Stability analysis consolidated into :mod:`traits_audit.stability` (a

@@ -138,6 +138,16 @@ tests and `make -C docs html SPHINXOPTS=-W` all pass.
   demo 03 still runs in under 10 seconds.
 - Add `demos/README.md` and link it from the root README and the quickstart.
 
+Done 2 Nov 2026. Notes from doing it:
+- Demo 08 uses scikit-optimize (`gp_minimize(callback=...)`): a small, pure-Python install,
+  so CI runs it too. The CI docs jobs install CPU-only torch, botorch, scikit-optimize
+  and mlflow, and set `TRAITS_AUDIT_DEMOS_STRICT=1` so a missing extra fails the build.
+- The gallery header is `demos/GALLERY_HEADER.txt`: sphinx-gallery would otherwise pick
+  up `README.md` (`.md` sorts before `.rst`).
+- The demos leave out `UncertaintyEvolutionCheck`. It flags *decreasing* uncertainty,
+  so it fails on an ordinary AL or BO loop where uncertainty shrinks.
+- `packages/traits-audit/tests/test_demo_scripts.py` runs each demo as a script.
+
 ### Phase 3: break up `results/viz.py`
 - Split it into the `figures/` modules above. Move the two `run_*_lyapunov_analysis`
   functions into `common/lyapunov.py`. Replace the import-time `_RCPARAMS` side effect
