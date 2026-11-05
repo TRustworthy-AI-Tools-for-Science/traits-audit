@@ -102,8 +102,8 @@ import logging
 from typing import Callable, List, Optional
 
 import numpy as np
-
 from traits_audit.base import AuditCategory, AuditResult
+
 from .state_space import StateSpacePolicy
 from .state_space_bayes import BayesianDynamicsPolicy
 
@@ -133,8 +133,16 @@ AUDIT_HEALTH_FIELDS: List[str] = [
 
 AUDIT_HEALTH_VECTOR_DIM: int = len(AUDIT_HEALTH_FIELDS)
 
+#: Value of each field when its check has not reported: the value at which the
+#: field contributes nothing to :func:`_health_score` (1 for the two ratio
+#: fields, whose ideal is 1; 0 for every other field).
+NEUTRAL_AUDIT_HEALTH: np.ndarray = np.array(
+    [1.0 if field in ("variance_alignment", "conformal_coverage_ratio") else 0.0
+     for field in AUDIT_HEALTH_FIELDS]
+)
 
-def make_audit_health_vector(results: list, fill_value: float = 0.0) -> np.ndarray:
+
+def make_audit_health_vector(results: list, fill_value: Optional[float] = None) -> np.ndarray:
     """Assemble a canonical 14-D audit health vector from a list of AuditResult objects.
 
     Covers two audit stages:
@@ -146,7 +154,8 @@ def make_audit_health_vector(results: list, fill_value: float = 0.0) -> np.ndarr
       checks (LinKKCheck, ECMStabilityCheck, model self-consistency checks, and the
       DRT peak-count mismatch produced by :func:`drt_peak_mismatch_result`).
 
-    Fields not present in ``results`` are filled with ``fill_value``.
+    Fields not present in ``results`` are filled with ``fill_value``, or with
+    :data:`NEUTRAL_AUDIT_HEALTH` when ``fill_value`` is ``None``.
 
     Parameters
     ----------
@@ -157,16 +166,21 @@ def make_audit_health_vector(results: list, fill_value: float = 0.0) -> np.ndarr
         ``battery_forecast.audit.AuditPipeline.run_inference_audit``,
         plus any ``battery_forecast.audit.base.AuditResult`` objects
         returned by :func:`drt_peak_mismatch_result`.
-    fill_value : float
+    fill_value : float, optional
         Value to use for checks that did not run or returned ``None``.
-        Defaults to 0.0 (neutral / "no information" for all fields).
+        Defaults to ``None``: each field's neutral value
+        (:data:`NEUTRAL_AUDIT_HEALTH`), so a check that has not reported
+        neither rewards nor penalises the health score.
 
     Returns
     -------
     np.ndarray, shape ``(AUDIT_HEALTH_VECTOR_DIM,)`` = ``(14,)``
         Values in the order defined by :data:`AUDIT_HEALTH_FIELDS`.
     """
-    v = np.full(AUDIT_HEALTH_VECTOR_DIM, fill_value, dtype=float)
+    if fill_value is None:
+        v = NEUTRAL_AUDIT_HEALTH.copy()
+    else:
+        v = np.full(AUDIT_HEALTH_VECTOR_DIM, fill_value, dtype=float)
     for r in results:
         if r.value is None and not r.details:
             continue
@@ -323,7 +337,7 @@ def drt_peak_mismatch_result(
         peaks, _ = find_peaks(gamma, height=threshold)
         mismatches.append(abs(len(peaks) - n_ecm_elements))
 
-    mismatch = int(round(float(np.mean(mismatches)))) if mismatches else 0
+    mismatch = round(float(np.mean(mismatches))) if mismatches else 0
     passed = mismatch == 0
     label = "single" if spectrum_idx is not None else f"mean over {len(indices)} spectra"
     return AuditResult(
@@ -352,7 +366,7 @@ class AuditStateSpacePolicy(StateSpacePolicy):
 
     Replaces the per-parameter ECM variance augmentation of
     ``results.policies.StateSpacePolicy`` with the
-    12-dimensional **audit health vector** produced by
+    14-dimensional **audit health vector** produced by
     ``battery_forecast.audit.AuditPipeline``.
 
     The augmented belief state is::
@@ -431,7 +445,7 @@ class AuditStateSpacePolicy(StateSpacePolicy):
     # ── Health vector interface ───────────────────────────────────────────
 
     @staticmethod
-    def make_audit_health_vector(results: list, fill_value: float = 0.0) -> np.ndarray:
+    def make_audit_health_vector(results: list, fill_value: Optional[float] = None) -> np.ndarray:
         """Assemble the canonical 14-dim audit health vector from AuditResult objects.
 
         Convenience wrapper around the module-level :func:`make_audit_health_vector`.
@@ -460,9 +474,7 @@ class AuditStateSpacePolicy(StateSpacePolicy):
         _, std = self._predict(x_scaled)
         uncertainty = float(np.mean(std[0])) if std is not None else 0.0
 
-        z = current_aug @ self._U_r
-        z_next = self._A_r @ z + self._B_r @ protocol
-        s_aug_next = self._U_r @ z_next
+        s_aug_next = self._predict_next_aug(current_aug, protocol)
 
         n = self._n_state if self._n_state is not None else s_aug_next.shape[0]
         s_next = s_aug_next[:n]
@@ -495,7 +507,7 @@ class AuditBayesianDynamicsPolicy(BayesianDynamicsPolicy):
 
     Replaces the per-parameter ECM variance augmentation of
     ``results.policies.BayesianDynamicsPolicy`` with the
-    12-dimensional **audit health vector** produced by
+    14-dimensional **audit health vector** produced by
     ``battery_forecast.audit.AuditPipeline``.
 
     The augmented belief state is::
@@ -507,7 +519,7 @@ class AuditBayesianDynamicsPolicy(BayesianDynamicsPolicy):
         score = Q · δ(s̃_next[:n])
               + R · ‖a‖²
               − κ · σ̄_GP
-              − γ_info · h(z, a) / (1 + h(z, a))
+              − γ_info · log(1 + h(z, a))
               − γ_sub · ρ(ŝ_GP)
               − γ_health · h_score(v_audit_next)
 
@@ -570,7 +582,7 @@ class AuditBayesianDynamicsPolicy(BayesianDynamicsPolicy):
     # ── Health vector interface ───────────────────────────────────────────
 
     @staticmethod
-    def make_audit_health_vector(results: list, fill_value: float = 0.0) -> np.ndarray:
+    def make_audit_health_vector(results: list, fill_value: Optional[float] = None) -> np.ndarray:
         """Assemble the canonical 14-dim audit health vector from AuditResult objects.
 
         See :meth:`~AuditStateSpacePolicy.make_audit_health_vector` for usage.

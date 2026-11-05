@@ -56,6 +56,7 @@ import time
 from typing import Callable, Optional
 
 import numpy as np
+from traits_audit.stability.detrend import RegimeDetrender
 
 from . import base as _base
 from .base import BasePolicy
@@ -77,21 +78,24 @@ class StateSpacePolicy(BasePolicy):
        following the belief-state MDP of Kaelbling et al. (1998).
     2. Once ``min_fit_obs`` transitions are available, fit the model:
 
-       * **SVD** of the ``(T × n_aug)`` augmented-state matrix identifies the
+       * **Detrending**: each augmented state minus its causal EMA baseline,
+         ``d_t = s̃_t − b_{t−1}`` (``traits_audit.stability.dmdc.detrend_trajectory``).
+       * **SVD** of the ``(T × n_aug)`` detrended-state matrix identifies the
          ``n_components`` principal axes ``U_r ∈ ℝ^{n_aug × r}`` (similar to
          Dynamic Mode Decomposition).
        * **Linear dynamics** in the reduced space via least squares::
 
-               z_{t+1} = A_r z_t + B_r a_t,   z_t = s̃_t @ U_r
+               z_{t+1} = A_r z_t + B_r a_t,   z_t = d_t @ U_r
 
     At each call to :meth:`select_next`:
 
     3. For each candidate protocol ``a``:
 
-       * Project current augmented state: ``z = current_aug @ U_r``
+       * Detrend the current augmented state against the same baseline:
+         ``z = d_t @ U_r``
        * Predict next reduced state: ``z_next = A_r @ z + B_r @ a``
-       * Reconstruct: ``s̃_next ≈ U_r @ z_next``; take first ``_n_state``
-         elements for degradation.
+       * Reconstruct: ``s̃_next ≈ b_t + U_r @ z_next`` (the baseline is added
+         back); take first ``_n_state`` elements for degradation.
        * Query GP surrogate for uncertainty: ``σ = GP_std(current_state, a)``
        * Score::
 
@@ -191,6 +195,11 @@ class StateSpacePolicy(BasePolicy):
         self._U_r: Optional[np.ndarray] = None  # (n_aug, r)
         self._A_r: Optional[np.ndarray] = None  # (r, r)
         self._B_r: Optional[np.ndarray] = None  # (r, m)
+        # The augmented states the dynamics were fitted on, so that a
+        # prediction can be made in the same detrended coordinates.
+        self._fitted_aug_states: Optional[np.ndarray] = None
+        self._frame_key = None
+        self._frame = None
 
     # ── Belief-state construction ─────────────────────────────────────────
 
@@ -266,6 +275,12 @@ class StateSpacePolicy(BasePolicy):
 
             [Z_{1:T}] ≈ [Z_{0:T-1} | A_{0:T-1}] @ W^T,   W ∈ ℝ^{(r+m) × r}
 
+        by ordinary least squares on the detrended augmented states (each
+        state minus its causal EMA baseline, see
+        ``traits_audit.stability.dmdc.detrend_trajectory``), with the rank
+        ``r`` clipped so the system stays overdetermined (``T-1 > r + m``),
+        the condition under which the OLS estimate exists and is unique.
+
         When ``self.window`` is set, only the last ``window + 1`` states
         (``window`` transitions) are used, bounding per-call cost and keeping
         the fit reflecting the current dynamics regime rather than an
@@ -288,7 +303,7 @@ class StateSpacePolicy(BasePolicy):
         )
         aug_states = np.array([
             self._build_augmented(s, u if u is not None else np.zeros(u_dim))
-            for s, u in zip(state_hist, uncertainty_hist)
+            for s, u in zip(state_hist, uncertainty_hist, strict=True)
         ])  # (T, n_aug)
         A = np.array(action_hist[:-1])  # (T-1, n_action)
         T = len(A)
@@ -305,6 +320,7 @@ class StateSpacePolicy(BasePolicy):
         self._A_r, self._B_r, self._U_r = fit_dmdc(
             aug_states, A, n_components=self.n_components
         )
+        self._fitted_aug_states = aug_states
         r = self._A_r.shape[0]
 
         log.debug(
@@ -312,6 +328,38 @@ class StateSpacePolicy(BasePolicy):
             f"r={r}, T={T}, n_aug={aug_states.shape[1]}, "
             f"A_r={self._A_r.shape}, B_r={self._B_r.shape}"
         )
+
+    # ── One-step prediction ───────────────────────────────────────────────
+
+    def _detrending_frame(self, current_aug: np.ndarray):
+        """The current state in the fitted coordinates, and the detrender behind them.
+
+        The detrender is fed the states the dynamics were fitted on, then the
+        current state, exactly as ``detrend_trajectory`` would.  Returns
+        ``(current_detrended, detrender)``; cached for the current state, so
+        it is built once per ``select_next`` call rather than per candidate.
+        """
+        key = (len(self._state_history), current_aug.tobytes())
+        if self._frame_key != key:
+            detrender = RegimeDetrender()
+            regime = np.zeros(1)
+            for aug in self._fitted_aug_states:
+                detrender.update(aug, regime)
+            current_detrended = detrender.update(current_aug, regime).detrended
+            self._frame = (current_detrended, detrender)
+            self._frame_key = key
+        return self._frame
+
+    def _predict_next_aug(self, current_aug: np.ndarray, protocol: np.ndarray) -> np.ndarray:
+        """Predicted next augmented state for ``protocol``, in the original units.
+
+        Step the fitted model in detrended coordinates, then add back the
+        baseline the detrender would subtract from the next state.
+        """
+        current_detrended, detrender = self._detrending_frame(current_aug)
+        z = current_detrended @ self._U_r
+        z_next = self._A_r @ z + self._B_r @ np.asarray(protocol)
+        return detrender.reconstruct(self._U_r @ z_next, np.zeros(1))
 
     # ── Candidate scoring ─────────────────────────────────────────────────
 
@@ -340,10 +388,8 @@ class StateSpacePolicy(BasePolicy):
         _, std = self._predict(x_scaled)
         uncertainty = float(np.mean(std[0])) if std is not None else 0.0
 
-        # Linear-dynamics prediction in reduced space
-        z = current_aug @ self._U_r                                # (r,)
-        z_next = self._A_r @ z + self._B_r @ np.asarray(protocol)
-        s_aug_next = self._U_r @ z_next                            # (n_aug,)
+        # Linear-dynamics prediction of the next augmented state
+        s_aug_next = self._predict_next_aug(current_aug, protocol)  # (n_aug,)
 
         # Slice off the ECM state portion; ignore reconstructed uncertainty dims
         n = self._n_state if self._n_state is not None else s_aug_next.shape[0]
@@ -524,9 +570,9 @@ class StateSpacePolicy(BasePolicy):
             selected_protocols.append(protocol)
             observed_states.append(next_state)
             scores_history.append(all_scores)
-            degradation_history.append(
-                self.degradation_fn(np.abs(next_state - current_state))
-            )
+            # Degradation of the observed state, as in BasePolicy.run and the
+            # state cost the policy minimises: delta is a function of a state.
+            degradation_history.append(self.degradation_fn(next_state))
 
             if not succeeded:
                 terminated_early = True

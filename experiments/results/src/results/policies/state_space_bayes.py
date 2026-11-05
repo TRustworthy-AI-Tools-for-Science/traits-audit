@@ -33,10 +33,14 @@ each grounded in the accompanying literature:
      Eq. 33): the posterior-variance reduction tr(ΔG^{-1}) equals
      ||G^{-1/2} x||² / (1 + h), which is monotone in h.
 
-   The normalised bonus h / (1 + h) ∈ [0, 1) is subtracted from the
-   composite score (i.e. high-information candidates are preferred)::
+   The bonus is the D-optimal gain log(1 + h) = log det G_{t+1} − log det G_t
+   (the matrix determinant lemma), subtracted from the composite score (i.e.
+   high-information candidates are preferred)::
 
-       info_bonus = γ_info · h(z, a) / (1 + h(z, a))
+       info_bonus = γ_info · log(1 + h(z, a))
+
+   Unlike a bounded transform such as h / (1 + h), log(1 + h) keeps ranking
+   candidates while the prior is still vague and h is large for all of them.
 
 3. **Subspace reconstruction residual (Li et al., 2021)**
 
@@ -46,7 +50,9 @@ each grounded in the accompanying literature:
    normalised projection residual of the GP-predicted next ECM state under
    the current SVD basis U_r::
 
-       ρ(a) = ||ŝ_GP − U_r U_r^T ŝ_GP||₂ / (||ŝ_GP||₂ + ε)
+       ρ(a) = ||ŝ_GP − P_s ŝ_GP||₂ / (||ŝ_GP||₂ + ε)
+
+   with P_s the orthogonal projector onto the span of the state rows of U_r.
 
    where ŝ_GP is the GP posterior mean for the next state under protocol a.
    Large ρ indicates that the protocol leads to a region of ECM-parameter
@@ -59,7 +65,7 @@ each grounded in the accompanying literature:
     score = Q · degradation(s̃_next[:n_state])   ← linear dynamics prediction
           + R · ‖a‖²                              ← control effort
           − κ · mean(σ_GP)                        ← GP uncertainty (LCB-style)
-          − γ_info · h(z, a) / (1 + h(z, a))     ← Cai 2014 / Eldredge 2026
+          − γ_info · log(1 + h(z, a))            ← Cai 2014 / Eldredge 2026
           − γ_sub · ρ(ŝ_GP, U_r)                 ← Li 2021 ALSL
 
 **Key difference from** ``results.policies.StateSpacePolicy``
@@ -67,8 +73,9 @@ each grounded in the accompanying literature:
 StateSpacePolicy refits the full SVD + OLS dynamics on *all* historical data
 at every :meth:`observe` call.  BayesianDynamicsPolicy fits the SVD basis
 once at warm-up (and optionally re-anchors every ``reanchor_freq`` steps),
-then updates only G^{-1} online — a true O((r+m)²) Kalman-filter update that
-accumulates information without ever touching the O((r+m)³) matrix inverse.
+then updates the Bayesian posterior of [A_r | B_r] online — the O((r+m)²)
+Kalman-filter update of both the posterior mean and the precision inverse
+G^{-1}, without ever re-inverting the O((r+m)³) Gram matrix.
 
 References
 ----------
@@ -113,16 +120,20 @@ log = logging.getLogger(__name__)
 class BayesianDynamicsPolicy(BasePolicy):
     """Online Bayesian linear dynamics + information-gain + subspace-residual scoring.
 
-    Maintains a precision matrix G_t = (X_t^T X_t + λI) in the reduced
-    state-action space [z | a] and updates it online via the rank-1
-    Sherman–Morrison formula — the Kalman filter covariance update applied to
-    a Bayesian linear regression posterior (Eldredge & Mousavi, 2026, Eq. 33).
+    Maintains the Bayesian linear regression posterior of the reduced
+    dynamics W = [A_r | B_r]^T in the state-action space [z | a]: precision
+    G_t = (X_t^T X_t + λI) and posterior mean W_t = G_t^{-1} X_t^T Y_t.  Both
+    are updated online by the Kalman filter for this model (Eldredge &
+    Mousavi, 2026, Eq. 33): G^{-1} by the rank-1 Sherman–Morrison formula as
+    soon as an action is chosen (the precision does not depend on the
+    outcome), and W by the Kalman gain once the outcome of that action, the
+    next state, is observed.
 
     Exploration is driven by two complementary bonuses:
 
-    * **Information gain** — the normalised leverage score h/(1+h), which is
-      simultaneously the MMC criterion of Cai et al. (2014, Eq. 10) and the
-      Bayesian D-optimal information gain (Eldredge & Mousavi, 2026, Eq. 33).
+    * **Information gain** — log(1 + h) of the leverage score h, the Bayesian
+      D-optimal information gain (Eldredge & Mousavi, 2026, Eq. 33); h itself
+      is the MMC criterion of Cai et al. (2014, Eq. 10).
     * **Subspace residual** — the normalised reconstruction residual of the
       GP-predicted next state under the current SVD basis, following the
       ALSL_U principle of Li et al. (2021, Eq. 4).
@@ -132,7 +143,7 @@ class BayesianDynamicsPolicy(BasePolicy):
         score = Q · degradation(s̃_next[:n_state])
               + R · ‖a‖²
               − κ · mean(σ_GP)
-              − γ_info · h(z, a) / (1 + h(z, a))
+              − γ_info · log(1 + h(z, a))
               − γ_sub · ρ(ŝ_GP, U_r)
 
     Parameters
@@ -157,9 +168,14 @@ class BayesianDynamicsPolicy(BasePolicy):
         Minimum observations before the dynamics model is fitted; falls back
         to LCBPolicy until this threshold is reached.
     reanchor_freq : int or None
-        Re-fit the SVD basis and reinitialise G^{-1} from historical data
-        every ``reanchor_freq`` observations after the initial fit.  ``None``
-        or ``0`` disables re-anchoring (SVD is fit once and frozen).
+        Re-fit the SVD basis, and the posterior in the new basis, every
+        ``reanchor_freq`` observations after the initial fit.  ``None`` or
+        ``0`` disables re-anchoring: the basis is fit once and frozen, while
+        the posterior of [A_r | B_r] keeps learning online.
+    window : int or None
+        If set, the posterior is recomputed after every observation from only
+        the last ``window`` transitions (in the current basis) instead of
+        being updated recursively over the whole history.
     num_action_features : int
         Length of each candidate protocol vector.
     uncertainty_weight : float
@@ -230,10 +246,15 @@ class BayesianDynamicsPolicy(BasePolicy):
         self._A_r: Optional[np.ndarray] = None   # (r, r)
         self._B_r: Optional[np.ndarray] = None   # (r, m)
 
-        # Inverse precision matrix of the Bayesian linear regression posterior
-        # in the reduced [z | a] space (Eldredge & Mousavi 2026, Eq. 33).
-        # Initialised at fit time; updated online via Sherman–Morrison.
+        # Bayesian linear regression posterior in the reduced [z | a] space
+        # (Eldredge & Mousavi 2026, Eq. 33): posterior mean W = [A_r | B_r]^T
+        # and inverse precision G^{-1}.  Initialised at fit time; updated
+        # online by the Kalman filter.
+        self._W: Optional[np.ndarray] = None      # (r+m, r)
         self._G_inv: Optional[np.ndarray] = None  # (r+m, r+m)
+        # Design point [z_t | a_t] of the latest action: already in G^{-1},
+        # waiting for its outcome z_{t+1} to update W.
+        self._pending_x: Optional[np.ndarray] = None
 
     # ── Belief-state construction ─────────────────────────────────────────
 
@@ -254,30 +275,13 @@ class BayesianDynamicsPolicy(BasePolicy):
 
     # ── Dynamics fitting ──────────────────────────────────────────────────
 
-    def _fit_dynamics(self, reinit_G: bool = True) -> None:
-        """Fit SVD basis and linear transition model; optionally reinitialise G^{-1}.
+    def _augmented_history(self) -> tuple[np.ndarray, np.ndarray]:
+        """Augmented states and the actions between them, window-limited.
 
-        Computes the same SVD + OLS decomposition as StateSpacePolicy.
-        When ``reinit_G=True``, G^{-1} is rebuilt from the full X_fit
-        matrix::
-
-            G = λI + X_fit^T X_fit,   G^{-1} = inv(G).
-
-        When ``reinit_G=False`` (used during periodic re-anchors after the
-        online Sherman–Morrison updates have diverged from the new basis), the
-        existing G^{-1} is replaced by a fresh inversion so that it remains
-        consistent with the newly rotated U_r.
-
-        Parameters
-        ----------
-        reinit_G : bool
-            Always rebuild G^{-1} from historical data (default: True).
-
-        When ``self.window`` is set, only the last ``window + 1`` states
-        (``window`` transitions) are used -- see StateSpacePolicy._fit_dynamics
-        for the full rationale (bounds per-refit cost, keeps the fit
-        reflecting the current dynamics regime). ``None`` (default) uses the
-        full accumulated history, as before.
+        Returns ``(aug_states, actions)`` of shapes ``(T, n_aug)`` and
+        ``(T-1, m)``: ``actions[i]`` took ``aug_states[i]`` to
+        ``aug_states[i + 1]``.  When ``self.window`` is set, only the last
+        ``window + 1`` states (``window`` transitions) are used.
         """
         state_hist = self._state_history
         uncertainty_hist = self._uncertainty_history
@@ -292,14 +296,25 @@ class BayesianDynamicsPolicy(BasePolicy):
         )
         aug_states = np.array([
             self._build_augmented(s, u if u is not None else np.zeros(u_dim))
-            for s, u in zip(state_hist, uncertainty_hist)
+            for s, u in zip(state_hist, uncertainty_hist, strict=True)
         ])  # (T, n_aug)
-        A = np.array(action_hist[:-1])  # (T-1, m)
-        T = len(A)
+        actions = np.array(action_hist[:-1])  # (T-1, m)
+        return aug_states, actions
 
+    def _fit_dynamics(self) -> None:
+        """Fit the SVD basis, then the dynamics posterior in that basis.
+
+        The basis ``U_r`` comes from the SVD of the augmented states, as in
+        StateSpacePolicy.  The posterior of ``W = [A_r | B_r]^T`` is then
+        computed in the new basis by :meth:`_fit_posterior`; a re-anchor
+        changes the meaning of ``z``, so the posterior is rebuilt rather than
+        carried over.
+        """
+        aug_states, actions = self._augmented_history()
+        T = len(actions)
         if T < 2:
             return
-        if not (np.isfinite(aug_states).all() and np.isfinite(A).all()):
+        if not (np.isfinite(aug_states).all() and np.isfinite(actions).all()):
             log.warning(
                 "[BayesianDynamicsPolicy] aug_states/actions contain NaN/inf — "
                 "skipping dynamics fit"
@@ -309,68 +324,95 @@ class BayesianDynamicsPolicy(BasePolicy):
         r = min(self.n_components, aug_states.shape[1], T)
         U, _, _ = np.linalg.svd(aug_states.T, full_matrices=False)
         self._U_r = U[:, :r]  # (n_aug, r)
+        self._fit_posterior()
 
-        Z = aug_states @ self._U_r               # (T, r)
-        X_fit = np.hstack([Z[:-1], A])           # (T-1, r+m)
-        Y_fit = Z[1:]                            # (T-1, r)
+        log.debug(
+            f"[BayesianDynamicsPolicy] fit: r={r}, T={T}, n_aug={aug_states.shape[1]}"
+        )
 
-        if not (np.isfinite(X_fit).all() and np.isfinite(Y_fit).all()):
+    def _fit_posterior(self) -> None:
+        """Batch Bayesian posterior of ``W = [A_r | B_r]^T`` in the current basis.
+
+        With prior ``vec(W) ~ N(0, τ²I)`` and noise variance ``σ²``
+        (``λ = σ²/τ²``), the posterior over the observed transitions has::
+
+            G = λI + X_fit^T X_fit,     W = G^{-1} X_fit^T Y_fit,
+
+        with ``X_fit = [Z_{0:T-2} | actions]`` and ``Y_fit = Z_{1:T-1}``.  The
+        prior keeps the posterior defined even before there are as many
+        transitions as unknowns.  Afterwards the design point of the latest
+        action is added to ``G^{-1}``; its outcome arrives with the next
+        observation.
+        """
+        aug_states, actions = self._augmented_history()
+        if len(actions) < 1:
+            return
+        if not (np.isfinite(aug_states).all() and np.isfinite(actions).all()):
             log.warning(
-                "[BayesianDynamicsPolicy] X_fit/Y_fit contain NaN/inf — "
-                "skipping dynamics fit"
+                "[BayesianDynamicsPolicy] aug_states/actions contain NaN/inf — "
+                "skipping posterior fit"
             )
             return
 
-        W, _, _, _ = np.linalg.lstsq(X_fit, Y_fit, rcond=None)
+        Z = aug_states @ self._U_r                 # (T, r)
+        X_fit = np.hstack([Z[:-1], actions])       # (T-1, r+m)
+        Y_fit = Z[1:]                              # (T-1, r)
+        G = self.lambda_reg * np.eye(X_fit.shape[1]) + X_fit.T @ X_fit
+        try:
+            self._G_inv = np.linalg.inv(G)
+        except np.linalg.LinAlgError:
+            self._G_inv = np.linalg.pinv(G)
+        self._set_mean(self._G_inv @ X_fit.T @ Y_fit)
+
+        self._pending_x = None
+        self._add_design_point(Z[-1], self._action_history[-1])
+
+    def _set_mean(self, W: np.ndarray) -> None:
+        r = self._U_r.shape[1]
+        self._W = W
         self._A_r = W[:r].T   # (r, r)
         self._B_r = W[r:].T   # (r, m)
 
-        if reinit_G:
-            # Bayesian linear regression precision matrix (Eldredge 2026 Eq 33):
-            # G = λI + X_fit^T X_fit; G^{-1} is the posterior covariance.
-            G = self.lambda_reg * np.eye(X_fit.shape[1]) + X_fit.T @ X_fit
-            try:
-                self._G_inv = np.linalg.inv(G)
-            except np.linalg.LinAlgError:
-                self._G_inv = np.linalg.pinv(G)
+    # ── Online Kalman update ──────────────────────────────────────────────
 
-        log.debug(
-            f"[BayesianDynamicsPolicy] fit: r={r}, T={T}, "
-            f"n_aug={aug_states.shape[1]}, reinit_G={reinit_G}"
-        )
+    def _add_design_point(self, z: np.ndarray, action: np.ndarray) -> None:
+        """Kalman covariance step for the action just chosen from state ``z``.
 
-    # ── Online Kalman precision update ────────────────────────────────────
+        Sherman–Morrison rank-1 update (Eldredge & Mousavi, 2026, Eq. 33)::
 
-    def _update_precision(self, z: np.ndarray, action: np.ndarray) -> None:
-        """Rank-1 Sherman–Morrison update of G^{-1} (Kalman covariance step).
+            G^{-1} ← G^{-1} − G^{-1} x x^T G^{-1} / (1 + x^T G^{-1} x),
+            x = [z | action].
 
-        Implements the Kalman filter posterior-covariance update (Eldredge &
-        Mousavi, 2026, Eq. 33) for a Bayesian linear regression model::
-
-            G^{-1}_{t+1} = G^{-1}_t
-                         − G^{-1}_t x x^T G^{-1}_t
-                           / (1 + x^T G^{-1}_t x),    x = [z | action].
-
-        This O((r+m)²) update is the key computational advantage over
-        re-inverting the full Gram matrix after each observation.
-
-        Notes
-        -----
-        When U_r is re-anchored the reduced coordinates z change meaning, so
-        G^{-1} is reinitialised from scratch (via ``_fit_dynamics(reinit_G=True)``).
-        The Sherman–Morrison update is therefore only applied between re-anchors.
+        The posterior precision does not depend on the outcome, so it is
+        updated as soon as the action is chosen; ``x`` is kept until its
+        outcome arrives (:meth:`_learn_from_outcome`).
         """
-        if self._G_inv is None or self._U_r is None:
-            return
-        r = self._U_r.shape[1]
-        if z.shape[0] != r:
-            return
-        x = np.concatenate([z, np.asarray(action)])
-        if x.shape[0] != self._G_inv.shape[0]:
+        x = np.concatenate([np.asarray(z, dtype=float), np.asarray(action, dtype=float)])
+        if not np.isfinite(x).all() or x.shape[0] != self._G_inv.shape[0]:
+            self._pending_x = None
             return
         g = self._G_inv @ x          # (r+m,)
-        denom = 1.0 + float(x @ g)
-        self._G_inv -= np.outer(g, g) / denom
+        self._G_inv -= np.outer(g, g) / (1.0 + float(x @ g))
+        self._pending_x = x
+
+    def _learn_from_outcome(self, z_next: np.ndarray) -> None:
+        """Kalman mean step once the outcome ``z_next`` of the pending action is known.
+
+        With ``G^{-1}`` already including the pending design point ``x``, the
+        Kalman gain is ``K = G^{-1} x`` and::
+
+            W ← W + K (z_next − W^T x)^T.
+
+        This is the recursive form of the batch posterior mean, so after any
+        number of steps ``W`` equals ``G^{-1} X^T Y`` over all transitions seen.
+        """
+        if self._pending_x is None or not np.isfinite(z_next).all():
+            return
+        x = self._pending_x
+        gain = self._G_inv @ x                                   # (r+m,)
+        innovation = np.asarray(z_next, dtype=float) - self._W.T @ x   # (r,)
+        self._set_mean(self._W + np.outer(gain, innovation))
+        self._pending_x = None
 
     # ── Stateful history ──────────────────────────────────────────────────
 
@@ -382,12 +424,15 @@ class BayesianDynamicsPolicy(BasePolicy):
     ) -> None:
         """Record an observed (state, action) pair and update the model.
 
-        After the initial warm-up fit, updates G^{-1} online via the
-        Sherman–Morrison formula (O((r+m)²)) rather than refitting the full
-        dynamics from scratch.  Optionally re-fits the SVD basis every
+        ``state`` is the outcome of the previous action and the state from
+        which ``action`` was chosen.  After the initial warm-up fit each call
+        is one Kalman step in O((r+m)²): the posterior mean learns from the
+        previous action's outcome, then the precision takes the new action's
+        design point.  Optionally re-fits the SVD basis every
         ``reanchor_freq`` observations to track long-term drift in the
-        degradation manifold (G^{-1} is reinitialised from historical data
-        after each re-anchor to remain consistent with the new basis).
+        degradation manifold (the posterior is rebuilt in the new basis).
+        With ``window`` set, the posterior is instead recomputed from the last
+        ``window`` transitions.
 
         Parameters
         ----------
@@ -414,15 +459,15 @@ class BayesianDynamicsPolicy(BasePolicy):
 
         n = len(self._state_history)
 
-        # Initial warm-up fit — sets U_r, A_r, B_r, G_inv
+        # Initial warm-up fit — sets U_r and the posterior (W, G_inv)
         if n == self.min_fit_obs:
-            self._fit_dynamics(reinit_G=True)
+            self._fit_dynamics()
             return
 
         if self._U_r is None:
             return
 
-        # Periodic SVD re-anchor: refit basis and reinitialise G^{-1}
+        # Periodic SVD re-anchor: refit the basis and the posterior in it
         if (
             self.reanchor_freq
             and n > self.min_fit_obs
@@ -431,10 +476,14 @@ class BayesianDynamicsPolicy(BasePolicy):
             log.debug(
                 f"[BayesianDynamicsPolicy] re-anchoring SVD at obs {self._n_obs}"
             )
-            self._fit_dynamics(reinit_G=True)
+            self._fit_dynamics()
             return
 
-        # Online Sherman–Morrison update of precision inverse (Eldredge 2026 Eq 33)
+        if self.window is not None:
+            self._fit_posterior()
+            return
+
+        # Online Kalman update (Eldredge 2026 Eq 33): mean, then precision
         u_dim = next(
             (len(u) for u in self._uncertainty_history if u is not None), 0
         )
@@ -443,12 +492,13 @@ class BayesianDynamicsPolicy(BasePolicy):
             uncertainty_vector if uncertainty_vector is not None else np.zeros(u_dim),
         )
         z = aug @ self._U_r
-        self._update_precision(z, action)
+        self._learn_from_outcome(z)
+        self._add_design_point(z, action)
 
     # ── Exploration bonuses ───────────────────────────────────────────────
 
     def _info_gain(self, z: np.ndarray, action: np.ndarray) -> float:
-        """Normalised information gain h / (1 + h), h = x^T G^{-1} x.
+        """D-optimal information gain log(1 + h), h = x^T G^{-1} x.
 
         The leverage score h simultaneously implements:
 
@@ -457,8 +507,11 @@ class BayesianDynamicsPolicy(BasePolicy):
         * Bayesian information gain (Eldredge & Mousavi, 2026, Eq. 33): the
           one-step posterior-variance reduction tr(ΔG^{-1}) is monotone in h.
 
-        The normalised form h/(1+h) ∈ [0, 1) avoids unbounded values when
-        G^{-1} has large eigenvalues early in the experiment.
+        log(1 + h) is the gain in log det G from observing x (matrix
+        determinant lemma).  It grows without bound but slowly, so it keeps
+        distinguishing candidates while G^{-1} still has large eigenvalues
+        early in the experiment, where h / (1 + h) is close to 1 for all of
+        them.
         """
         if self._G_inv is None or self._U_r is None:
             return 0.0
@@ -470,7 +523,7 @@ class BayesianDynamicsPolicy(BasePolicy):
             return 0.0
         h = float(x @ self._G_inv @ x)
         h = max(h, 0.0)
-        return h / (1.0 + h)
+        return float(np.log1p(h))
 
     def _subspace_residual(self, s_gp: np.ndarray) -> float:
         """Normalised subspace reconstruction residual (Li et al., 2021).
@@ -485,6 +538,11 @@ class BayesianDynamicsPolicy(BasePolicy):
         Large ρ means the protocol leads to a region of parameter space not
         yet captured by the learnt subspace, following the ALSL_U principle
         of Li et al. (2021, Formulation II).
+
+        When the state is augmented, U_s is a block of rows of U_r and its
+        columns are not orthonormal, so U_s U_s^T is not a projector.  The
+        projection uses an orthonormal basis of the column space of U_s
+        instead, so that ρ = 0 exactly for a state inside the subspace.
         """
         if self._U_r is None or self._n_state is None:
             return 0.0
@@ -492,7 +550,9 @@ class BayesianDynamicsPolicy(BasePolicy):
         n = min(self._n_state, self._U_r.shape[0], len(s))
         s_trunc = s[:n]
         U_s = self._U_r[:n]              # (n, r)
-        proj = U_s @ (U_s.T @ s_trunc)
+        basis, singular_values, _ = np.linalg.svd(U_s, full_matrices=False)
+        basis = basis[:, singular_values > 1e-10]
+        proj = basis @ (basis.T @ s_trunc)
         return float(
             np.linalg.norm(s_trunc - proj) / (np.linalg.norm(s_trunc) + 1e-12)
         )
@@ -681,9 +741,9 @@ class BayesianDynamicsPolicy(BasePolicy):
             selected_protocols.append(protocol)
             observed_states.append(next_state)
             scores_history.append(all_scores)
-            degradation_history.append(
-                self.degradation_fn(np.abs(next_state - current_state))
-            )
+            # Degradation of the observed state, as in BasePolicy.run and the
+            # state cost the policy minimises: delta is a function of a state.
+            degradation_history.append(self.degradation_fn(next_state))
 
             if not succeeded:
                 terminated_early = True

@@ -1,32 +1,27 @@
 #!/usr/bin/env python
-"""Steer active learning on the uncertainty state vector (Forrester, 1-D).
+"""Steer active learning on the uncertainty state vector.
 
-Implements the paper's "Novel Active Learning Policies" idea with the
-state-space policies in :mod:`results.policies`:
+Runs the campaigns of ``paper/steering_experiment_spec.md`` for one problem and
+one starting condition:
 
-* Every step, a suite of traits-audit checks is evaluated on a **fixed
-  reference grid** (experimental plan §3.3), never on the acquired points.
-* Each metric is mapped to a "badness" score (higher = worse) and z-scored
-  against its own warm-start baseline (§3.1), giving the uncertainty state
-  vector ``x_t``.
-* The metrics are partitioned (§6.1, Goodhart's law) into a **steering**
-  subset, which the policy sees, and an **audit-only** subset, which it never
-  sees and which is recorded only to check whether steering fools the
-  instruments it optimises.
-* The state-space policies learn ``x_{t+1} = A x_t + B u_t`` online
-  (SVD + least squares; Bayesian/Sherman-Morrison for the Bayesian variant),
-  with ``u_t = [x, mu(x), sigma(x)]`` the candidate query, and score
-  candidates by predicted progress, exploration bonus and (for the ``audit-*``
-  policies) the predicted health ``-mean(x_{t+1})`` of the steering metrics.
-* A random probe fraction of the budget is reserved for every policy (§3.4).
+* problems come from ``results.committee.problems`` (forrester,
+  branin-currin-mo, color);
+* the starting condition decides the surrogate: a GP whose reported sigma is
+  scaled (calibrated x1, overconfident x0.3, underconfident x2.5) or a
+  bootstrap polynomial ensemble (misspecified);
+* every step, ten traits-audit checks are scored on a fixed reference grid and
+  z-scored against the warm start, giving the uncertainty state vector;
+* the policy sees only the *steering* metrics; the *audit-only* metrics are
+  recorded to detect Goodharting.
 
 Writes one row per (policy, seed, step) to ``<out>/steps.csv`` plus
 ``<out>/config.json``; analyse with ``analyze_steering.py``.
 
 Usage::
 
-    python experiments/results/scripts/steer_state_space.py            # defaults
-    python experiments/results/scripts/steer_state_space.py --seeds 3 --steps 60
+    python experiments/results/scripts/steer_state_space.py --problem forrester --condition calibrated
+    python experiments/results/scripts/steer_state_space.py --problem color --condition overconfident \\
+        --seeds 5 --seed-start 10 --out _results/steering/color/overconfident/seeds10
 """
 from __future__ import annotations
 
@@ -38,6 +33,8 @@ import warnings
 from pathlib import Path
 
 import numpy as np
+from results.cal_demo import _make_gp_kernel
+from results.committee.problems import PolyBootstrapSurrogate, get_problem
 from results.policies import (
     AuditBayesianDynamicsPolicy,
     AuditStateSpacePolicy,
@@ -45,275 +42,477 @@ from results.policies import (
     LCBPolicy,
     StateSpacePolicy,
 )
+
 from traits_audit import checks as C
 
-# ── Oracle: Forrester et al. (2008) with heteroscedastic noise ────────────────
+PROBLEMS = ["forrester", "branin-currin-mo", "color"]
+CONDITIONS = ["calibrated", "overconfident", "underconfident", "misspecified"]
+SIGMA_SCALE = {"calibrated": 1.0, "overconfident": 0.3, "underconfident": 2.5, "misspecified": 1.0}
+POLICIES = ["random", "lcb", "state-space", "bayes-dynamics",
+            "audit-state-space", "audit-bayes", "audit-state-space-all"]
 
 
-def forrester(x):
-    x = np.asarray(x, dtype=float)
-    return (6.0 * x - 2.0) ** 2 * np.sin(12.0 * x - 4.0)
-
-
-def noise_sd(x):
-    return 0.1 + 0.4 * np.asarray(x, dtype=float) ** 2
-
-
-_DENSE = np.linspace(0.0, 1.0, 200_001)
-F_STAR = float(forrester(_DENSE).min())
-
-
-# ── Surrogate: bootstrap ensemble of polynomials (paper, Methods) ─────────────
-
-
-class BootstrapPoly:
-    """Bootstrap ensemble of degree-``degree`` polynomial fits.
-
-    Predictive std combines the ensemble spread (epistemic) with a fixed
-    aleatoric floor; the floor is never learned from the ensemble.
-    """
-
-    def __init__(self, degree: int = 5, n_members: int = 20, noise_floor: float = 0.25):
-        self.degree, self.n_members, self.noise_floor = degree, n_members, noise_floor
-        self._coefs: np.ndarray | None = None
-
-    def fit(self, x, y, rng):
-        x, y = np.asarray(x, float), np.asarray(y, float)
-        coefs = []
-        for _ in range(self.n_members):
-            idx = rng.integers(0, len(x), len(x))
-            deg = min(self.degree, len(np.unique(x[idx])) - 1)
-            c = np.zeros(self.degree + 1)
-            c[self.degree - deg:] = np.polyfit(x[idx], y[idx], deg)
-            coefs.append(c)
-        self._coefs = np.array(coefs)
-        return self
-
-    def predict(self, x):
-        preds = np.array([np.polyval(c, x) for c in self._coefs])
-        return preds.mean(axis=0), np.sqrt(preds.var(axis=0) + self.noise_floor ** 2)
-
-
-# ── Uncertainty state: metrics -> badness (higher = worse) ────────────────────
+# ── Uncertainty metrics ───────────────────────────────────────────────────────
 
 METRICS = {
-    "CalibrationError":         (C.CalibrationErrorCheck,         lambda r: r.value),
-    "NLL":                      (C.NegativeLogLikelihoodCheck,    lambda r: r.value),
-    "VarianceErrorCorrelation": (C.VarianceErrorCorrelationCheck, lambda r: -r.value),
-    "SignedBias":               (C.SignedBiasCheck,               lambda r: abs(r.value)),
-    "IntervalCoverage":         (C.IntervalCoverageCheck,         lambda r: abs(r.value - 0.683)),
-    "IntervalScore":            (C.IntervalScoreCheck,            lambda r: r.value),
-    "CRPS":                     (C.CRPSCheck,                     lambda r: r.value),
-    "ENCE":                     (C.ENCECheck,                     lambda r: r.value),
-    "PITUniformity":            (C.PITUniformityCheck,            lambda r: r.details["ks_statistic"]),
-    "VarianceAlignment":        (C.VarianceAlignmentCheck,        lambda r: abs(np.log(r.value))),
+    "CalibrationError": C.CalibrationErrorCheck,
+    "NLL": C.NegativeLogLikelihoodCheck,
+    "VarianceErrorCorrelation": C.VarianceErrorCorrelationCheck,
+    "SignedBias": C.SignedBiasCheck,
+    "IntervalCoverage": C.IntervalCoverageCheck,
+    "IntervalScore": C.IntervalScoreCheck,
+    "CRPS": C.CRPSCheck,
+    "ENCE": C.ENCECheck,
+    "PITUniformity": C.PITUniformityCheck,
+    "VarianceAlignment": C.VarianceAlignmentCheck,
 }
 DEFAULT_STEERING = ["CalibrationError", "NLL", "VarianceErrorCorrelation", "SignedBias"]
 
 
-def metric_snapshot(y_ref, mu, sd) -> tuple[dict[str, float], dict[str, str]]:
-    """Badness of every metric on the reference grid, plus each check's category."""
-    hist = [{"y_true": a, "y_pred_mean": b, "y_pred_std": c, "uncertainty": c}
-            for a, b, c in zip(y_ref.tolist(), mu.tolist(), sd.tolist(), strict=False)]
-    out, cats = {}, {}
+def badness(name, result):
+    """Turn a check result into one number where higher always means worse."""
+    if result.value is None:
+        return np.nan
+    if name == "VarianceErrorCorrelation":
+        return -result.value
+    if name == "SignedBias":
+        return abs(result.value)
+    if name == "IntervalCoverage":
+        return abs(result.value - 0.683)
+    if name == "PITUniformity":
+        return result.details["ks_statistic"]
+    if name == "VarianceAlignment":
+        return abs(np.log(result.value))
+    return result.value
+
+
+def score_metrics_one_objective(y_ref, mu_ref, sd_ref):
+    history = []
+    for y, mu, sd in zip(y_ref, mu_ref, sd_ref, strict=True):
+        history.append({"y_true": float(y), "y_pred_mean": float(mu),
+                        "y_pred_std": float(sd), "uncertainty": float(sd)})
+    values = {}
+    categories = {}
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        for name, (cls, badness) in METRICS.items():
-            r = cls().run(hist)
-            v = badness(r) if r.value is not None else np.nan
-            out[name] = float(v) if np.isfinite(v) else 0.0
-            cats[name] = r.category.value
-    return out, cats
+        for name, check_class in METRICS.items():
+            result = check_class().run(history)
+            value = badness(name, result)
+            if not np.isfinite(value):
+                value = 0.0
+            values[name] = float(value)
+            categories[name] = result.category.value
+    return values, categories
 
 
-class Baseline:
-    """Per-metric z-score against the warm-start snapshots (plan §3.1)."""
+def score_metrics(Y_ref, MU_ref, SD_ref):
+    """Badness of every metric on the reference grid, averaged over objectives."""
+    n_objectives = Y_ref.shape[1]
+    totals = dict.fromkeys(METRICS, 0.0)
+    categories = {}
+    for j in range(n_objectives):
+        values, categories = score_metrics_one_objective(Y_ref[:, j], MU_ref[:, j], SD_ref[:, j])
+        for name in METRICS:
+            totals[name] += values[name] / n_objectives
+    return totals, categories
 
-    def __init__(self, snapshots: list[dict[str, float]]):
-        arr = {k: np.array([s[k] for s in snapshots]) for k in METRICS}
-        self.mu = {k: float(v.mean()) for k, v in arr.items()}
-        self.sd = {k: max(float(v.std()), 1e-3 * abs(float(v.mean())) + 1e-9) for k, v in arr.items()}
 
-    def z(self, snap: dict[str, float]) -> dict[str, float]:
-        return {k: (snap[k] - self.mu[k]) / self.sd[k] for k in METRICS}
+def choose_steering(split, split_index, explicit_list):
+    if explicit_list:
+        return list(explicit_list)
+    if split == "default":
+        return list(DEFAULT_STEERING)
+    if split == "all":
+        return list(METRICS)
+    if split == "random":
+        names = sorted(METRICS)
+        order = np.random.default_rng([split_index, 99]).permutation(len(names))
+        half = len(names) // 2
+        return [names[i] for i in sorted(order[:half])]
+    raise ValueError(f"unknown split {split!r}")
 
 
-# ── Policy adapter ────────────────────────────────────────────────────────────
-# results.policies score candidates through ``model.predict_with_uncertainty``
-# on ``[state | action]`` rows.  Here the policy state is
-# s = [best observed y, mean predictive sigma on the reference grid] (both
-# standardised) and the action is u = [x, mu(x), sigma(x)]; the "model"
-# predicts the next best-so-far as min(best, mu(x)) with uncertainty sigma(x),
-# which makes the LCB fallback an ordinary LCB on the surrogate.
+class WarmStartBaseline:
+    """Z-scores each metric against its own values during the warm start.
 
-N_STATE, N_ACTION = 2, 3
+    ``z_floor``: the std is never smaller than ``z_floor * |warm-start mean|``.
+    ``z_clip``: if given, every z-score is limited to [-z_clip, +z_clip].
+    """
+
+    def __init__(self, warm_snapshots, z_floor, z_clip):
+        self.z_clip = z_clip
+        self.mean = {}
+        self.std = {}
+        for name in METRICS:
+            values = np.array([snapshot[name] for snapshot in warm_snapshots])
+            self.mean[name] = float(values.mean())
+            self.std[name] = max(float(values.std()), z_floor * abs(float(values.mean())) + 1e-9)
+
+    def z_scores(self, snapshot):
+        scores = {}
+        for name in METRICS:
+            z = (snapshot[name] - self.mean[name]) / self.std[name]
+            if self.z_clip is not None:
+                z = min(max(z, -self.z_clip), self.z_clip)
+            scores[name] = z
+        return scores
+
+
+# ── Surrogates for the four starting conditions ───────────────────────────────
+
+class ScaledGP:
+    """GP with the cal_demo kernel; the reported sigma is multiplied by ``sigma_scale``."""
+
+    def __init__(self, sigma_scale, seed):
+        self.sigma_scale = sigma_scale
+        self.seed = seed
+        self.gp = None
+
+    def fit(self, x, y):
+        from sklearn.gaussian_process import GaussianProcessRegressor
+        self.gp = GaussianProcessRegressor(kernel=_make_gp_kernel(), n_restarts_optimizer=1,
+                                           normalize_y=True, random_state=self.seed)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            self.gp.fit(x, y)
+
+    def predict(self, x):
+        mu, sd = self.gp.predict(x, return_std=True)
+        return mu, sd * self.sigma_scale
+
+
+class PolynomialEnsemble:
+    """Bootstrap polynomial ensemble: the misspecified surrogate."""
+
+    def __init__(self, dim, degree, n_members, seed):
+        self.dim = dim
+        self.degree = degree
+        self.n_members = n_members
+        self.seed = seed
+
+    def fit(self, x, y, refit_number):
+        rng = np.random.default_rng([self.seed, 2, refit_number])
+        self.model = PolyBootstrapSurrogate(dim=self.dim, degree=self.degree,
+                                            n_estimators=self.n_members, rng=rng)
+        self.model.fit(x, y)
+
+    def predict(self, x):
+        return self.model.predict(x)
+
+
+class Surrogate:
+    """One model per objective. ``fit`` takes Y of shape (n, n_objectives)."""
+
+    def __init__(self, problem, condition, n_members, seed):
+        self.condition = condition
+        self.models = []
+        for j in range(problem.n_objectives):
+            if condition == "misspecified":
+                self.models.append(PolynomialEnsemble(problem.dim, problem.degree, n_members, seed * 10 + j))
+            else:
+                self.models.append(ScaledGP(SIGMA_SCALE[condition], seed * 10 + j))
+
+    def fit(self, X, Y, refit_number):
+        for j, model in enumerate(self.models):
+            if self.condition == "misspecified":
+                model.fit(X, Y[:, j], refit_number)
+            else:
+                model.fit(X, Y[:, j])
+
+    def predict(self, X):
+        means = []
+        stds = []
+        for model in self.models:
+            mu, sd = model.predict(X)
+            means.append(mu)
+            stds.append(sd)
+        return np.column_stack(means), np.column_stack(stds)
+
+
+# ── Campaign score: simple regret, or log hypervolume difference ──────────────
+
+def campaign_score(problem, clean_values):
+    """``clean_values``: noise-free objectives of every point queried so far."""
+    clean_values = np.asarray(clean_values)
+    if problem.n_objectives == 1:
+        return float(clean_values[:, 0].min() - problem.true_min)
+    hypervolume = problem.hypervolume(clean_values)
+    return float(np.log10(max(problem.hv_max - hypervolume, 1e-12)))
+
+
+# ── Policies ──────────────────────────────────────────────────────────────────
+# The policies score candidates through ``model.predict_with_uncertainty`` on
+# [state | action] rows.  Policy state s = [best scalarised y so far, mean sigma
+# on the reference grid]; action u = [x_1..x_d, mu(x), sigma(x)], with mu and
+# sigma averaged over objectives.  The "model" predicts the next best-so-far
+# as min(best, mu(x)) with uncertainty sigma(x), so the LCB fallback is an
+# ordinary LCB on the surrogate.
+
+N_STATE = 2
 
 
 class SurrogateView:
+    def __init__(self, dim):
+        self.dim = dim
+
     def predict_with_uncertainty(self, X):
         X = np.atleast_2d(X)
-        s, u = X[:, :N_STATE], X[:, N_STATE:]
-        mean = s.copy()
-        mean[:, 0] = np.minimum(s[:, 0], u[:, 1])
-        return {"mean": mean, "std": np.repeat(u[:, 2:3], N_STATE, axis=1)}
+        state = X[:, :N_STATE]
+        mu_of_query = X[:, N_STATE + self.dim]
+        sigma_of_query = X[:, N_STATE + self.dim + 1]
+        mean = state.copy()
+        mean[:, 0] = np.minimum(state[:, 0], mu_of_query)
+        std = np.column_stack([sigma_of_query, sigma_of_query])
+        return {"mean": mean, "std": std}
 
 
-def progress(s) -> float:
-    return float(s[0])
+def progress(state):
+    return float(state[0])
 
 
-def make_policy(name: str, args, seed: int):
-    common = dict(model=SurrogateView(), num_action_features=N_ACTION, degradation_fn=progress)
-    dyn = dict(common, n_components=args.rank, kappa=args.kappa, Q_weight=1.0, R_weight=0.0,
-               min_fit_obs=args.min_fit_obs, uncertainty_weight=1.0)
-    health = lambda v: -float(np.mean(v))  # noqa: E731  (steering metrics are badness z-scores)
+def make_health_function(scale):
+    """Health of a vector of badness z-scores: higher is healthier, always in [-1, 1].
+
+    Each z-score passes through tanh(z / scale), so a metric counts as fully
+    bad or fully good once it is a few ``scale`` units from its warm-start
+    level, while smaller changes still move the score smoothly.
+    """
+    def health(badness_z):
+        return -float(np.mean(np.tanh(np.asarray(badness_z) / scale)))
+    return health
+
+
+def make_policy(name, problem, args):
+    common = dict(model=SurrogateView(problem.dim), num_action_features=problem.dim + 2,
+                  degradation_fn=progress)
+    dynamics = dict(common, n_components=args.rank, kappa=args.kappa, Q_weight=1.0, R_weight=0.0,
+                    min_fit_obs=args.min_fit_obs, uncertainty_weight=1.0)
     if name == "random":
         return None
     if name == "lcb":
         return LCBPolicy(kappa=args.kappa, **common)
     if name == "state-space":
-        return StateSpacePolicy(**dyn)
+        return StateSpacePolicy(**dynamics)
     if name == "bayes-dynamics":
-        return BayesianDynamicsPolicy(gamma_info=args.gamma_info, gamma_sub=0.0, **dyn)
-    if name == "audit-state-space":
-        return AuditStateSpacePolicy(gamma_health=args.gamma_health, health_fn=health, **dyn)
+        return BayesianDynamicsPolicy(gamma_info=args.gamma_info, gamma_sub=0.0, **dynamics)
+    if name in ("audit-state-space", "audit-state-space-all"):
+        return AuditStateSpacePolicy(gamma_health=args.gamma_health,
+                                     health_fn=make_health_function(args.health_scale),
+                                     **dynamics)
     if name == "audit-bayes":
         return AuditBayesianDynamicsPolicy(gamma_info=args.gamma_info, gamma_sub=0.0,
-                                           gamma_health=args.gamma_health, health_fn=health, **dyn)
+                                           gamma_health=args.gamma_health,
+                                           health_fn=make_health_function(args.health_scale),
+                                           **dynamics)
     raise ValueError(name)
 
 
 # ── One campaign ──────────────────────────────────────────────────────────────
 
+class Campaign:
+    """Everything one (problem, condition, policy, seed) run needs."""
 
-def run_campaign(policy_name: str, seed: int, args, steering: list[str]) -> list[dict]:
-    rng_seed = np.random.default_rng([seed, 0])
-    grid = np.linspace(0.0, 1.0, args.grid)
-    x_ref = np.linspace(0.0, 1.0, args.n_ref)
-    y_ref = forrester(x_ref) + rng_seed.normal(0.0, noise_sd(x_ref))  # fixed reference observations
-    x_obs = list(rng_seed.uniform(0.0, 1.0, args.n_init))
+    def __init__(self, problem, condition, policy_name, seed, args, steering):
+        self.problem = problem
+        self.policy_name = policy_name
+        self.seed = seed
+        self.args = args
+        if policy_name == "audit-state-space-all":
+            self.policy_sees = list(METRICS)
+        else:
+            self.policy_sees = steering
+        self.grid = problem.grid
+        self.y_scales = problem.y_scales
+        self.surrogate = Surrogate(problem, condition, args.members, seed)
+        self.policy = make_policy(policy_name, problem, args)
+        self.stateful = isinstance(self.policy, (StateSpacePolicy, BayesianDynamicsPolicy))
 
-    def observe_y(x, t):
-        return float(forrester(x) + np.random.default_rng([seed, 1, t]).normal(0.0, noise_sd(x)))
+        reference_rng = np.random.default_rng([seed, 0])
+        self.Y_ref = problem.observe(self.grid, reference_rng) / self.y_scales
+        self.x_observed = []
+        self.y_observed = []
+        self.clean_observed = []
+        warm_start_rng = np.random.default_rng([seed, 5])
+        for _ in range(args.n_init):
+            self.query(warm_start_rng.uniform(0.0, 1.0, problem.dim))
 
-    y_obs = [observe_y(x, t) for t, x in enumerate(x_obs)]
-    model = BootstrapPoly(args.degree, args.members, args.noise_floor)
-    policy = make_policy(policy_name, args, seed)
-    stateful = isinstance(policy, (StateSpacePolicy, BayesianDynamicsPolicy))
+        warm_Y = np.array(self.y_observed)
+        self.y_mean = warm_Y.mean(axis=0)
+        self.y_std = warm_Y.std(axis=0)
+        self.y_std[self.y_std == 0] = 1.0
 
-    # Standardisation of y is frozen after the warm start so the state is stationary.
-    y_mu, y_sd = float(np.mean(y_obs)), float(np.std(y_obs)) or 1.0
+    def query(self, x):
+        step = len(self.x_observed)
+        noise_rng = np.random.default_rng([self.seed, 1, step])
+        x_row = np.asarray(x, dtype=float).reshape(1, -1)
+        self.x_observed.append(x_row[0])
+        self.y_observed.append(self.problem.observe(x_row, noise_rng)[0] / self.y_scales)
+        self.clean_observed.append(self.problem.clean(x_row)[0])
 
-    def snapshot(t):
-        """Refit on the first ``t`` observations; metrics + policy state."""
-        model.fit(x_obs[:t], y_obs[:t], np.random.default_rng([seed, 2, t]))
-        mu_ref, sd_ref = model.predict(x_ref)
-        snap, cats = metric_snapshot(y_ref, mu_ref, sd_ref)
-        s = np.array([(min(y_obs[:t]) - y_mu) / y_sd, float(sd_ref.mean()) / y_sd])
-        return snap, cats, s
+    def scalarise(self, values_per_objective):
+        return float(np.mean((values_per_objective - self.y_mean) / self.y_std))
 
-    rows, warm = [], []
-    for t in range(args.degree + 2, args.n_init + 1):  # warm start: random queries
-        snap, cats, s = snapshot(t)
-        warm.append((t, snap, s))
-    base = Baseline([w[1] for w in warm])
+    def refit_and_measure(self, n_points):
+        """Refit on the first ``n_points`` observations; return metrics and policy state."""
+        X = np.array(self.x_observed[:n_points])
+        Y = np.array(self.y_observed[:n_points])
+        self.surrogate.fit(X, Y, refit_number=n_points)
+        MU_ref, SD_ref = self.surrogate.predict(self.grid)
+        snapshot, categories = score_metrics(self.Y_ref, MU_ref, SD_ref)
+        best_so_far = min(self.scalarise(y) for y in Y)
+        mean_sigma = float(np.mean(SD_ref / self.y_std))
+        state = np.array([best_so_far, mean_sigma])
+        return snapshot, categories, state
 
-    def vec(snap, names):
-        z = base.z(snap)
-        return np.array([z[k] for k in names])
+    def candidate_actions(self):
+        MU, SD = self.surrogate.predict(self.grid)
+        actions = []
+        for x, mu, sd in zip(self.grid, MU, SD, strict=True):
+            mu_scalar = self.scalarise(mu)
+            sigma_scalar = float(np.mean(sd / self.y_std))
+            actions.append(np.concatenate([x, [mu_scalar, sigma_scalar]]))
+        return actions
 
-    # Replay warm-start transitions into the policy (random actions = good excitation).
-    if stateful:
-        for (t, snap, s), x_next in zip(warm[:-1], x_obs[warm[0][0]:], strict=False):
-            model.fit(x_obs[:t], y_obs[:t], np.random.default_rng([seed, 2, t]))
-            mu_x, sd_x = model.predict(np.array([x_next]))
-            u = np.array([x_next, (mu_x[0] - y_mu) / y_sd, sd_x[0] / y_sd])
-            policy.observe(s, u, uncertainty_vector=vec(snap, steering))
+    def action_for(self, x):
+        MU, SD = self.surrogate.predict(np.asarray(x).reshape(1, -1))
+        return np.concatenate([x, [self.scalarise(MU[0]), float(np.mean(SD[0] / self.y_std))]])
 
-    def record(t, phase, probe, snap):
-        """Row for the state after ``t`` observations (simple regret on clean f)."""
-        z = base.z(snap)
-        row = {"policy": policy_name, "seed": seed, "step": t, "phase": phase, "probe": int(probe),
-               "x": x_obs[t - 1], "y": y_obs[t - 1],
-               "regret": float(forrester(np.array(x_obs[:t])).min() - F_STAR)}
-        for k in METRICS:
-            row[f"raw:{k}"], row[f"z:{k}"] = snap[k], z[k]
+    def row(self, n_points, phase, probe, snapshot, baseline):
+        z = baseline.z_scores(snapshot)
+        row = {"problem": self.problem.name, "condition": self.surrogate.condition,
+               "policy": self.policy_name, "seed": self.seed, "step": n_points,
+               "phase": phase, "probe": int(probe)}
+        last_x = self.x_observed[n_points - 1]
+        for i in range(self.problem.dim):
+            row[f"x{i}"] = float(last_x[i])
+        row["score"] = campaign_score(self.problem, self.clean_observed[:n_points])
+        for name in METRICS:
+            row[f"raw:{name}"] = snapshot[name]
+            row[f"z:{name}"] = z[name]
         return row
 
-    for t, snap, _s in warm:
-        rows.append(record(t, "warm", False, snap))
+    def run(self):
+        args = self.args
+        first_fit = self.problem.degree + 2
+        warm = []
+        for n_points in range(first_fit, args.n_init + 1):
+            snapshot, categories, state = self.refit_and_measure(n_points)
+            warm.append((n_points, snapshot, state))
+        baseline = WarmStartBaseline([snapshot for _, snapshot, _ in warm], args.z_floor, args.z_clip)
 
-    snap, cats, s = snapshot(len(x_obs))
-    for t in range(len(x_obs), args.steps):
-        mu_g, sd_g = model.predict(grid)
-        cands = [np.array([g, (m - y_mu) / y_sd, d / y_sd]) for g, m, d in zip(grid, mu_g, sd_g, strict=False)]
-        v = vec(snap, steering)
-        probe = np.random.default_rng([seed, 3, t]).random() < args.probe
-        if policy is None or probe:
-            u = cands[int(np.random.default_rng([seed, 4, t]).integers(len(cands)))]
-        elif stateful:
-            u, _, _ = policy.select_next(s, cands, uncertainty_vector=v)
-        else:
-            u, _, _ = policy.select_next(s, cands)
-        x_new = float(u[0])
-        x_obs.append(x_new)
-        y_obs.append(observe_y(x_new, t))
-        if stateful:
-            policy.observe(s, u, uncertainty_vector=v)
-        snap, cats, s = snapshot(len(x_obs))
-        rows.append(record(t + 1, "steer", probe, snap))
-    return rows, cats
+        def visible_vector(snapshot):
+            z = baseline.z_scores(snapshot)
+            return np.array([z[name] for name in self.policy_sees])
+
+        if self.stateful:
+            for i in range(len(warm) - 1):
+                n_points, snapshot, state = warm[i]
+                X = np.array(self.x_observed[:n_points])
+                self.surrogate.fit(X, np.array(self.y_observed[:n_points]), refit_number=n_points)
+                next_x = self.x_observed[n_points]
+                self.policy.observe(state, self.action_for(next_x),
+                                    uncertainty_vector=visible_vector(snapshot))
+
+        rows = []
+        for n_points, snapshot, _ in warm:
+            rows.append(self.row(n_points, "warm", False, snapshot, baseline))
+
+        snapshot, categories, state = self.refit_and_measure(len(self.x_observed))
+        for step in range(len(self.x_observed), args.steps):
+            candidates = self.candidate_actions()
+            visible = visible_vector(snapshot)
+            probe = np.random.default_rng([self.seed, 3, step]).random() < args.probe
+            if self.policy is None or probe:
+                pick = np.random.default_rng([self.seed, 4, step]).integers(len(candidates))
+                action = candidates[int(pick)]
+            elif self.stateful:
+                action, _, _ = self.policy.select_next(state, candidates, uncertainty_vector=visible)
+            else:
+                action, _, _ = self.policy.select_next(state, candidates)
+            self.query(action[:self.problem.dim])
+            if self.stateful:
+                self.policy.observe(state, action, uncertainty_vector=visible)
+            snapshot, categories, state = self.refit_and_measure(len(self.x_observed))
+            rows.append(self.row(len(self.x_observed), "steer", probe, snapshot, baseline))
+        return rows, categories
 
 
-POLICIES = ["random", "lcb", "state-space", "bayes-dynamics", "audit-state-space", "audit-bayes"]
+# ── Command line ──────────────────────────────────────────────────────────────
 
-
-def main(argv=None):
+def parse_args(argv):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    p.add_argument("--problem", default="forrester", choices=PROBLEMS)
+    p.add_argument("--condition", default="calibrated", choices=CONDITIONS)
     p.add_argument("--policies", nargs="+", default=POLICIES, choices=POLICIES)
-    p.add_argument("--steering", nargs="+", default=DEFAULT_STEERING, choices=list(METRICS),
-                   help="metrics the policy may see; the rest are audit-only")
-    p.add_argument("--seeds", type=int, default=10)
+    p.add_argument("--split", default="default", choices=["default", "random", "all"])
+    p.add_argument("--split-index", type=int, default=0, help="which random split (--split random)")
+    p.add_argument("--steering", nargs="+", choices=list(METRICS),
+                   help="explicit steering metrics; overrides --split")
+    p.add_argument("--seeds", type=int, default=10, help="number of seeds")
+    p.add_argument("--seed-start", type=int, default=0, help="first seed (for SLURM array tasks)")
     p.add_argument("--steps", type=int, default=100, help="total oracle queries per campaign")
     p.add_argument("--n-init", type=int, default=12, help="random warm-start queries (>= degree + 3)")
-    p.add_argument("--probe", type=float, default=0.1, help="random probe fraction (plan §3.4)")
-    p.add_argument("--grid", type=int, default=200, help="candidate grid size")
-    p.add_argument("--n-ref", type=int, default=100, help="fixed reference grid size (plan §3.3)")
-    p.add_argument("--degree", type=int, default=5)
-    p.add_argument("--members", type=int, default=20)
-    p.add_argument("--noise-floor", type=float, default=0.25)
+    p.add_argument("--probe", type=float, default=0.1, help="random probe fraction")
+    p.add_argument("--members", type=int, default=20, help="ensemble size (misspecified condition)")
     p.add_argument("--kappa", type=float, default=1.0)
     p.add_argument("--rank", type=int, default=4, help="SVD rank of the learned dynamics")
     p.add_argument("--min-fit-obs", type=int, default=5)
     p.add_argument("--gamma-health", type=float, default=0.5)
+    p.add_argument("--health-scale", type=float, default=2.0,
+                   help="z-score scale k of the health term -mean(tanh(z / k))")
     p.add_argument("--gamma-info", type=float, default=0.5)
+    p.add_argument("--z-floor", type=float, default=1e-3,
+                   help="smallest warm-start std, as a fraction of the metric's warm-start mean")
+    p.add_argument("--z-clip", type=float, default=None, help="limit every z-score to +/- this value")
     p.add_argument("--out", type=Path, default=Path("_results/steering"))
-    args = p.parse_args(argv)
+    return p.parse_args(argv)
 
-    audit_only = [m for m in METRICS if m not in args.steering]
+
+def write_outputs(args, rows, steering, audit_only, categories, problem):
     args.out.mkdir(parents=True, exist_ok=True)
-    rows, cats, t0 = [], {}, time.time()
-    for name in args.policies:
-        for seed in range(args.seeds):
-            r, cats = run_campaign(name, seed, args, args.steering)
-            rows += r
-        print(f"  {name:18s} done ({time.time() - t0:.0f}s)")
-
     with open(args.out / "steps.csv", "w", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=list(rows[0]))
-        w.writeheader()
-        w.writerows(rows)
-    config = {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items()}
-    config.update(audit_only=audit_only, categories=cats, f_star=F_STAR)
+        writer = csv.DictWriter(fh, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+    config = {}
+    for key, value in vars(args).items():
+        config[key] = str(value) if isinstance(value, Path) else value
+    config["steering"] = steering
+    config["audit_only"] = audit_only
+    config["categories"] = categories
+    config["dim"] = problem.dim
+    config["n_objectives"] = problem.n_objectives
+    config["score"] = "simple regret" if problem.n_objectives == 1 else "log10 hypervolume difference"
     (args.out / "config.json").write_text(json.dumps(config, indent=2))
 
-    print("\nGroup coverage (check categories):")
-    for label, names in (("steering", args.steering), ("audit-only", audit_only)):
-        print(f"  {label:10s} " + ", ".join(f"{n} [{cats[n]}]" for n in names))
-    print(f"\nFinal simple regret (mean over {args.seeds} seeds):")
-    for name in args.policies:
-        final = [r["regret"] for r in rows if r["policy"] == name and r["step"] == args.steps]
-        print(f"  {name:18s} {np.mean(final):.4f} ± {np.std(final) / np.sqrt(len(final)):.4f}")
+
+def main(argv=None):
+    args = parse_args(argv)
+    if args.n_init < get_problem(args.problem).degree + 3:
+        raise SystemExit(f"--n-init must be at least degree + 3 for {args.problem}")
+    steering = choose_steering(args.split, args.split_index, args.steering)
+    audit_only = [name for name in METRICS if name not in steering]
+
+    rows = []
+    categories = {}
+    start = time.time()
+    for policy_name in args.policies:
+        for seed in range(args.seed_start, args.seed_start + args.seeds):
+            problem = get_problem(args.problem)
+            campaign = Campaign(problem, args.condition, policy_name, seed, args, steering)
+            campaign_rows, categories = campaign.run()
+            rows.extend(campaign_rows)
+        print(f"  {policy_name:22s} done ({time.time() - start:.0f}s)", flush=True)
+
+    write_outputs(args, rows, steering, audit_only, categories, problem)
+
+    print(f"\n{args.problem} / {args.condition}")
+    print(f"  steering:   {', '.join(steering)}")
+    print(f"  audit-only: {', '.join(audit_only) or '(none)'}")
+    print(f"\nFinal score (mean over {args.seeds} seeds, lower is better):")
+    for policy_name in args.policies:
+        finals = [r["score"] for r in rows if r["policy"] == policy_name and r["step"] == args.steps]
+        print(f"  {policy_name:22s} {np.mean(finals):.4f} ± {np.std(finals) / np.sqrt(len(finals)):.4f}")
     print(f"\nWrote {args.out / 'steps.csv'}  — next: analyze_steering.py --in {args.out}")
 
 

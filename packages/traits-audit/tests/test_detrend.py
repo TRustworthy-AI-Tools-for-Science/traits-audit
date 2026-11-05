@@ -4,6 +4,8 @@ Ported from battery-oracle's PyBaMMOracle._detrend_state tests when the
 detrending logic moved into this package as RegimeDetrender, generalized to
 accept regime vectors of any dimensionality (not hardcoded to 6).
 """
+import copy
+
 import numpy as np
 import pytest
 from traits_audit.stability.detrend import DetrendResult, RegimeDetrender
@@ -86,3 +88,38 @@ class TestRegimeDetrender:
         d.update(np.array([1.0, 2.0]), np.array([0.0]))
         result = d.update(np.array([1.0, 2.0, 3.0]), np.array([0.0]))
         assert result.detrended.shape == (3,)
+
+
+
+class TestReconstruct:
+    """reconstruct() is the inverse of the next update(), in and after warmup."""
+
+    @pytest.mark.parametrize("n_seen", [1, 3, 4, 5, 9])
+    def test_inverts_the_next_update(self, n_seen):
+        rng = np.random.default_rng(n_seen)
+        regime = np.zeros(1)
+        detrender = RegimeDetrender(alpha=0.2, warmup=5)
+        for _ in range(n_seen):
+            detrender.update(rng.normal(size=3), regime)
+        new_state = rng.normal(size=3)
+
+        detrended = copy.deepcopy(detrender).update(new_state, regime).detrended
+
+        assert np.allclose(detrender.reconstruct(detrended, regime), new_state)
+
+    def test_does_not_change_the_detrender(self):
+        regime = np.zeros(1)
+        detrender = RegimeDetrender(alpha=0.2, warmup=3)
+        for value in (1.0, 2.0, 4.0, 8.0):
+            detrender.update(np.array([value]), regime)
+        untouched = copy.deepcopy(detrender)
+
+        detrender.reconstruct(np.array([0.5]), regime)
+
+        next_state = np.array([3.0])
+        assert np.array_equal(detrender.update(next_state, regime).detrended,
+                              untouched.update(next_state, regime).detrended)
+
+    def test_first_update_cannot_be_inverted(self):
+        with pytest.raises(ValueError):
+            RegimeDetrender().reconstruct(np.zeros(2), np.zeros(1))

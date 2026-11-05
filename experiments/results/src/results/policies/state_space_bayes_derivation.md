@@ -114,6 +114,12 @@ $$
 \hat{W} = (X_\text{fit}^\top X_\text{fit})^{-1} X_\text{fit}^\top Y_\text{fit}.
 $$
 
+The OLS estimate exists and is unique only when $X_\text{fit}$ has full
+column rank, which needs more transitions than unknowns: $T - 1 > r + m$.
+`StateSpacePolicy` clips the rank $r$ to keep the system overdetermined.
+`BayesianDynamicsPolicy` uses the posterior mean of §9 instead, which the
+prior keeps defined for any $T$.
+
 Given $\hat{W}$, the **one-step linear prediction** of the next ECM state
 for candidate protocol $a$ is:
 
@@ -124,7 +130,66 @@ $$
 
 taking the first $n$ components of the reconstructed augmented state (the
 ECM parameters; the uncertainty dimensions, if present, are discarded for
-degradation scoring).
+degradation scoring).  This is the prediction of `BayesianDynamicsPolicy`,
+which fits the raw augmented states.  `StateSpacePolicy` fits detrended
+states instead (§4.1), and its prediction adds the baseline back.
+
+### 4.1  Causal detrending (StateSpacePolicy)
+
+An active learning campaign is not stationary: as data accumulate, the
+belief state drifts on time scales much longer than its response to a single
+action.  A linear time-invariant model fitted to such a trajectory spends its
+fit on the drift: a nonzero level or a slow trend shows up as an eigenvalue
+near 1 (Hirsh et al. 2020).  `StateSpacePolicy` therefore fits the dynamics
+of the *deviations* from a causal baseline $b_t$:
+
+$$
+d_t = \tilde{s}_t - b_{t-1},
+\qquad
+b_t = \begin{cases}
+  \dfrac{1}{t+1} \sum_{i \le t} \tilde{s}_i & t < T_w \quad \text{(expanding mean)} \\[1ex]
+  \alpha \, \tilde{s}_t + (1-\alpha) \, b_{t-1} & t \ge T_w \quad \text{(EMA)}
+\end{cases}
+$$
+
+with $\alpha = 0.1$ and a warm-up of $T_w = 20$ states (the defaults of
+`traits_audit.stability.detrend.RegimeDetrender`, applied with a single
+regime).  During the warm-up the reference is the expanding mean including
+the current state, $d_t = \tilde{s}_t - b_t$.  The SVD (§3) and the
+regression (§4) are then applied to $d_t$ in place of $\tilde{s}_t$:
+
+$$
+z_t = d_t^\top U_r,
+\qquad
+z_{t+1} = A_r z_t + B_r a_t + \varepsilon_t .
+$$
+
+The baseline is recomputed from the start of the fitted history at every
+refit, and it is causal: $b_{t-1}$ uses no state after $\tilde{s}_{t-1}$.
+
+**Prediction.**  For a candidate $a$, the current state is detrended against
+the same baseline, stepped through the model, and mapped back by adding the
+baseline that would be subtracted from the next state:
+
+$$
+\tilde{s}^\text{dyn}_\text{next}(a)
+= b_t + U_r \bigl(A_r \, d_t^\top U_r + B_r a\bigr),
+$$
+
+where after the warm-up $b_t$ is the EMA including $\tilde{s}_t$.  During the
+warm-up the reference includes the next state itself, so the map back solves
+$\tilde{s} - (S_t + \tilde{s})/(t+2) = d$ for $\tilde{s}$, with $S_t$ the sum of
+the states so far: $\tilde{s} = \frac{t+2}{t+1} d + S_t/(t+1)$
+(`RegimeDetrender.reconstruct`).  Without this step the model fitted to
+deviations would be applied to levels, and every prediction would be off by
+the baseline.
+
+**Time scales.**  The EMA is a high-pass filter with a time constant of about
+$1/\alpha = 10$ steps.  Components of the state that change much more slowly
+than that are treated as baseline and removed from the dynamics; faster ones
+are kept.  The filter is itself a linear system with a pole at $1 - \alpha$,
+so the detrended trajectory carries that mode in addition to the system's own;
+eigenvalues of $A_r$ near $0.9$ should be read with this in mind.
 
 ---
 
@@ -257,7 +322,8 @@ $$
 | Symbol | Definition |
 |--------|-----------|
 | $z = \tilde{s}_t U_r$ | Current belief state in rank-$r$ subspace |
-| $s^\text{dyn}_\text{next} = (U_r(A_r z + B_r a))_{[:n]}$ | DMDc one-step state prediction |
+| $s^\text{dyn}_\text{next} = (b_t + U_r(A_r z + B_r a))_{[:n]}$ | DMDc one-step state prediction (§4.1) |
+| $z = d_t^\top U_r$, $d_t = \tilde{s}_t - b_{t-1}$ | Current detrended belief state in the rank-$r$ subspace |
 | $\delta(\cdot)$ | Degradation proxy |
 | $\bar{\sigma}_\text{GP}$ | Mean GP posterior std (output-dimension average) |
 | $Q, R, \kappa$ | Hyperparameters |
@@ -269,10 +335,11 @@ history = []
 
 For each cycle t = 1, 2, ...:
   1. [Warm-up] If t < min_fit_obs: select via LCB fallback; go to step 3.
-  2. [Fit] SVD of S^T → U_r; OLS of [Z[:-1] | A[:-1]] → A_r, B_r.
+  2. [Fit] Detrend the history: D = S − baseline (§4.1);
+           SVD of D^T → U_r; OLS of [Z[:-1] | A[:-1]] → A_r, B_r  (Z = D @ U_r).
   3. [Score] For each candidate a_i ∈ A:
-       z           = s̃_t @ U_r
-       s_dyn_next  = (U_r @ (A_r @ z + B_r @ a_i))[:n]
+       z           = d_t @ U_r          (s̃_t detrended against the same baseline)
+       s_dyn_next  = (b_t + U_r @ (A_r @ z + B_r @ a_i))[:n]
        _, σ_gp     = GP(s_t, a_i)
        score(a_i)  = Q δ(s_dyn_next) + R ‖a_i‖² − κ mean(σ_gp)
      Select a* = argmin score(a_i)
@@ -394,15 +461,39 @@ $W$ aligned with the current observation direction is updated; the
 orthogonal complement remains at its prior.
 
 **Initialisation.**  At warm-up (after $T_0$ = `min_fit_obs` observations),
-$G_{T_0}^{-1}$ is initialised by direct inversion:
+the posterior over the observed transitions is computed directly:
 
 $$
 G_{T_0} = \lambda I + X_\text{fit}^\top X_\text{fit},
-\qquad G_{T_0}^{-1} = G_{T_0}^{-1}.
+\qquad \hat{W}_{T_0} = G_{T_0}^{-1} X_\text{fit}^\top Y_\text{fit}.
 $$
 
-Subsequent observations update $G^{-1}$ via Sherman–Morrison only, so the
-$O((r+m)^3)$ inversion is paid only once (or once per reanchor).
+$\hat{W}_{T_0}$ is the posterior mean under the prior of §9, not the OLS
+estimate of §4.  With few transitions the regression is underdetermined; the
+prior then keeps unobserved directions of $W$ at zero instead of an arbitrary
+interpolant, and the Kalman updates correct them as transitions arrive.
+
+Subsequent observations update $G^{-1}$ and $\hat{W}$ recursively, so the
+$O((r+m)^3)$ inversion is paid only once (or once per reanchor).  After any
+number of updates the recursive posterior equals the batch posterior over all
+transitions seen.
+
+**Timing of the two steps.**  The precision $G$ does not depend on the
+observed outcomes, so $x_\text{new} = [z_t \,|\, a_t]$ enters $G^{-1}$ as
+soon as $a_t$ is chosen: the next information-gain scores already account for
+the pending observation.  The mean needs the outcome $y = z_{t+1}$, so it is
+updated when the policy is given $s_{t+1}$, with the gain
+$K = G^{-1} x_\text{new}$ computed from the $G^{-1}$ that already includes
+$x_\text{new}$ (equal to $G_T^{-1} x_\text{new}/(1+h)$ above).  The policy
+receives $s_{t+1}$ in the `observe` call that also reports $a_{t+1}$, after
+$a_{t+1}$ has been chosen, so the mean used to choose $a_{t+1}$ has learned
+from every transition up to $s_{t-1} \to s_t$.  `StateSpacePolicy` has the
+same one-transition lag: its refit in that same call is the first to include
+$s_t \to s_{t+1}$.
+
+**Lookback window.**  If a window of $w$ transitions is set, the recursion
+cannot forget old transitions, so the posterior is recomputed directly from
+the last $w$ transitions after every observation instead.
 
 ---
 
@@ -440,16 +531,25 @@ observation about the parameter vector $W$.
 
 ### 11.3  Implementation
 
-Both criteria are monotone in $h$, so in the score we use the normalised
-form $h/(1+h) \in [0,1)$, which is bounded and avoids numerical issues
-early in training when $G^{-1}$ has large eigenvalues:
+Both criteria are monotone in $h$, so either ranks candidates the same way
+in exact arithmetic.  The score uses the D-optimal gain of §11.2 itself:
 
 $$
 \text{info\_bonus}(z, a)
-= \gamma_\text{info} \cdot \frac{h(z,a)}{1 + h(z,a)},
+= \gamma_\text{info} \cdot \log\bigl(1 + h(z,a)\bigr),
 \qquad
 h(z, a) = [z \;|\; a]^\top G_T^{-1} [z \;|\; a].
 $$
+
+**Why not the bounded form $h/(1+h)$.**  With a vague prior (small
+$\lambda = \sigma^2/\tau^2$), $G^{-1}$ keeps eigenvalues near $1/\lambda$ in
+every direction the transitions have not yet covered, so early in a campaign
+$h$ is large for almost every candidate.  Then $h/(1+h) \approx 1$ for all of
+them and the bonus no longer separates candidates, which is exactly when
+exploration matters most.  $\log(1+h)$ is unbounded but grows only
+logarithmically, so it keeps separating candidates whose $h$ differ by a
+factor (a tenfold larger $h$ adds about $\log 10 \approx 2.3$), while
+$\gamma_\text{info}$ still sets its weight against the other terms.
 
 ---
 
@@ -507,8 +607,8 @@ $\|\phi(x_q)\|_\Phi^2 = x_q^\top G_T^{-1} x_q = h_q$.  **The leverage score
 $h$ therefore implements the Cai MMC criterion exactly** when the feature
 map is the Bayesian posterior whitening transform.
 
-The normalised form $h/(1+h)$ is monotone in $h$ (same ranking), bounded in
-$[0,1)$, and matches the scalar variance-reduction interpretation of §11.1.
+The bonus $\log(1+h)$ of §11.3 is monotone in $h$, so it ranks candidates as
+$h$ does, and equals the log-determinant gain of §11.2.
 
 ---
 
@@ -554,8 +654,12 @@ $$
 $\rho(a) \in [0, 1]$, with $\rho = 0$ if $\hat{s}_\text{GP}$ lies exactly
 in the current subspace and $\rho \to 1$ if it is orthogonal to it.
 
-The projection $P_r = U_s U_s^\top$ is the orthogonal projector onto the
-column space of $U_s$.  The residual $\hat{s} - P_r \hat{s}$ is the
+The projection $P_r$ is the orthogonal projector onto the column space of
+$U_s$.  When the state is augmented, $U_s$ is a block of rows of the
+orthonormal $U_r$ and its own columns are not orthonormal, so
+$U_s U_s^\top$ is not a projector; $P_r = Q Q^\top$ with $Q$ an orthonormal
+basis of the column space of $U_s$ (from its SVD).  Without augmentation
+$U_s = U_r$ and $P_r = U_r U_r^\top$.  The residual $\hat{s} - P_r \hat{s}$ is the
 component of the predicted state that the current basis cannot represent.
 Selecting protocols with large $\rho$ expands the manifold coverage in the
 ALSL sense: the resulting observations will improve the SVD basis at the
@@ -578,7 +682,7 @@ $$
 \underbrace{Q \, \delta(s^\text{dyn}_\text{next})}_{\text{state cost (LQR)}}
 + \underbrace{R \, \|a\|^2}_{\text{control cost (LQR)}}
 - \underbrace{\kappa \, \bar{\sigma}_\text{GP}}_{\text{LCB exploration}}
-- \underbrace{\gamma_\text{info} \, \dfrac{h(z, a)}{1 + h(z, a)}}_{\text{info gain (Cai / Eldredge)}}
+- \underbrace{\gamma_\text{info} \, \log\bigl(1 + h(z, a)\bigr)}_{\text{info gain (Cai / Eldredge)}}
 - \underbrace{\gamma_\text{sub} \, \rho\!\bigl(\hat{s}_\text{GP}(a)\bigr)}_{\text{subspace residual (Li)}}
 }
 $$
@@ -596,12 +700,13 @@ $$
 **Algorithm (BayesianDynamicsPolicy):**
 
 ```
-Initialise:  G_inv = (1/λ) I ∈ ℝ^{(r+m)×(r+m)},  history = []
+Initialise:  history = []
 
 For each cycle t = 1, 2, ...:
   1. [Warm-up] If t < min_fit_obs: select via LCB fallback; go to step 3.
-  2. [Initial fit, once] SVD of S^T → U_r; OLS → A_r, B_r;
-                         G = λI + X_fit^T X_fit; G_inv = inv(G).
+  2. [Initial fit, once] SVD of S^T → U_r;
+                         G = λI + X_fit^T X_fit; G_inv = inv(G);
+                         W = G_inv X_fit^T Y_fit  (posterior mean; A_r, B_r from W).
   3. [Score] For each candidate a_i ∈ A:
        z          = s̃_t @ U_r
        s_dyn_next = (U_r @ (A_r @ z + B_r @ a_i))[:n]
@@ -609,15 +714,18 @@ For each cycle t = 1, 2, ...:
        x          = [z | a_i];  h = x^T G_inv x
        ρ          = ‖s_gp − U_s U_s^T s_gp‖ / (‖s_gp‖ + ε)
        score(a_i) = Q δ(s_dyn_next) + R ‖a_i‖²
-                  − κ mean(σ_gp) − γ_info h/(1+h) − γ_sub ρ
+                  − κ mean(σ_gp) − γ_info log(1+h) − γ_sub ρ
      Select a* = argmin score(a_i)
   4. [Execute] Apply a*; observe s_{t+1}.
-  5. [Sherman–Morrison update, O((r+m)²)]:
-       x = [z | a*];  g = G_inv @ x
-       G_inv ← G_inv − outer(g, g) / (1 + x @ g)
+  5. [observe(s_t, a*), O((r+m)²)]:
+       Mean update for the previous action, whose outcome is s_t:
+         z = s̃_t @ U_r;  K = G_inv @ x_prev;  W ← W + outer(K, z − W^T x_prev)
+       Precision update for a*:
+         x = [z | a*];  g = G_inv @ x;  G_inv ← G_inv − outer(g, g) / (1 + x @ g)
+         x_prev ← x
   6. [Reanchor, optional] Every reanchor_freq steps:
-       Refit SVD → U_r; refit OLS → A_r, B_r;
-       Reinit G = λI + X_fit^T X_fit; G_inv = inv(G).
+       Refit SVD → U_r; recompute G, G_inv and W from all transitions in
+       the new basis (as in step 2).
 ```
 
 ---
@@ -626,8 +734,9 @@ For each cycle t = 1, 2, ...:
 
 | Property | StateSpacePolicy | BayesianDynamicsPolicy |
 |----------|-----------------|----------------------|
+| States fitted | Detrended: minus a causal EMA baseline (§4.1) | Raw augmented states |
 | SVD refit | Every `observe()` — O($T n_\text{aug}^2$) | Once at warm-up (+ optional reanchor) |
-| OLS refit | Every `observe()` — O($T(r+m)^2$) | Once at warm-up (+ optional reanchor) |
+| Dynamics estimate | OLS refit every `observe()` — O($T(r+m)^2$) | Posterior mean, Kalman update — O($(r+m)^2$) per step |
 | Precision update | Not tracked | Sherman–Morrison — O($(r+m)^2$) per step |
 | Exploration | GP uncertainty only | GP + information gain + subspace residual |
 | Protocol incentive | Protocols with low degradation *and* high GP σ | Protocols with low degradation, high GP σ, high Gram-leverage, *and* poor subspace coverage |
@@ -642,6 +751,10 @@ Both policies fall back to `LCBPolicy` during warm-up
 
 Anderson, B. D. O., & Moore, J. B. (1990). *Optimal Control: Linear
 Quadratic Methods*. Prentice-Hall.
+
+Hirsh, S. M., Harris, K. D., Kutz, J. N., & Brunton, B. W. (2020).
+Centering data improves the dynamic mode decomposition. *SIAM Journal on
+Applied Dynamical Systems*, 19(3), 1920–1955. https://doi.org/10.1137/19M1289881
 
 Brunton, S. L., & Kutz, J. N. (2022). *Data-Driven Science and Engineering:
 Machine Learning, Dynamical Systems, and Control* (2nd ed.), Ch. 7–8.

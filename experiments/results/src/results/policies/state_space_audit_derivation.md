@@ -28,14 +28,16 @@ $$
 
 This encodes a single question: *how uncertain is each circuit element?*
 
-The audit system answers four distinct questions:
+The audit system answers five distinct questions:
 
 1. **Is the raw EIS data valid?** (LinKK Kramers-Kronig consistency)
 2. **Does the ECM model capture the physics?** (ECM KK self-consistency; DRT structure)
 3. **Are the fitted parameters stable?** (MCMC posterior max CV)
 4. **How well is the predictive uncertainty characterised?** (calibration, correlation, anomalies)
+5. **Is the surrogate a sound guide for the loop?** (local stability of the surrogate
+   landscape; conformal coverage)
 
-The audit health vector $v_t \in \mathbb{R}^{12}$ encodes all four classes.
+The audit health vector $v_t \in \mathbb{R}^{14}$ encodes all five classes.
 Using $v_t$ instead of $u_t$ shifts the policy from tracking *where* uncertainty
 is concentrated (parameter space) to tracking *how healthy* the entire
 experiment pipeline is (system level).
@@ -51,7 +53,7 @@ The policy can then learn that:
 
 ## 2  The canonical audit health vector
 
-### 2.1  Full 12-dimensional form
+### 2.1  Full 14-dimensional form
 
 $$
 v_t =
@@ -67,12 +69,14 @@ v_t =
   c_t \\
   \kappa_t \\
   \psi_t \\
-  \delta_t
+  \delta_t \\
+  \lambda^\text{st}_t \\
+  q_t
 \end{pmatrix}
-\in \mathbb{R}^{12}.
+\in \mathbb{R}^{14}.
 $$
 
-The vector is partitioned into two groups:
+The vector is partitioned into three groups:
 
 #### Part A — Predictive quality (indices 0–6)
 
@@ -83,9 +87,9 @@ audit pipeline.
 | Idx | Symbol | Source check | Formula / source | Direction |
 |-----|--------|--------------|-----------------|-----------|
 | 0 | $\alpha$ | `VarianceAlignmentCheck` | $\bar{\sigma}^2_\text{pred} / \bar{\sigma}^2_\text{true}$ | ideal = 1.0 |
-| 1 | $\mathrm{CE}$ | `TraitsCalibrationCheck` | $\int_0^1 |F_\text{pred}(p) - p| \, dp$ (Kuleshov 2018) | lower ↓ |
-| 2 | $\mathrm{ENCE}$ | `TraitsCalibrationCheck` | $\frac{1}{B} \sum_b |\hat{\sigma}_b - \sigma_b| / \sigma_b$ (Levi 2022) | lower ↓ |
-| 3 | $\mathrm{MCA}$ | `TraitsCalibrationCheck` | Area between calibration curve and diagonal | lower ↓ |
+| 1 | $\mathrm{CE}$ | `KuleshovCalibrationCheck` | $\int_0^1 |F_\text{pred}(p) - p| \, dp$ (Kuleshov 2018) | lower ↓ |
+| 2 | $\mathrm{ENCE}$ | `ENCECheck` | $\frac{1}{B} \sum_b |\hat{\sigma}_b - \sigma_b| / \sigma_b$ (Levi 2022) | lower ↓ |
+| 3 | $\mathrm{MCA}$ | `TraitsCalibrationCheck` (`details["miscalibration_area"]`) | Area between calibration curve and diagonal | lower ↓ |
 | 4 | $\rho$ | `VarianceErrorCorrelationCheck` | $r_S(\sigma^2_\text{pred}, |y - \hat{y}|)$ (Spearman) | higher ↑ |
 | 5 | $d$ | `UncertaintyEvolutionCheck` | Channels with slope $< -1\%$/step | lower ↓ |
 | 6 | $\phi$ | `UncertaintyAnomalyCheck` | Fraction $|z\text{-score}| > 3$ | lower ↓ |
@@ -102,6 +106,21 @@ They are produced by the Inference audit stage and the DRT analysis module.
 | 9 | $\kappa$ | `"Model Self-Consistency — Simulated Mean"` | Does the ECM reproduce the impedance spectrum (kkV)? | lower ↓ |
 | 10 | $\psi$ | `"Model Self-Consistency — Posterior Draws"` | Is the ECM posterior KK-consistent? | lower ↓ |
 | 11 | $\delta$ | `"DRT Peak Count Mismatch"` | Does the ECM structure match the DRT peak count? | lower ↓ |
+
+#### Part C — Surrogate and coverage quality (indices 12–13)
+
+These metrics assess whether the surrogate that drives acquisition is a sound
+guide: whether its landscape is locally stable, and whether its prediction
+intervals cover at the nominal rate.  They are produced by the active-learning
+audit pipeline.
+
+| Idx | Symbol | Source check | Formula / source | Direction |
+|-----|--------|--------------|-----------------|-----------|
+| 12 | $\lambda^\text{st}$ | `LyapunovStabilityCheck` | Fraction of operating points with $|\lambda_\text{max}| < 1$ for gradient descent on the surrogate | higher ↑ |
+| 13 | $q$ | `ConformalCoverageCheck` | $\hat{q} / z_\text{nom}$: conformal quantile over the nominal Gaussian quantile | ideal = 1.0 |
+
+$q > 1$ means the standardised residuals have heavier tails than the surrogate's
+$\sigma$ implies (intervals undercover); $q < 1$ means they are too wide.
 
 **LinKK ($\ell$).**  The linKK test (Boukamp 1995; Schönleber et al. 2014)
 checks whether the raw EIS spectrum satisfies the Kramers-Kronig relations, which
@@ -137,9 +156,11 @@ indicates either over-parameterisation (spurious elements) or under-parameterisa
 | $\kappa$ | $[0, \infty)$ | 0; threshold 0.05 |
 | $\psi$ | $[0, 1]$ | 0 |
 | $\delta$ | $\{0, 1, 2, \ldots\}$ | 0 |
+| $\lambda^\text{st}$ | $[0, 1]$ | 1 |
+| $q$ | $(0, \infty)$ | 1.0 |
 
 A **perfectly healthy** experiment has
-$v^* = (1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0)^\top$.
+$v^* = (1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1)^\top$.
 
 ### 2.3  Assembly from pipeline outputs
 
@@ -159,7 +180,14 @@ v = make_audit_health_vector(
 )
 ```
 
-Fields not present in `results` are filled with 0.0 (neutral, no penalty).
+Fields whose check did not report (not run, skipped, or a non-finite value) are
+filled with a **neutral value**: the value at which the field contributes
+nothing to the health score of §4.  That is $1$ for the two ratio fields
+($\alpha$, $q$) and $0$ for every other field (`NEUTRAL_AUDIT_HEALTH`).  A
+check that has not reported then neither rewards nor penalises a protocol.
+Filling the ratio fields with 0 instead would charge the full conformal penalty
+until the conformal check has enough samples, and show the dynamics model a
+spurious jump when it starts reporting.
 
 ---
 
@@ -168,17 +196,17 @@ Fields not present in `results` are filled with 0.0 (neutral, no penalty).
 ### 3.1  Construction
 
 The augmented belief state replaces $u_t$ (per-parameter variance,
-dimension $n$) with $v_t$ (audit health vector, dimension 12):
+dimension $n$) with $v_t$ (audit health vector, dimension 14):
 
 $$
 \tilde{s}_t^\text{audit}
 = \begin{bmatrix} s_t \\ w \, v_t \end{bmatrix}
-\in \mathbb{R}^{n + 12},
+\in \mathbb{R}^{n + 14},
 $$
 
 where $w$ is `uncertainty_weight`.  For the standard 72-dimensional ECM
-feature vector, the augmented state is $\mathbb{R}^{84}$, compared to
-$\mathbb{R}^{144}$ for the per-parameter variant — a 60-dimension reduction.
+feature vector, the augmented state is $\mathbb{R}^{86}$, compared to
+$\mathbb{R}^{144}$ for the per-parameter variant — a 58-dimension reduction.
 
 ### 3.2  SVD of the health-augmented state matrix
 
@@ -186,10 +214,12 @@ The SVD step (§3 of `state_space_bayes_derivation.md`) is unchanged:
 
 $$
 \mathbf{S}^\top \approx U_r \Sigma_r V_r^\top,
-\qquad U_r \in \mathbb{R}^{(n+12) \times r}.
+\qquad U_r \in \mathbb{R}^{(n+14) \times r}.
 $$
 
-The first $n$ rows of $U_r$ capture ECM parameter directions; the last 12 rows
+For `AuditStateSpacePolicy` the SVD is of the detrended states (§4.1 of
+`state_space_bayes_derivation.md`); for `AuditBayesianDynamicsPolicy` it is of
+the raw states.  The first $n$ rows of $U_r$ capture ECM parameter directions; the last 14 rows
 capture audit health directions.  The dominant SVD modes therefore encode the
 **joint co-variation of battery state and experiment health quality**.
 
@@ -219,16 +249,18 @@ encodes this, and the health bonus penalises those protocols.
 
 ### 4.1  Definition of the health score
 
-Define the **scalar health score** $h_\text{score}: \mathbb{R}^{12} \to [-4, 1]$:
+Define the **scalar health score** $h_\text{score}: \mathbb{R}^{14} \to [-5, 2]$:
 
 $$
 \boxed{
 h_\text{score}(v)
 = \rho
++ \lambda^\text{st}
 - \mathrm{CE}
 - \phi
 - \operatorname{clip}\!\left(\frac{\ell}{0.05}, 0, 1\right)
 - \operatorname{clip}\!\left(\frac{\kappa}{0.05}, 0, 1\right)
+- \operatorname{clip}\!\left(|q - 1|, 0, 1\right)
 }
 $$
 
@@ -239,12 +271,17 @@ Each term and its contribution:
 | Term | Range | Direction | Physical interpretation |
 |------|-------|-----------|------------------------|
 | $\rho = v[4]$ | $[-1, 1]$ | higher ↑ | Model knows when it is uncertain |
+| $\lambda^\text{st} = v[12]$ | $[0, 1]$ | higher ↑ | Surrogate landscape is locally stable |
 | $-\mathrm{CE} = -v[1]$ | $[-1, 0]$ | less negative ↑ | Calibration quality |
 | $-\phi = -v[6]$ | $[-1, 0]$ | less negative ↑ | Absence of anomalous uncertainties |
 | $-\operatorname{clip}(\ell/0.05, 0, 1)$ | $[-1, 0]$ | less negative ↑ | EIS data quality (LinKK) |
 | $-\operatorname{clip}(\kappa/0.05, 0, 1)$ | $[-1, 0]$ | less negative ↑ | ECM model quality (kkV) |
+| $-\operatorname{clip}(|q - 1|, 0, 1)$ | $[-1, 0]$ | less negative ↑ | Conformal coverage at the nominal rate |
 
-**Why five terms, not twelve?**  The explicit health cost uses the five most
+Perfect health gives $h_\text{score} = 2$; an all-bad experiment gives $-5$.
+A field at its neutral value (§2.3) contributes 0.
+
+**Why seven terms, not fourteen?**  The explicit health cost uses the seven most
 interpretable and independently meaningful metrics.  The remaining seven fields
 ($\alpha$, ENCE, MCA, $d$, $c$, $\psi$, $\delta$) still contribute to the
 **implicit health cost** through the dynamics model: $A_r$ and $B_r$ capture their
@@ -258,9 +295,10 @@ threshold makes the penalty proportional to how far the metric is from passing,
 and caps it at 1 (no additional penalty for extreme failures, avoiding score
 instability when data is very bad).
 
-**Backward compatibility.**  When $v$ has length 7 (from an older pipeline run),
-indices 7–11 are not accessed; the function falls back to the original 3-term
-formula $h = \rho - \mathrm{CE} - \phi$.
+**Shorter vectors.**  Indices beyond the length of $v$, and non-finite entries,
+are treated as neutral, so the score is defined for any prefix of the layout.
+The conformal term $|q - 1|$ is normalised by 1, the deviation at which the
+conformal quantile is double, or zero, the nominal one.
 
 ### 4.2  Health cost in the acquisition score
 
@@ -269,10 +307,14 @@ from the score rewards protocols that are predicted to maintain or improve
 experiment health.  The predicted next health vector is:
 
 $$
-\tilde{s}^\text{dyn}_\text{next} = U_r (A_r z + B_r a),
-\qquad
-v^\text{pred}_\text{next} = \tilde{s}^\text{dyn}_\text{next}[n{:}] / w.
+v^\text{pred}_\text{next} = \tilde{s}^\text{dyn}_\text{next}[n{:}] / w,
 $$
+
+with $\tilde{s}^\text{dyn}_\text{next}$ the one-step prediction of the base
+policy: $b_t + U_r (A_r z + B_r a)$ for `AuditStateSpacePolicy`, whose
+dynamics are fitted to detrended states (§4.1 of
+`state_space_bayes_derivation.md`), and $U_r (A_r z + B_r a)$ for
+`AuditBayesianDynamicsPolicy`.
 
 The health bonus is then:
 
@@ -283,6 +325,21 @@ $$
 
 This is **prospective**: the policy evaluates the experiment health it
 *expects to observe after* applying protocol $a$, not the current health.
+
+**Other health functions.**  The policies accept any `health_fn` in place of
+$h_\text{score}$, for health vectors with a different layout.  It should be
+bounded, as $h_\text{score}$ is: $\gamma_\text{health}$ is then the largest
+amount of objective the policy will trade for health, and a linear
+extrapolation of $v$ to an extreme candidate cannot dominate the score.  A
+smooth bound keeps the term informative beyond any threshold.  For a vector of
+z-scored "badness" metrics, as in the steering experiment, the health is
+
+$$
+h(v) = -\frac{1}{m} \sum_{i=1}^{m} \tanh\!\left(\frac{v_i}{k}\right) \in [-1, 1],
+$$
+
+with $k$ the z-score at which a metric counts as clearly better or worse than
+its warm-start level (default $k = 2$).
 
 ---
 
@@ -308,7 +365,7 @@ $$
 = Q \, \delta(s^\text{dyn}_\text{next})
 + R \, \|a\|^2
 - \kappa_\text{LCB} \, \bar{\sigma}_\text{GP}
-- \gamma_\text{info} \, \frac{h(z, a)}{1 + h(z, a)}
+- \gamma_\text{info} \, \log\bigl(1 + h(z, a)\bigr)
 - \gamma_\text{sub} \, \rho_\text{sub}(\hat{s}_\text{GP})
 - \gamma_\text{health} \, h_\text{score}(v^\text{pred}_\text{next})
 }
@@ -318,12 +375,12 @@ Symbol table:
 
 | Symbol | Definition |
 |--------|-----------|
-| $z = \tilde{s}^\text{audit} U_r$ | Belief state projected to rank-$r$ audit subspace |
+| $z$ | Belief state projected to the rank-$r$ audit subspace (detrended for `AuditStateSpacePolicy`) |
 | $s^\text{dyn}_\text{next} = \tilde{s}^\text{dyn}_\text{next}[:n]$ | Predicted next ECM state |
-| $v^\text{pred}_\text{next} = \tilde{s}^\text{dyn}_\text{next}[n:] / w$ | Predicted next audit health vector (12-dim) |
+| $v^\text{pred}_\text{next} = \tilde{s}^\text{dyn}_\text{next}[n:] / w$ | Predicted next audit health vector (14-dim) |
 | $h(z,a) = [z\|a]^\top G_T^{-1} [z\|a]$ | Leverage score in the health-augmented dynamics space |
 | $\rho_\text{sub}(\hat{s}_\text{GP})$ | Normalised subspace residual of GP-predicted next state |
-| $h_\text{score}(v) \in [-4, 1]$ | Scalar health score (§4.1) |
+| $h_\text{score}(v) \in [-5, 2]$ | Scalar health score (§4.1) |
 | $Q, R, \kappa_\text{LCB}, \gamma_\text{info}, \gamma_\text{sub}, \gamma_\text{health}$ | Hyperparameters |
 
 ---
@@ -383,20 +440,31 @@ relative to the observed prediction error.  They degrade through:
 * **Anomaly onset**: sudden degradation transitions produce GP residuals with
   elevated variance that are flagged as anomalous.
 
+### 6.5  Surrogate and coverage quality ($\lambda^\text{st}$, $q$)
+
+* **Landscape stability** ($\lambda^\text{st}$) falls when the surrogate develops
+  regions where a gradient step on its prediction amplifies rather than damps
+  perturbations, typically sharp, poorly constrained features fitted to few
+  points.  Querying such regions both tests and smooths them.
+* **Conformal coverage** ($q$) drifts above 1 when the surrogate's residuals are
+  heavier-tailed than its $\sigma$ (overconfidence, unmodelled noise structure)
+  and below 1 when $\sigma$ is inflated.  Unlike the calibration terms it makes
+  no Gaussian assumption about the residuals.
+
 ---
 
 ## 7  Comparison of augmentation strategies
 
-| Property | Per-parameter variance ($u_t \in \mathbb{R}^n$) | Audit health vector ($v_t \in \mathbb{R}^{12}$) |
+| Property | Per-parameter variance ($u_t \in \mathbb{R}^n$) | Audit health vector ($v_t \in \mathbb{R}^{14}$) |
 |----------|-------------------------------|----------------------------|
-| Dimension | $n$ (matches state dim) | 12 (fixed, pipeline-agnostic) |
+| Dimension | $n$ (matches state dim) | 14 (fixed, pipeline-agnostic) |
 | What it captures | Magnitude of per-parameter epistemic uncertainty | Quality of the measurement, model, and prediction pipeline |
-| Physical questions | "How uncertain is each ECM element?" | "Is the data valid? Is the model correct? Is the GP calibrated?" |
+| Physical questions | "How uncertain is each ECM element?" | "Is the data valid? Is the model correct? Is the GP calibrated? Is the surrogate a sound guide?" |
 | Scale | Variances (same order as state) | Bounded [0,1] scalars + counts |
 | Dynamics | MCMC posterior contraction/expansion | KK validity drift, calibration shift, DRT topology changes |
 | Protocol sensitivity | Protocols that reduce MCMC uncertainty | Protocols that maintain data quality and model validity |
 | Requires | MCMC per cycle | Full inference + audit pipeline per cycle |
-| Augmented state size | $2n$ | $n + 12$ |
+| Augmented state size | $2n$ | $n + 14$ |
 
 The two augmentations are **complementary** rather than competing.  A future
 extension could combine both:
@@ -404,7 +472,7 @@ extension could combine both:
 $$
 \tilde{s}_t^\text{full}
 = \begin{bmatrix} s_t \\ w_u \, u_t \\ w_v \, v_t \end{bmatrix}
-\in \mathbb{R}^{n + n + 12}.
+\in \mathbb{R}^{n + n + 14}.
 $$
 
 ---

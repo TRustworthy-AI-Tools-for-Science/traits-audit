@@ -44,9 +44,9 @@ BayesianDynamicsPolicy
     information-theoretic exploration bonuses to the LQR-style cost of
     StateSpacePolicy:
 
-    * **Information gain** h/(1+h) where h = x^T G^{-1} x is the leverage
-      score, simultaneously the Maximum Model Change criterion of Cai et al.
-      and the Bayesian D-optimal gain of Eldredge & Mousavi.
+    * **Information gain** log(1+h) where h = x^T G^{-1} x is the leverage
+      score (the Maximum Model Change criterion of Cai et al.): the Bayesian
+      D-optimal gain of Eldredge & Mousavi.
     * **Subspace residual** — normalised reconstruction residual of the
       GP-predicted next state under the current SVD basis, following the
       ALSL_U principle of Li et al.
@@ -87,6 +87,7 @@ from .random import RandomPolicy
 from .state_space import StateSpacePolicy
 from .state_space_audit import (
     AUDIT_HEALTH_FIELDS,
+    NEUTRAL_AUDIT_HEALTH,
     AuditBayesianDynamicsPolicy,
     AuditStateSpacePolicy,
     drt_peak_mismatch_result,
@@ -96,6 +97,7 @@ from .state_space_bayes import BayesianDynamicsPolicy
 
 __all__ = [
     "AUDIT_HEALTH_FIELDS",
+    "NEUTRAL_AUDIT_HEALTH",
     "AuditBayesianDynamicsPolicy",
     "AuditStateSpacePolicy",
     "BasePolicy",

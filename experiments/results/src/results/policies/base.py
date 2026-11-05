@@ -35,7 +35,7 @@ def register_oracle_failure(exc_type: type[BaseException]) -> None:
     For oracles that raise their own exception class (e.g. a simulator
     package's end-of-life error) instead of :class:`OracleFailure`.
     """
-    global ORACLE_FAILURES
+    global ORACLE_FAILURES  # noqa: PLW0603  (except needs a tuple, so the registry is rebound)
     if exc_type not in ORACLE_FAILURES:
         ORACLE_FAILURES = (*ORACLE_FAILURES, exc_type)
 
@@ -152,7 +152,7 @@ class BasePolicy(ABC):
 
     # ── Hook for stateful policies ────────────────────────────────────────
 
-    def observe(self, state: np.ndarray, action: np.ndarray) -> None:
+    def observe(self, state: np.ndarray, action: np.ndarray) -> None:  # noqa: B027  (optional hook, no-op by default)
         """Record an observed ``(state, action)`` transition.
 
         Called automatically by :meth:`run` after each iteration.

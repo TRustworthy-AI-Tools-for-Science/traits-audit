@@ -47,8 +47,8 @@ def load(path: Path):
     for d in runs.values():
         rs = sorted(d.pop("_rows"), key=lambda r: int(r["step"]))
         d["step"] = np.array([int(r["step"]) for r in rs])
-        d["x"] = np.array([float(r["x"]) for r in rs])
-        d["regret"] = np.array([float(r["regret"]) for r in rs])
+        d["x"] = np.array([[float(r[f"x{i}"]) for i in range(cfg["dim"])] for r in rs])
+        d["score"] = np.array([float(r["score"]) for r in rs])
         d["Z"] = np.array([[float(r[f"z:{m}"]) for m in metrics] for r in rs])
         d["S"] = d["Z"][:, : len(cfg["steering"])].mean(axis=1)
         d["H"] = d["Z"][:, len(cfg["steering"]):].mean(axis=1)
@@ -72,7 +72,7 @@ def comovement(S, H):
 
 def fit_A(Z, x, lam=1e-2):
     """Ridge least squares for x_{t+1} = A x_t + B u_t, u_t = query location."""
-    X = np.hstack([Z[:-1], x[1:, None]])  # u_t is the query that produced Z[t+1]
+    X = np.hstack([Z[:-1], x[1:]])  # u_t is the query that produced Z[t+1]
     Y = Z[1:]
     W = np.linalg.solve(X.T @ X + lam * np.eye(X.shape[1]), X.T @ Y)
     return W[: Z.shape[1]].T
@@ -107,23 +107,23 @@ def main(argv=None):
         drift, rho_e, rho_l = a_drift(d["Z"], d["x"])
         per[q][seed] = dict(dS=delta(d["S"], args.window), dH=delta(d["H"], args.window),
                             corr_early=e, corr_late=l_, drift=drift, rho_early=rho_e,
-                            rho_late=rho_l, regret=float(d["regret"][-1]))
+                            rho_late=rho_l, score=float(d["score"][-1]))
 
     pick = lambda q, k: {s: v[k] for s, v in per[q].items() if np.isfinite(v[k])}  # noqa: E731
     summary = {}
-    hdr = (f"{'policy':18s} {'regret':>8s} {'ΔS−null':>9s} {'p':>6s} {'ΔH−null':>9s} {'p':>6s} "
+    hdr = (f"{'policy':18s} {'score':>8s} {'ΔS−null':>9s} {'p':>6s} {'ΔH−null':>9s} {'p':>6s} "
            f"{'ρ(dS,dH) early→late':>20s} {'A drift':>8s} {'−null':>7s} {'p':>6s}")
     print(f"Steering: {', '.join(cfg['steering'])}\nAudit-only: {', '.join(cfg['audit_only'])}\n")
     print(hdr + "\n" + "-" * len(hdr))
     for q in policies:
-        reg = np.array([v["regret"] for v in per[q].values()])
+        reg = np.array([v["score"] for v in per[q].values()])
         dS = paired(pick(q, "dS"), pick(args.null, "dS"))
         dH = paired(pick(q, "dH"), pick(args.null, "dH"))
         dr = paired(pick(q, "drift"), pick(args.null, "drift"))
         ce = np.nanmean([v["corr_early"] for v in per[q].values()])
         cl = np.nanmean([v["corr_late"] for v in per[q].values()])
         drift = np.mean([v["drift"] for v in per[q].values()])
-        summary[q] = dict(final_regret_mean=float(reg.mean()), final_regret_sem=float(reg.std() / np.sqrt(len(reg))),
+        summary[q] = dict(final_score_mean=float(reg.mean()), final_score_sem=float(reg.std() / np.sqrt(len(reg))),
                           dS_minus_null=dS[0], dS_p=dS[1], dH_minus_null=dH[0], dH_p=dH[1],
                           comovement_early=float(ce), comovement_late=float(cl),
                           A_drift=float(drift), A_drift_minus_null=dr[0], A_drift_p=dr[1], n_seeds=dS[2])
@@ -152,11 +152,12 @@ def _figure(runs, policies, cfg, out):
         ds = [d for (pq, _), d in runs.items() if pq == q]
         n = min(len(d["step"]) for d in ds)
         step = ds[0]["step"][:n]
-        for ax, key in zip(axes, ("regret", "S", "H"), strict=False):
+        for ax, key in zip(axes, ("score", "S", "H"), strict=False):
             m = np.mean([d[key][:n] for d in ds], axis=0)
             ax.plot(step, m, label=q, lw=1.4 if q != cfg.get("null", "random") else 1.0)
-    axes[0].set_yscale("log")
-    axes[0].set_title("Simple regret")
+    if cfg["n_objectives"] == 1:
+        axes[0].set_yscale("log")
+    axes[0].set_title(cfg["score"])
     axes[1].set_title("Steering metrics (mean z, ↓ better)")
     axes[2].set_title("Audit-only metrics (mean z, ↓ better)")
     for ax in axes:

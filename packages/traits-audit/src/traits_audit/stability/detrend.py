@@ -188,3 +188,25 @@ class RegimeDetrender:
         a = self._alpha
         self._group_ema[group] = a * safe + (1.0 - a) * np.nan_to_num(prev)
         return DetrendResult(state - prev, False, group)
+
+    def reconstruct(self, detrended: np.ndarray, regime: np.ndarray) -> np.ndarray:
+        """The state whose next :meth:`update` with ``regime`` would return ``detrended``.
+
+        The inverse of the next update, for mapping a prediction made in
+        detrended coordinates back to a state.  Does not change the detrender.
+
+        During warmup the reference is the global mean *including* the new
+        state, so ``state - (S + state) / (N + 1) = detrended`` is solved for
+        ``state`` (``S`` and ``N`` are the sum and count so far).  After warmup
+        the reference is the regime group's EMA, so ``state = EMA + detrended``.
+        """
+        detrended = np.asarray(detrended, dtype=float)
+        if self._n_calls + 1 <= self._warmup:
+            n = self._global_count
+            if n == 0:
+                raise ValueError("the first update always returns zeros, so it cannot be inverted")
+            return (n + 1) / n * detrended + self._global_sum / n
+        global_mean = self._global_sum / max(self._global_count, 1)
+        group = self._nearest_group(np.asarray(regime, dtype=float))
+        reference = self._group_ema.get(group, global_mean)
+        return reference + detrended

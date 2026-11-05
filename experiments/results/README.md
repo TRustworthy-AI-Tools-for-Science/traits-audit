@@ -87,35 +87,41 @@ tests/
 
 `results.policies` learns the uncertainty-state dynamics
 x<sub>t+1</sub> = A x<sub>t</sub> + B u<sub>t</sub> online and uses them to
-choose the next query. Two standalone scripts apply the policies to the
-Forrester problem:
+choose the next query. The experiment is specified in
+`paper/steering_experiment_spec.md`; two scripts run and analyse it, one
+problem and starting condition at a time:
 
 ```bash
-python experiments/results/scripts/steer_state_space.py --out _results/steering
-python experiments/results/scripts/analyze_steering.py  --in  _results/steering
+python experiments/results/scripts/steer_state_space.py --problem forrester --condition overconfident \
+    --out _results/steering/forrester/overconfident
+python experiments/results/scripts/analyze_steering.py --in _results/steering/forrester/overconfident
 ```
 
-`steer_state_space.py` follows the experimental plan's conventions:
+- `--problem`: `forrester`, `branin-currin-mo` or `color`, from `results.committee.problems`.
+- `--condition`: `calibrated`, `overconfident` or `underconfident` (a GP whose
+  reported sigma is scaled by 1, 0.3 or 2.5), or `misspecified` (a bootstrap
+  polynomial ensemble).
+- Metrics are scored on a fixed reference grid and z-scored against the warm start.
+- A random-probe fraction of the budget is reserved for every policy.
+- The policy sees only the **steering** metrics; the **audit-only** metrics are
+  recorded to detect Goodharting. Choose them with `--split` (`default`,
+  `random --split-index k`, `all`) or list them with `--steering`.
+- `--seed-start` and `--seeds` let SLURM array tasks each run a block of seeds.
 
-- Metrics are evaluated on a fixed reference grid (§3.3).
-- Metrics are z-scored against the warm-start baseline (§3.1).
-- A random-probe fraction of the budget is reserved (§3.4).
-- The metrics are split into a **steering** subset, which the policy sees,
-  and an **audit-only** subset, which it never sees (§6.1). Choose the split
-  with `--steering`.
+The arms are Random, LCB, StateSpace, BayesianDynamics, their health-steered
+`audit-*` variants, and `audit-state-space-all`, which steers on every metric.
+Seeds are paired across arms.
 
-It compares Random, LCB, StateSpace, BayesianDynamics and their
-health-steered `audit-*` variants, with seeds paired across policies.
-
-`analyze_steering.py` tests the four §6.1 predictions against the random
-policy on the same seeds:
+`analyze_steering.py` tests predictions P1 to P4 of the spec against the random
+arm on the same seeds:
 
 1. Steered metrics improve.
 2. Audit-only metrics don't.
 3. Cross-group co-movement breaks.
 4. A drifts once the loop is closed.
 
-It writes `steering_summary.json` and `steering_summary.png`.
+It writes `steering_summary.json` and `steering_summary.png`. The score is simple
+regret, or the log hypervolume difference on `branin-currin-mo`.
 
 ## Tests
 
