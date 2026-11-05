@@ -25,7 +25,7 @@ in which the agent conditions on its full posterior over hidden variables rather
 than a point estimate.
 
 Before enough transitions have been observed to fit the dynamics model, the
-policy falls back to :class:`~results.policies.LCBPolicy` (GP-only).
+policy falls back to ``results.policies.LCBPolicy`` (GP-only).
 
 References
 ----------
@@ -52,11 +52,13 @@ https://doi.org/10.1017/S0022112010001217
 from __future__ import annotations
 
 import logging
+import time
 from typing import Callable, Optional
 
 import numpy as np
 
-from .base import BasePolicy, OracleFailure
+from . import base as _base
+from .base import BasePolicy
 from .lcb import LCBPolicy
 
 log = logging.getLogger(__name__)
@@ -139,6 +141,7 @@ class StateSpacePolicy(BasePolicy):
         uncertainty_weight: float = 1.0,
         degradation_fn: Optional[Callable[[np.ndarray], float]] = None,
         scaler=None,
+        window: Optional[int] = None,
     ) -> None:
         super().__init__(
             model=model,
@@ -153,6 +156,18 @@ class StateSpacePolicy(BasePolicy):
         self.C_rate_bonus = C_rate_bonus
         self.min_fit_obs = min_fit_obs
         self.uncertainty_weight = uncertainty_weight
+        # Lookback window for _fit_dynamics: None (default) refits on the
+        # entire accumulated history every observe() call, as before -- cost
+        # grows with trajectory length, which is fine for short trajectories
+        # but makes long-horizon runs (e.g. n_iterations in the hundreds)
+        # blow well past their SLURM time budget. Set to bound per-step cost
+        # and keep the fit reflecting the current dynamics regime rather than
+        # an increasingly diluted full history (same reasoning as
+        # traits_audit's LyapunovStabilityCheck.window). Must stay
+        # >= n_components + num_action_features + 1 to keep the DMDc
+        # regression overdetermined; fit_dmdc's own rank-clipping safeguard
+        # still applies as a backstop if it's set too small.
+        self.window = window
 
         # Warm-up fallback (GP-only LCB) used before dynamics are fitted
         self._fallback = LCBPolicy(
@@ -250,46 +265,47 @@ class StateSpacePolicy(BasePolicy):
         **Regression step** — fits ``A_r``, ``B_r`` by solving::
 
             [Z_{1:T}] ≈ [Z_{0:T-1} | A_{0:T-1}] @ W^T,   W ∈ ℝ^{(r+m) × r}
+
+        When ``self.window`` is set, only the last ``window + 1`` states
+        (``window`` transitions) are used, bounding per-call cost and keeping
+        the fit reflecting the current dynamics regime rather than an
+        increasingly diluted full history. ``None`` (default) uses the full
+        accumulated history, as before.
         """
+        state_hist = self._state_history
+        uncertainty_hist = self._uncertainty_history
+        action_hist = self._action_history
+        if self.window is not None:
+            state_hist = state_hist[-(self.window + 1):]
+            uncertainty_hist = uncertainty_hist[-(self.window + 1):]
+            action_hist = action_hist[-(self.window + 1):]
+
         # Infer uncertainty dimension from the first non-None entry so that
         # None entries (no audit data available yet) are replaced with zeros
         # of the same length, keeping the augmented state shape homogeneous.
         u_dim = next(
-            (len(u) for u in self._uncertainty_history if u is not None), 0
+            (len(u) for u in uncertainty_hist if u is not None), 0
         )
         aug_states = np.array([
             self._build_augmented(s, u if u is not None else np.zeros(u_dim))
-            for s, u in zip(self._state_history, self._uncertainty_history, strict=False)
+            for s, u in zip(state_hist, uncertainty_hist)
         ])  # (T, n_aug)
-        A = np.array(self._action_history[:-1])  # (T-1, n_action)
+        A = np.array(action_hist[:-1])  # (T-1, n_action)
         T = len(A)
 
         if T < 2:
             return
 
-        r = min(self.n_components, aug_states.shape[1], T)
-
         if not np.isfinite(aug_states).all() or not np.isfinite(A).all():
             log.warning("[StateSpacePolicy] aug_states/actions contain NaN/inf — skipping dynamics fit")
             return
 
-        # SVD of augmented state matrix
-        U, _, _ = np.linalg.svd(aug_states.T, full_matrices=False)
-        self._U_r = U[:, :r]                       # (n_aug, r)
+        from traits_audit.stability.dmdc import fit_dmdc
 
-        # Project augmented states to reduced space
-        Z = aug_states @ self._U_r                 # (T, r)
-
-        # Least-squares regression: Z[1:] = [Z[:-1], A] @ W
-        X_fit = np.hstack([Z[:T], A])              # (T-1, r+m)
-        Y_fit = Z[1 : T + 1]                       # (T-1, r)
-        if not (np.isfinite(X_fit).all() and np.isfinite(Y_fit).all()):
-            log.warning("[StateSpacePolicy] projected X_fit/Y_fit contain NaN/inf — skipping dynamics fit")
-            return
-        W, _, _, _ = np.linalg.lstsq(X_fit, Y_fit, rcond=None)
-
-        self._A_r = W[:r].T                        # (r, r)
-        self._B_r = W[r:].T                        # (r, m)
+        self._A_r, self._B_r, self._U_r = fit_dmdc(
+            aug_states, A, n_components=self.n_components
+        )
+        r = self._A_r.shape[0]
 
         log.debug(
             f"[StateSpacePolicy] refitted dynamics: "
@@ -363,7 +379,7 @@ class StateSpacePolicy(BasePolicy):
     ) -> tuple[np.ndarray, float, np.ndarray]:
         """Select the candidate that minimises the composite cost.
 
-        Falls back to :class:`~results.policies.LCBPolicy` (GP-only)
+        Falls back to ``results.policies.LCBPolicy`` (GP-only)
         until ``min_fit_obs`` transitions have been observed.
 
         Parameters
@@ -451,8 +467,13 @@ class StateSpacePolicy(BasePolicy):
         on_step : callable, optional
             Called after each iteration with keyword arguments:
             ``iteration``, ``protocol``, ``state``, ``next_state``,
-            ``degradation``, ``score``, ``uncertainty_vector``.  Compatible
-            with :meth:`~traits_audit.hook.AuditHook.on_step`.
+            ``degradation``, ``score``, ``uncertainty_vector``, plus (when
+            ``self.model`` is available) ``y_true``, ``y_pred_mean``,
+            ``y_pred_std``, ``uncertainty``, ``model``, ``input_features`` —
+            the same prediction/uncertainty data :class:`BasePolicy` supplies,
+            so traits-audit checks that need live predictions (not just
+            state deltas) run for this policy too. Compatible with
+            :meth:`~traits_audit.hook.AuditHook.on_step`.
 
         Returns
         -------
@@ -465,22 +486,31 @@ class StateSpacePolicy(BasePolicy):
         selected_protocols = []
         observed_states = [current_state]
         scores_history = []
-        degradation_history = [self.degradation_fn(current_state)]
+        degradation_history = []
+        # Per-iteration wall-clock breakdown -- see BasePolicy.run's identical
+        # instrumentation (TODO_ISSUES.md B5: H2 was untestable from any
+        # artifact since nothing computed this anywhere).
+        select_next_wall_time_s = []
+        observe_wall_time_s = []
+        oracle_wall_time_s = []
 
         n_cycles_completed = 0
         terminated_early   = False
 
         for i in range(n_iterations):
+            _t0 = time.perf_counter()
             protocol, score, all_scores = self.select_next(
                 current_state,
                 candidate_protocols,
                 uncertainty_vector=current_uncertainty,
             )
+            select_next_wall_time_s.append(time.perf_counter() - _t0)
 
+            _t_oracle0 = time.perf_counter()
             try:
                 next_state = np.asarray(oracle_fn(protocol), dtype=float)
                 succeeded = True
-            except OracleFailure as exc:
+            except _base.ORACLE_FAILURES as exc:
                 log.warning(
                     "[StateSpacePolicy] oracle failure at iter %d — %s; "
                     "ending loop.",
@@ -488,12 +518,15 @@ class StateSpacePolicy(BasePolicy):
                 )
                 next_state = np.full_like(current_state, np.nan)
                 succeeded = False
+            oracle_wall_time_s.append(time.perf_counter() - _t_oracle0)
 
             # Always record — killing protocol is diagnostic data.
             selected_protocols.append(protocol)
             observed_states.append(next_state)
             scores_history.append(all_scores)
-            degradation_history.append(self.degradation_fn(next_state))
+            degradation_history.append(
+                self.degradation_fn(np.abs(next_state - current_state))
+            )
 
             if not succeeded:
                 terminated_early = True
@@ -506,7 +539,9 @@ class StateSpacePolicy(BasePolicy):
             )
 
             # observe() only on success — NaN state would corrupt dynamics model.
+            _t_observe0 = time.perf_counter()
             self.observe(current_state, protocol, uncertainty_vector=current_uncertainty)
+            observe_wall_time_s.append(time.perf_counter() - _t_observe0)
 
             log.info(
                 f"[StateSpacePolicy] iter {i + 1}/{n_iterations}: "
@@ -514,15 +549,31 @@ class StateSpacePolicy(BasePolicy):
             )
 
             if on_step is not None:
-                on_step(
-                    iteration=i,
-                    protocol=protocol,
-                    state=current_state,
-                    next_state=next_state,
-                    degradation=degradation_history[-1],
-                    score=float(score),
-                    uncertainty_vector=current_uncertainty,
-                )
+                step_kw: dict = {
+                    "iteration":         i,
+                    "protocol":          protocol,
+                    "state":             current_state,
+                    "next_state":        next_state,
+                    "y_true":            next_state,
+                    "degradation":       degradation_history[-1],
+                    "score":             float(score),
+                    "uncertainty_vector": current_uncertainty,
+                }
+                if self.model is not None:
+                    try:
+                        x_sc = self._build_input(current_state, protocol)
+                        pred_mean_sc, pred_std_sc = self._predict(x_sc)
+                        step_kw["y_pred_mean"] = self._unscale_state(pred_mean_sc[0])
+                        if pred_std_sc is not None:
+                            step_kw["y_pred_std"] = pred_std_sc[0]
+                            step_kw["uncertainty"] = float(
+                                np.mean(np.abs(pred_std_sc[0]))
+                            )
+                        step_kw["model"] = self.model
+                        step_kw["input_features"] = x_sc
+                    except Exception:
+                        pass
+                on_step(**step_kw)
 
             current_state = next_state
             current_uncertainty = next_uncertainty
@@ -536,4 +587,7 @@ class StateSpacePolicy(BasePolicy):
             "policy":             self,
             "n_cycles_completed": n_cycles_completed,
             "terminated_early":   terminated_early,
+            "select_next_wall_time_s": select_next_wall_time_s,
+            "observe_wall_time_s":     observe_wall_time_s,
+            "oracle_wall_time_s":      oracle_wall_time_s,
         }

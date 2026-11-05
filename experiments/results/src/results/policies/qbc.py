@@ -3,20 +3,24 @@
 Uses a committee of models (e.g. VarFN, VarGPR, HSGP) to select the next
 protocol based on their agreement or disagreement over predicted degradation.
 
-When ``agree=True`` (exploitation mode), the candidate with the lowest *mean*
-committee degradation is selected — favouring protocols that all models
-consistently predict to be good.
+Both modes share the same underlying statistic — the standard deviation of
+the committee's per-candidate degradation predictions — and differ only in
+which extreme is selected.
 
-When ``agree=False`` (exploration mode), the candidate with the highest
-committee *entropy* over predicted degradation is selected — favouring the
-most contested protocol, where the committee disagrees most.
+When ``agree=True`` (consensus mode), the candidate with the *lowest*
+committee standard deviation is selected — favouring protocols the committee
+is most confident and consistent about.
+
+When ``agree=False`` (disagreement mode), the candidate with the *highest*
+committee standard deviation is selected — favouring the most contested
+protocol, where the committee disagrees most.
 
 Reference
 ---------
-Seung, H. S., Opper, M., & Sompolinsky, H. (1992). Query by committee.
-In *Proceedings of the Fifth Annual Workshop on Computational Learning
-Theory (COLT)*, pp. 287–294.
-https://doi.org/10.1145/130385.130417
+Burbidge, R., Rowland, J. J., & King, R. D. (2007). Active learning for
+regression based on query by committee. In *Intelligent Data Engineering
+and Automated Learning (IDEAL 2007)*, LNCS vol. 4881, pp. 209–218.
+https://doi.org/10.1007/978-3-540-77226-2_22
 """
 
 from __future__ import annotations
@@ -38,9 +42,10 @@ class QBCPolicy(BasePolicy):
         ``predict_with_uncertainty(X)`` (returning ``{'mean': ..., 'std': ...}``)
         or ``predict(X, return_std=True)``.
     agree : bool
-        If ``True`` (default), select the candidate where the committee agrees
-        on the lowest degradation (exploitation).  If ``False``, select the
-        most contested candidate, i.e. maximum committee entropy (exploration).
+        If ``True`` (default), select the candidate the committee most agrees
+        on, i.e. minimum committee standard deviation over predicted
+        degradation (consensus).  If ``False``, select the most contested
+        candidate, i.e. maximum committee standard deviation (disagreement).
     num_action_features : int
         Length of each candidate protocol vector.
     degradation_fn : callable, optional
@@ -87,21 +92,6 @@ class QBCPolicy(BasePolicy):
                     results.append((m.predict(X_scaled), None))
         return results
 
-    def _entropy(self, X: np.ndarray) -> float:
-        """Shannon entropy of X treated as an unnormalised probability distribution.
-
-        Absolute values of X are normalised to sum to 1, then
-        H = -Σ p_i log p_i is returned.  A uniform committee (maximum
-        disagreement) maximises entropy; a unanimous committee minimises it.
-        """
-        x = np.abs(np.asarray(X, dtype=float))
-        total = x.sum()
-        if total == 0.0:
-            return 0.0
-        p = x / total
-        p = p[p > 0]
-        return float(-np.sum(p * np.log(p)))
-
     def select_next(
         self,
         current_state: np.ndarray,
@@ -138,12 +128,11 @@ class QBCPolicy(BasePolicy):
                 state_pred = self._unscale_state(mean[0])
                 degradation_scores.append(self.degradation_fn(state_pred))
 
-            if self.agree:
-                # Exploitation: lowest mean predicted degradation across the committee.
-                scores[i] = float(np.mean(degradation_scores))
-            else:
-                # Exploration: negate entropy so argmin recovers the most contested candidate.
-                scores[i] = -self._entropy(degradation_scores)
+            spread = float(np.std(degradation_scores))
+            # Consensus (agree=True) and disagreement (agree=False) are the
+            # same statistic, just inverted: argmin picks lowest spread for
+            # consensus, or (via negation) highest spread for disagreement.
+            scores[i] = spread if self.agree else -spread
 
         best = int(np.argmin(scores))
         return np.asarray(candidate_protocols[best]), float(scores[best]), scores

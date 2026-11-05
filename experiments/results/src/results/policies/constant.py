@@ -23,7 +23,7 @@ from .base import BasePolicy
 
 
 class ConstantPolicy(BasePolicy):
-    """Always applies the same fixed charge current (1C by default).
+    """Always applies the same fixed charge current (1.8C by default).
 
     At every iteration the policy returns a protocol whose first charge step
     is set to *c_rate_mA*, regardless of the surrogate model or current state.
@@ -47,8 +47,11 @@ class ConstantPolicy(BasePolicy):
     c_rate_mA : float
         First-step charge current in mA, in the *dataset's own current scale*
         (e.g. jones2022 mA, not the oracle's scaled 5 Ah mA).
-        Default 200 mA = 1C on the jones2022 CR2032 / 5 Ah oracle cell
-        (1C = 5000 mA oracle scale; _CAP_SCALE = 25; 5000 / 25 = 200 mA).
+        Default 360 mA = 1.8C on the jones2022 CR2032 / 5 Ah oracle cell
+        (1C = 5000 mA oracle scale; _CAP_SCALE = 25; 5000 / 25 = 200 mA;
+        1.8C = 360 mA). This sits inside the regime where lithium plating
+        (onset ~1C) and particle-cracking LAM (dominant above 1C) both
+        engage — see ORACLE.md §6 for the rationale.
     """
 
     def __init__(
@@ -57,7 +60,7 @@ class ConstantPolicy(BasePolicy):
         num_action_features: int = 6,
         degradation_fn: Optional[Callable[[np.ndarray], float]] = None,
         scaler=None,
-        c_rate_mA: float = 200.0,
+        c_rate_mA: float = 360.0,
     ) -> None:
         super().__init__(
             model=model,

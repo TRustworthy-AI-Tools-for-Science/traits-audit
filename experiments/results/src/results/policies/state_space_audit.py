@@ -1,13 +1,13 @@
 """State-space policies that use the audit system health vector as belief state.
 
-Standard usage of :class:`~results.policies.StateSpacePolicy` and
-:class:`~results.policies.BayesianDynamicsPolicy` appends the
+Standard usage of ``results.policies.StateSpacePolicy`` and
+``results.policies.BayesianDynamicsPolicy`` appends the
 **per-parameter ECM variance vector** (shape ``(n_params,)``) to the battery
 state when augmenting the belief state.  This represents the *magnitude* of
 uncertainty for each individual circuit element.
 
 The policies in this module instead append the **audit health vector**
-(shape ``(12,)``) produced by the full uncertainty audit pipeline.
+(shape ``(14,)`` = ``AUDIT_HEALTH_VECTOR_DIM``) produced by the full uncertainty audit pipeline.
 Rather than asking "how uncertain is each parameter?", this vector asks
 "how well is the experiment's uncertainty characterisation functioning?"
 
@@ -20,9 +20,11 @@ It encodes two classes of experiment health:
     Index  Field                  Source check              Direction
     ─────  ─────────────────────  ────────────────────────  ─────────
       0    variance_alignment     VarianceAlignmentCheck     ≈ 1.0
-      1    calibration_error      TraitsCalibrationCheck     lower ↓
-      2    ence                   TraitsCalibrationCheck     lower ↓
-      3    miscalibration_area    TraitsCalibrationCheck     lower ↓
+      1    calibration_error      KuleshovCalibrationCheck   lower ↓
+      2    ence                   ENCECheck                  lower ↓
+      3    miscalibration_area    (legacy; filled by         lower ↓
+                                  TraitsCalibrationCheck
+                                  from run_evaluate_audit)
       4    variance_error_corr    VarianceErrorCorrelation   higher ↑
       5    n_decreasing_channels  UncertaintyEvolution       lower ↓
       6    anomalous_fraction     UncertaintyAnomalies       lower ↓
@@ -38,6 +40,15 @@ It encodes two classes of experiment health:
       9    ecm_kk_self_consistency  "Model Self-Consistency — Simulated Mean" lower ↓
      10    ecm_kk_posterior_frac    "Model Self-Consistency — Posterior Draws" lower ↓
      11    drt_peak_mismatch        "DRT Peak Count Mismatch"              lower ↓
+
+**Surrogate / coverage quality** (from 19-check AL-audit pipeline):
+
+.. code-block:: text
+
+    Index  Field                    Source check              Direction
+    ─────  ───────────────────────  ────────────────────────  ─────────
+     12    lyapunov_stable_frac     LyapunovStabilityCheck    higher ↑
+     13    conformal_coverage_ratio ConformalCoverageCheck     ≈ 1.0
 
 * ``linkk_rmse``: linKK reconstruction RMSE — is the EIS measurement
   Kramers-Kronig consistent (i.e. causal, linear, stable)?  Threshold 0.05.
@@ -59,16 +70,23 @@ is handled by :func:`make_audit_health_vector`.
 Both policies add an **explicit health cost** (weight ``gamma_health``) to
 the acquisition score.  The health score is::
 
-    h(v) = v[4] − v[1] − v[6]
-             − clip(v[7] / 0.05, 0, 1)   # linKK data validity
-             − clip(v[9] / 0.05, 0, 1)   # ECM KK self-consistency (kkV)
+    h(v) = v[4] + v[12]
+             − v[1] − v[6]
+             − clip(v[7] / 0.05, 0, 1)     # linKK data validity
+             − clip(v[9] / 0.05, 0, 1)     # ECM KK self-consistency (kkV)
+             − clip(|v[13] − 1|, 0, 1)     # conformal coverage deviation
          = variance_error_corr
+             + lyapunov_stable_fraction
              − calibration_error
              − anomalous_fraction
              − normalised_linkk_rmse
              − normalised_ecm_kk_error
+             − normalised_conformal_deviation
 
-Range: [−4, 1].  Perfect health gives ``h = 1``; all-bad experiment gives ``h = −4``.
+Range: [−5, 2].  Perfect health gives ``h = 2``; all-bad experiment gives ``h = −5``.
+Indices 12–13 gracefully default to 0 / 1 when not populated (e.g. early steps where
+LyapunovStability skips because surrogate_fn is not yet available, or when the vector
+was assembled from the run_evaluate_audit pipeline which does not run these checks).
 
 Subtracting ``γ_health · h(v_predicted_next)`` from the acquisition score
 rewards protocols whose linear-dynamics prediction yields a healthier next
@@ -84,8 +102,8 @@ import logging
 from typing import Callable, List, Optional
 
 import numpy as np
-from traits_audit.base import AuditCategory, AuditResult
 
+from traits_audit.base import AuditCategory, AuditResult
 from .state_space import StateSpacePolicy
 from .state_space_bayes import BayesianDynamicsPolicy
 
@@ -108,13 +126,16 @@ AUDIT_HEALTH_FIELDS: List[str] = [
     "ecm_kk_self_consistency",   # 9: KK residual on ECM mean spectrum (kkV); threshold 0.05; lower is better
     "ecm_kk_posterior_fraction", # 10: fraction of posterior draws with >10% KK residual; lower is better
     "drt_peak_mismatch",         # 11: |DRT peak count − ECM element count|; 0 = exact match; lower is better
+    # ── Surrogate / coverage quality (19-check AL-audit pipeline) ─────────
+    "lyapunov_stable_frac",      # 12: fraction of operating points with |λ_max| < 1; higher is better
+    "conformal_coverage_ratio",  # 13: q̂ / z_nom; ideal = 1.0; > 1 → heavy tails / miscoverage
 ]
 
 AUDIT_HEALTH_VECTOR_DIM: int = len(AUDIT_HEALTH_FIELDS)
 
 
 def make_audit_health_vector(results: list, fill_value: float = 0.0) -> np.ndarray:
-    """Assemble a canonical 12-dim audit health vector from a list of AuditResult objects.
+    """Assemble a canonical 14-D audit health vector from a list of AuditResult objects.
 
     Covers two audit stages:
 
@@ -142,7 +163,7 @@ def make_audit_health_vector(results: list, fill_value: float = 0.0) -> np.ndarr
 
     Returns
     -------
-    np.ndarray, shape ``(12,)``
+    np.ndarray, shape ``(AUDIT_HEALTH_VECTOR_DIM,)`` = ``(14,)``
         Values in the order defined by :data:`AUDIT_HEALTH_FIELDS`.
     """
     v = np.full(AUDIT_HEALTH_VECTOR_DIM, fill_value, dtype=float)
@@ -151,105 +172,41 @@ def make_audit_health_vector(results: list, fill_value: float = 0.0) -> np.ndarr
             continue
         name = r.name
         # ── Predictive-quality fields (indices 0–6) ──────────────────────────
-        if name == "VarianceAlignment" and r.value is not None:
+        if name == "VarianceAlignment" and r.value is not None and np.isfinite(r.value):
             v[0] = float(r.value)
+        elif name == "KuleshovCalibrationError" and r.value is not None and np.isfinite(r.value):
+            v[1] = float(r.value)
+        elif name == "ENCE" and r.value is not None and np.isfinite(r.value):
+            v[2] = float(r.value)
         elif name == "TraitsCalibration":
-            if r.value is not None:
-                v[1] = float(r.value)               # CE
+            # Legacy: run_evaluate_audit pipeline still uses the combined check.
+            # Populates miscalibration_area (v[3]) which the split checks do not emit.
             d = r.details or {}
-            if "ence" in d and d["ence"] is not None:
-                v[2] = float(d["ence"])
-            if "miscalibration_area" in d and d["miscalibration_area"] is not None:
-                v[3] = float(d["miscalibration_area"])
-        elif name == "VarianceErrorCorrelation" and r.value is not None:
+            mca = d.get("miscalibration_area")
+            if mca is not None and np.isfinite(mca):
+                v[3] = float(mca)
+        elif name == "VarianceErrorCorrelation" and r.value is not None and np.isfinite(r.value):
             v[4] = float(r.value)
-        elif name == "UncertaintyEvolution" and r.value is not None:
+        elif name == "UncertaintyEvolution" and r.value is not None and np.isfinite(r.value):
             v[5] = float(r.value)
-        elif name == "UncertaintyAnomalies" and r.value is not None:
+        elif name == "UncertaintyAnomalies" and r.value is not None and np.isfinite(r.value):
             v[6] = float(r.value)
         # ── EIS inference quality fields (indices 7–11) ──────────────────────
-        elif name == "LinKK Reconstruction Error" and r.value is not None:
+        elif name == "LinKK Reconstruction Error" and r.value is not None and np.isfinite(r.value):
             v[7] = float(r.value)
-        elif name == "ECM Parameter Stability (Max CV)" and r.value is not None:
+        elif name == "ECM Parameter Stability (Max CV)" and r.value is not None and np.isfinite(r.value):
             v[8] = float(r.value)
-        elif name == "Model Self-Consistency — Simulated Mean" and r.value is not None:
+        elif name == "Model Self-Consistency — Simulated Mean" and r.value is not None and np.isfinite(r.value):
             v[9] = float(r.value)
-        elif name == "Model Self-Consistency — Posterior Draws" and r.value is not None:
+        elif name == "Model Self-Consistency — Posterior Draws" and r.value is not None and np.isfinite(r.value):
             v[10] = float(r.value)
-        elif name == "DRT Peak Count Mismatch" and r.value is not None:
+        elif name == "DRT Peak Count Mismatch" and r.value is not None and np.isfinite(r.value):
             v[11] = float(r.value)
-    return v
-
-
-# ── Composite uncertainty vector ───────────────────────────────────────────────
-
-COMPOSITE_UNCERTAINTY_DIM: int = 28
-"""Dimension of the composite uncertainty vector returned by
-:func:`build_composite_uncertainty_vector`.
-
-Layout
-------
-* ``[0:18]``  — surrogate predictive std per ECM parameter (18-D)
-* ``[18:23]`` — traits-audit check metrics: variance_alignment, calibration_error,
-                ence, miscalibration_area, variance_error_corr
-* ``[23:28]`` — battery-forecast custom check metrics: conformal_coverage_ratio,
-                pit_pvalue, crps_mean, n_decreasing_channels, anomalous_fraction
-"""
-
-
-def build_composite_uncertainty_vector(
-    pred_std: Optional[np.ndarray],
-    audit_report,
-) -> np.ndarray:
-    """Assemble a 28-D composite uncertainty vector from three sources.
-
-    Parameters
-    ----------
-    pred_std : np.ndarray of shape ``(18,)`` or ``None``
-        Per-output predictive standard deviation from the surrogate model.
-        Zeros when the policy has no surrogate (e.g. Random).
-    audit_report : AuditReport or ``None``
-        Most recent report from ``_build_al_audit_pipeline()``.  Zeros when
-        the pipeline has not yet produced an intermediate report.
-
-    Returns
-    -------
-    np.ndarray, shape ``(28,)``
-        All missing / unavailable values filled with 0.0.
-    """
-    v = np.zeros(COMPOSITE_UNCERTAINTY_DIM, dtype=float)
-
-    if pred_std is not None:
-        arr = np.asarray(pred_std, dtype=float)
-        v[:min(18, len(arr))] = arr[:18]
-
-    if audit_report is None:
-        return v
-
-    for r in audit_report.results:
-        d = r.details or {}
-        name = r.name
-        if name == "VarianceAlignment" and r.value is not None:
-            v[18] = float(r.value)
-        elif name == "TraitsCalibration":
-            if r.value is not None:
-                v[19] = float(r.value)
-            if "ence" in d and d["ence"] is not None:
-                v[20] = float(d["ence"])
-            if "miscalibration_area" in d and d["miscalibration_area"] is not None:
-                v[21] = float(d["miscalibration_area"])
-        elif name == "VarianceErrorCorrelation" and r.value is not None:
-            v[22] = float(r.value)
-        elif name == "ConformalCoverage" and r.value is not None:
-            v[23] = float(r.value)
-        elif name == "PITUniformity" and r.value is not None:
-            v[24] = float(r.value)
-        elif name == "CRPS" and r.value is not None:
-            v[25] = float(r.value)
-        elif name == "UncertaintyEvolution" and r.value is not None:
-            v[26] = float(r.value)
-        elif name == "IntegratedGradients" and r.value is not None:
-            v[27] = float(r.value)
+        # ── Surrogate / coverage quality fields (indices 12–13) ──────────────
+        elif name == "LyapunovStability" and r.value is not None and np.isfinite(r.value):
+            v[12] = float(r.value)
+        elif name == "ConformalCoverage" and r.value is not None and np.isfinite(r.value):
+            v[13] = float(r.value)
     return v
 
 
@@ -259,30 +216,34 @@ def _health_score(v: np.ndarray) -> float:
     Defined as::
 
         h(v) = variance_error_corr
+               + lyapunov_stable_frac
                − calibration_error
                − anomalous_fraction
                − clip(linkk_rmse / 0.05, 0, 1)
                − clip(ecm_kk_self_consistency / 0.05, 0, 1)
+               − clip(|conformal_coverage_ratio − 1|, 0, 1)
 
-    The five terms and their ranges:
+    Term ranges and interpretations:
 
-    * ``variance_error_corr`` ∈ [-1, 1]: Spearman ρ between predicted variance
-      and absolute error.  High ρ means the model recognises when it is uncertain.
-    * ``calibration_error`` ∈ [0, 1]: Kuleshov CE — fraction-coverage error.
-    * ``anomalous_fraction`` ∈ [0, 1]: fraction of steps with |z-score| > 3.
-    * ``linkk_rmse`` (index 7): linKK reconstruction RMSE, normalised by the
-      0.05 acceptance threshold.  Zero penalty for valid data; full penalty (1)
-      at the threshold or above.  Tests whether the raw EIS measurement is
-      Kramers-Kronig consistent.
-    * ``ecm_kk_self_consistency`` (index 9, kkV): KK residual of the ECM-fitted
-      mean spectrum, normalised by 0.05.  Tests whether the circuit model
-      reproduces the physics of the measurement.
+    * ``variance_error_corr`` (v[4]) ∈ [-1, 1]: Spearman ρ between predicted
+      variance and absolute error.  High ρ means the model recognises when it
+      is uncertain.
+    * ``lyapunov_stable_frac`` (v[12]) ∈ [0, 1]: fraction of operating points
+      where gradient descent on the surrogate landscape is stable (|λ_max| < 1).
+      Defaults to 0 when not populated (early steps, run_evaluate_audit pipeline).
+    * ``calibration_error`` (v[1]) ∈ [0, 1]: Kuleshov CE.
+    * ``anomalous_fraction`` (v[6]) ∈ [0, 1]: fraction of steps with |z-score| > 3.
+    * ``linkk_rmse`` (v[7]): linKK RMSE normalised by 0.05 threshold.
+    * ``ecm_kk_self_consistency`` (v[9]): ECM KK residual normalised by 0.05.
+    * ``conformal_coverage_ratio`` (v[13]) ∈ [0, ∞): q̂/z_nom; |deviation from 1|
+      penalises both over- and under-coverage.  Defaults to 1 (no penalty) when
+      not populated.
 
-    ``h`` ∈ [-4, 1].  Perfect health gives h = 1; all-bad experiment gives h = -4.
+    ``h`` ∈ [-5, 2].  Perfect health gives h = 2; all-bad experiment gives h = -5.
 
-    Indices 7–11 gracefully degrade to 0 (no penalty) when not present in ``v``
-    or when the value is ``np.nan``, so the function is backward-compatible with
-    7-dimensional vectors from earlier pipeline runs.
+    Indices 7–13 gracefully degrade to neutral values (0 / 1) when not present
+    in ``v`` or when the value is ``np.nan``, so the function is backward-compatible
+    with shorter vectors from earlier pipeline runs or the run_evaluate_audit pipeline.
     """
     n = len(v)
     rho  = float(v[4]) if n > 4 and np.isfinite(v[4]) else 0.0
@@ -299,7 +260,14 @@ def _health_score(v: np.ndarray) -> float:
         if n > 9 and np.isfinite(v[9]) else 0.0
     )
 
-    return rho - ce - frac - linkk_norm - kk_sc_norm
+    # Lyapunov: fraction stable ∈ [0, 1]; defaults 0 when not populated
+    lyap = float(v[12]) if n > 12 and np.isfinite(v[12]) else 0.0
+
+    # Conformal: deviation from ideal ratio of 1; defaults 1 → no penalty
+    conf_ratio = float(v[13]) if n > 13 and np.isfinite(v[13]) else 1.0
+    conf_dev = min(abs(conf_ratio - 1.0), 1.0)
+
+    return rho + lyap - ce - frac - linkk_norm - kk_sc_norm - conf_dev
 
 
 def drt_peak_mismatch_result(
@@ -355,7 +323,7 @@ def drt_peak_mismatch_result(
         peaks, _ = find_peaks(gamma, height=threshold)
         mismatches.append(abs(len(peaks) - n_ecm_elements))
 
-    mismatch = round(float(np.mean(mismatches))) if mismatches else 0
+    mismatch = int(round(float(np.mean(mismatches)))) if mismatches else 0
     passed = mismatch == 0
     label = "single" if spectrum_idx is not None else f"mean over {len(indices)} spectra"
     return AuditResult(
@@ -383,7 +351,7 @@ class AuditStateSpacePolicy(StateSpacePolicy):
     """StateSpacePolicy augmented with the audit system health vector.
 
     Replaces the per-parameter ECM variance augmentation of
-    :class:`~results.policies.StateSpacePolicy` with the
+    ``results.policies.StateSpacePolicy`` with the
     12-dimensional **audit health vector** produced by
     ``battery_forecast.audit.AuditPipeline``.
 
@@ -416,13 +384,13 @@ class AuditStateSpacePolicy(StateSpacePolicy):
         Weight on the audit health bonus.  Positive values encourage the
         policy to select protocols that are predicted to maintain or improve
         experiment health.  Set to 0.0 to disable (equivalent to the base
-        :class:`~results.policies.StateSpacePolicy` except for the
+        ``results.policies.StateSpacePolicy`` except for the
         different augmentation vector).
     health_fn : callable, optional
         ``f(v_audit) -> float`` (higher = healthier) applied to the predicted
         next audit vector.  Defaults to :func:`_health_score`, which assumes
-        the 12-field battery layout of :data:`AUDIT_HEALTH_FIELDS`; pass your
-        own when the audit vector has a different layout.
+        the battery layout of :data:`AUDIT_HEALTH_FIELDS`; pass your own when
+        the audit vector has a different layout.
     All other parameters are inherited from StateSpacePolicy.
     """
 
@@ -435,12 +403,13 @@ class AuditStateSpacePolicy(StateSpacePolicy):
         R_weight: float = 0.01,
         C_rate_bonus: float = 0.0,
         gamma_health: float = 0.5,
-        health_fn: Optional[Callable[[np.ndarray], float]] = None,
         min_fit_obs: int = 5,
         num_action_features: int = 6,
         uncertainty_weight: float = 1.0,
         degradation_fn: Optional[Callable[[np.ndarray], float]] = None,
         scaler=None,
+        window: Optional[int] = None,
+        health_fn: Optional[Callable[[np.ndarray], float]] = None,
     ) -> None:
         super().__init__(
             model=model,
@@ -454,6 +423,7 @@ class AuditStateSpacePolicy(StateSpacePolicy):
             uncertainty_weight=uncertainty_weight,
             degradation_fn=degradation_fn,
             scaler=scaler,
+            window=window,
         )
         self.gamma_health = gamma_health
         self.health_fn = health_fn or _health_score
@@ -462,7 +432,7 @@ class AuditStateSpacePolicy(StateSpacePolicy):
 
     @staticmethod
     def make_audit_health_vector(results: list, fill_value: float = 0.0) -> np.ndarray:
-        """Assemble the canonical 12-dim audit health vector from AuditResult objects.
+        """Assemble the canonical 14-dim audit health vector from AuditResult objects.
 
         Convenience wrapper around the module-level :func:`make_audit_health_vector`.
         Typical usage::
@@ -524,7 +494,7 @@ class AuditBayesianDynamicsPolicy(BayesianDynamicsPolicy):
     """BayesianDynamicsPolicy augmented with the audit system health vector.
 
     Replaces the per-parameter ECM variance augmentation of
-    :class:`~results.policies.BayesianDynamicsPolicy` with the
+    ``results.policies.BayesianDynamicsPolicy`` with the
     12-dimensional **audit health vector** produced by
     ``battery_forecast.audit.AuditPipeline``.
 
@@ -549,9 +519,9 @@ class AuditBayesianDynamicsPolicy(BayesianDynamicsPolicy):
     ----------
     gamma_health : float
         Weight on the audit health bonus.  Set to 0.0 to fall back to the
-        behaviour of :class:`~results.policies.BayesianDynamicsPolicy`.
+        behaviour of ``results.policies.BayesianDynamicsPolicy``.
     health_fn : callable, optional
-        See :class:`AuditStateSpacePolicy`.
+        As for :class:`AuditStateSpacePolicy`.
     All other parameters are inherited from BayesianDynamicsPolicy.
     """
 
@@ -566,7 +536,6 @@ class AuditBayesianDynamicsPolicy(BayesianDynamicsPolicy):
         gamma_info: float = 1.0,
         gamma_sub: float = 0.5,
         gamma_health: float = 0.5,
-        health_fn: Optional[Callable[[np.ndarray], float]] = None,
         lambda_reg: float = 1e-3,
         min_fit_obs: int = 5,
         reanchor_freq: Optional[int] = None,
@@ -574,6 +543,8 @@ class AuditBayesianDynamicsPolicy(BayesianDynamicsPolicy):
         uncertainty_weight: float = 1.0,
         degradation_fn: Optional[Callable[[np.ndarray], float]] = None,
         scaler=None,
+        window: Optional[int] = None,
+        health_fn: Optional[Callable[[np.ndarray], float]] = None,
     ) -> None:
         super().__init__(
             model=model,
@@ -591,6 +562,7 @@ class AuditBayesianDynamicsPolicy(BayesianDynamicsPolicy):
             uncertainty_weight=uncertainty_weight,
             degradation_fn=degradation_fn,
             scaler=scaler,
+            window=window,
         )
         self.gamma_health = gamma_health
         self.health_fn = health_fn or _health_score
@@ -599,7 +571,7 @@ class AuditBayesianDynamicsPolicy(BayesianDynamicsPolicy):
 
     @staticmethod
     def make_audit_health_vector(results: list, fill_value: float = 0.0) -> np.ndarray:
-        """Assemble the canonical 12-dim audit health vector from AuditResult objects.
+        """Assemble the canonical 14-dim audit health vector from AuditResult objects.
 
         See :meth:`~AuditStateSpacePolicy.make_audit_health_vector` for usage.
         """

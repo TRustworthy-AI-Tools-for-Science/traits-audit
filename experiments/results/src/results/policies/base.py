@@ -8,6 +8,7 @@ protocol vocabulary); nothing here is battery-specific beyond the optional
 from __future__ import annotations
 
 import logging
+import time
 from abc import ABC, abstractmethod
 from typing import Callable, Optional
 
@@ -23,9 +24,20 @@ class OracleFailure(RuntimeError):
     """
 
 
-def _default_degradation(state: np.ndarray) -> float:
-    """Mean absolute value of the state vector."""
-    return float(np.mean(np.abs(state)))
+#: Exception types every run loop treats as an oracle failure. Extend with
+#: :func:`register_oracle_failure` when an oracle raises its own type.
+ORACLE_FAILURES: tuple[type[BaseException], ...] = (OracleFailure,)
+
+
+def register_oracle_failure(exc_type: type[BaseException]) -> None:
+    """Make every policy's run loop treat ``exc_type`` as an oracle failure.
+
+    For oracles that raise their own exception class (e.g. a simulator
+    package's end-of-life error) instead of :class:`OracleFailure`.
+    """
+    global ORACLE_FAILURES
+    if exc_type not in ORACLE_FAILURES:
+        ORACLE_FAILURES = (*ORACLE_FAILURES, exc_type)
 
 
 def resistance_degradation(
@@ -55,6 +67,11 @@ def resistance_degradation(
     if resistance_indices is None:
         resistance_indices = [0, 12, 24, 36, 48, 60]
     return float(np.sum(state[resistance_indices]))
+
+
+def _default_degradation(state: np.ndarray) -> float:
+    """Mean absolute value of the state vector."""
+    return float(np.mean(np.abs(state)))
 
 
 class BasePolicy(ABC):
@@ -135,12 +152,12 @@ class BasePolicy(ABC):
 
     # ── Hook for stateful policies ────────────────────────────────────────
 
-    def observe(self, state: np.ndarray, action: np.ndarray) -> None:  # noqa: B027  (optional hook, no-op by default)
+    def observe(self, state: np.ndarray, action: np.ndarray) -> None:
         """Record an observed ``(state, action)`` transition.
 
         Called automatically by :meth:`run` after each iteration.
         Stateless policies leave this as a no-op.  Stateful policies
-        (e.g. :class:`~results.policies.StateSpacePolicy`)
+        (e.g. ``results.policies.StateSpacePolicy``)
         override it to update their internal models.
         """
 
@@ -182,6 +199,7 @@ class BasePolicy(ABC):
         oracle_fn: Callable[[np.ndarray], np.ndarray],
         n_iterations: int = 10,
         on_step: Optional[Callable] = None,
+        stop_fn: Optional[Callable[[dict], bool]] = None,
     ) -> dict:
         """Run the full active learning loop.
 
@@ -201,8 +219,18 @@ class BasePolicy(ABC):
             ``oracle_fn(protocol) -> next_state`` (unscaled ``np.ndarray``).
             Represents the physical battery experiment: apply *protocol*,
             measure EIS, infer ECM parameters, return the resulting state.
+            May raise :class:`OracleFailure` (or a type registered with
+            :func:`register_oracle_failure`) to end
+            the loop early (e.g. an end-of-life / capacity-threshold stop);
+            this is handled below regardless of *stop_fn*.
         n_iterations : int
             Number of charge cycles to optimise.
+        stop_fn : callable, optional
+            ``stop_fn(history) -> bool``, checked once per iteration after
+            the transition is recorded. Returning ``True`` ends the loop
+            early (``history["terminated_early"]`` is set to ``True``).
+            Defaults to ``None`` (never stops early via this mechanism) so
+            existing callers are unaffected.
 
         Returns
         -------
@@ -222,17 +250,30 @@ class BasePolicy(ABC):
             "policy": type(self).__name__,
             "n_cycles_completed": 0,
             "terminated_early": False,
+            # Per-iteration wall-clock breakdown -- previously nothing computed
+            # this anywhere (grep -rn wall_time src/ was a zero-hit), so H2
+            # ("vector-uncertainty policy has minimal computational overhead")
+            # was untestable from any artifact (TODO_ISSUES.md B5).
+            "select_next_wall_time_s": [],
+            "observe_wall_time_s": [],
+            "oracle_wall_time_s": [],
         }
         state = initial_state
         for i in range(n_iterations):
             log.info(f"[{type(self).__name__}] iteration {i + 1}/{n_iterations}")
+            _t0 = time.perf_counter()
             protocol, score, _ = self.select_next(state, candidate_protocols)
+            _t1 = time.perf_counter()
             self.observe(state, protocol)
+            _t2 = time.perf_counter()
+            history["select_next_wall_time_s"].append(_t1 - _t0)
+            history["observe_wall_time_s"].append(_t2 - _t1)
 
+            _t_oracle0 = time.perf_counter()
             try:
                 next_state = oracle_fn(protocol)
                 succeeded = True
-            except OracleFailure as exc:
+            except ORACLE_FAILURES as exc:
                 log.warning(
                     "[%s] oracle failure at iteration %d — protocol %s: %s; "
                     "ending loop.",
@@ -240,6 +281,7 @@ class BasePolicy(ABC):
                 )
                 next_state = np.full_like(state, np.nan)
                 succeeded = False
+            history["oracle_wall_time_s"].append(time.perf_counter() - _t_oracle0)
 
             # Always record — the killing protocol and score are diagnostic data.
             history["selected_protocols"].append(protocol)
@@ -278,6 +320,11 @@ class BasePolicy(ABC):
                 state = next_state
                 history["n_cycles_completed"] = i + 1
             else:
+                history["terminated_early"] = True
+                break
+
+            if stop_fn is not None and stop_fn(history):
+                log.info(f"[{type(self).__name__}] stop_fn triggered at iteration {i + 1}; ending loop.")
                 history["terminated_early"] = True
                 break
 

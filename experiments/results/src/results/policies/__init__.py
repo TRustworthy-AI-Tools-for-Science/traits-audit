@@ -73,7 +73,12 @@ Usage
     history = policy.run(initial_state, candidates, oracle_fn, n_iterations=20)
 """
 
-from .base import BasePolicy, OracleFailure, resistance_degradation
+from .base import (
+    BasePolicy,
+    OracleFailure,
+    register_oracle_failure,
+    resistance_degradation,
+)
 from .constant import ConstantPolicy
 from .greedy import GreedyPolicy
 from .lcb import LCBPolicy
@@ -104,5 +109,6 @@ __all__ = [
     "StateSpacePolicy",
     "drt_peak_mismatch_result",
     "make_audit_health_vector",
+    "register_oracle_failure",
     "resistance_degradation",
 ]

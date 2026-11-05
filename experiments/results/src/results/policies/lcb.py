@@ -7,7 +7,7 @@ posterior mean ``μ`` and standard deviation ``σ`` over the next ECM state::
     score_i = degradation_fn(unscale(μ_i)) − κ · mean(σ_i)
 
 The candidate with the lowest score is selected.  Setting ``κ = 0`` recovers
-the :class:`~results.policies.GreedyPolicy`.
+the ``results.policies.GreedyPolicy``.
 
 Reference
 ---------
@@ -42,7 +42,7 @@ class LCBPolicy(BasePolicy):
     where the surrogate is uncertain (high ``σ``), preventing premature
     convergence to a local minimum.  Higher ``κ`` emphasises exploration;
     ``κ = 0`` gives pure exploitation (equivalent to
-    :class:`~results.policies.GreedyPolicy`).
+    ``results.policies.GreedyPolicy``).
 
     Parameters
     ----------
@@ -50,7 +50,7 @@ class LCBPolicy(BasePolicy):
         Trained surrogate.  Must support ``predict_with_uncertainty(X)``
         (returning ``{'mean': ..., 'std': ...}``) or
         ``predict(X, return_std=True)``.  ``MyGPRModel`` from
-        The battery-forecast surrogate satisfies this.
+        ``battery_forecast.model`` satisfies this.
     kappa : float
         Exploration weight.  Typical range: 1–3.  Higher values encourage
         the policy to explore uncertain regions.

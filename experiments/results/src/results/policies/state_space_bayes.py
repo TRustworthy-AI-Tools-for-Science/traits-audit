@@ -1,6 +1,6 @@
 """Bayesian dynamics policy with online precision updates and information-gain scoring.
 
-Extends :class:`~results.policies.StateSpacePolicy` in three ways,
+Extends ``results.policies.StateSpacePolicy`` in three ways,
 each grounded in the accompanying literature:
 
 1. **Online Bayesian precision update (Eldredge & Mousavi, 2026)**
@@ -62,7 +62,7 @@ each grounded in the accompanying literature:
           − γ_info · h(z, a) / (1 + h(z, a))     ← Cai 2014 / Eldredge 2026
           − γ_sub · ρ(ŝ_GP, U_r)                 ← Li 2021 ALSL
 
-**Key difference from** :class:`~results.policies.StateSpacePolicy`
+**Key difference from** ``results.policies.StateSpacePolicy``
 
 StateSpacePolicy refits the full SVD + OLS dynamics on *all* historical data
 at every :meth:`observe` call.  BayesianDynamicsPolicy fits the SVD basis
@@ -98,11 +98,13 @@ to suppress noise and capture subspace structure, Eq. 4.)
 from __future__ import annotations
 
 import logging
+import time
 from typing import Callable, Optional
 
 import numpy as np
 
-from .base import BasePolicy, OracleFailure
+from . import base as _base
+from .base import BasePolicy
 from .lcb import LCBPolicy
 
 log = logging.getLogger(__name__)
@@ -185,6 +187,7 @@ class BayesianDynamicsPolicy(BasePolicy):
         uncertainty_weight: float = 1.0,
         degradation_fn: Optional[Callable[[np.ndarray], float]] = None,
         scaler=None,
+        window: Optional[int] = None,
     ) -> None:
         super().__init__(
             model=model,
@@ -203,6 +206,10 @@ class BayesianDynamicsPolicy(BasePolicy):
         self.min_fit_obs = min_fit_obs
         self.reanchor_freq = reanchor_freq or 0
         self.uncertainty_weight = uncertainty_weight
+        # Lookback window for _fit_dynamics -- see StateSpacePolicy.window for
+        # the full rationale. None (default) refits on the entire accumulated
+        # history, as before.
+        self.window = window
 
         self._fallback = LCBPolicy(
             model=model,
@@ -236,7 +243,7 @@ class BayesianDynamicsPolicy(BasePolicy):
         """Concatenate ECM state with scaled uncertainty vector (belief state).
 
         Follows the belief-state MDP augmentation of Kaelbling et al. (1998)
-        used in :class:`~results.policies.StateSpacePolicy`.
+        used in ``results.policies.StateSpacePolicy``.
         Returns the state unchanged when no uncertainty vector is available.
         """
         if uncertainty is None:
@@ -265,15 +272,29 @@ class BayesianDynamicsPolicy(BasePolicy):
         ----------
         reinit_G : bool
             Always rebuild G^{-1} from historical data (default: True).
+
+        When ``self.window`` is set, only the last ``window + 1`` states
+        (``window`` transitions) are used -- see StateSpacePolicy._fit_dynamics
+        for the full rationale (bounds per-refit cost, keeps the fit
+        reflecting the current dynamics regime). ``None`` (default) uses the
+        full accumulated history, as before.
         """
+        state_hist = self._state_history
+        uncertainty_hist = self._uncertainty_history
+        action_hist = self._action_history
+        if self.window is not None:
+            state_hist = state_hist[-(self.window + 1):]
+            uncertainty_hist = uncertainty_hist[-(self.window + 1):]
+            action_hist = action_hist[-(self.window + 1):]
+
         u_dim = next(
-            (len(u) for u in self._uncertainty_history if u is not None), 0
+            (len(u) for u in uncertainty_hist if u is not None), 0
         )
         aug_states = np.array([
             self._build_augmented(s, u if u is not None else np.zeros(u_dim))
-            for s, u in zip(self._state_history, self._uncertainty_history, strict=False)
+            for s, u in zip(state_hist, uncertainty_hist)
         ])  # (T, n_aug)
-        A = np.array(self._action_history[:-1])  # (T-1, m)
+        A = np.array(action_hist[:-1])  # (T-1, m)
         T = len(A)
 
         if T < 2:
@@ -290,8 +311,8 @@ class BayesianDynamicsPolicy(BasePolicy):
         self._U_r = U[:, :r]  # (n_aug, r)
 
         Z = aug_states @ self._U_r               # (T, r)
-        X_fit = np.hstack([Z[:T], A])            # (T-1, r+m)
-        Y_fit = Z[1: T + 1]                      # (T-1, r)
+        X_fit = np.hstack([Z[:-1], A])           # (T-1, r+m)
+        Y_fit = Z[1:]                            # (T-1, r)
 
         if not (np.isfinite(X_fit).all() and np.isfinite(Y_fit).all()):
             log.warning(
@@ -536,7 +557,7 @@ class BayesianDynamicsPolicy(BasePolicy):
     ) -> tuple[np.ndarray, float, np.ndarray]:
         """Select the candidate minimising the composite information-theoretic score.
 
-        Falls back to :class:`~results.policies.LCBPolicy` (GP-only)
+        Falls back to ``results.policies.LCBPolicy`` (GP-only)
         until ``min_fit_obs`` transitions have been observed.
 
         Parameters
@@ -586,7 +607,7 @@ class BayesianDynamicsPolicy(BasePolicy):
         """Active learning loop with optional uncertainty oracle.
 
         Identical interface to
-        :meth:`~results.policies.StateSpacePolicy.run`.
+        ``results.policies.StateSpacePolicy.run``.
 
         Parameters
         ----------
@@ -604,7 +625,12 @@ class BayesianDynamicsPolicy(BasePolicy):
         on_step : callable, optional
             Called after each iteration with keyword arguments:
             ``iteration``, ``protocol``, ``state``, ``next_state``,
-            ``degradation``, ``score``, ``uncertainty_vector``.
+            ``degradation``, ``score``, ``uncertainty_vector``, plus (when
+            ``self.model`` is available) ``y_true``, ``y_pred_mean``,
+            ``y_pred_std``, ``uncertainty``, ``model``, ``input_features`` —
+            the same prediction/uncertainty data :class:`BasePolicy` supplies,
+            so traits-audit checks that need live predictions run for this
+            policy too.
 
         Returns
         -------
@@ -617,22 +643,31 @@ class BayesianDynamicsPolicy(BasePolicy):
         selected_protocols: list = []
         observed_states: list = [current_state]
         scores_history: list = []
-        degradation_history: list = [self.degradation_fn(current_state)]
+        degradation_history: list = []
+        # Per-iteration wall-clock breakdown -- see BasePolicy.run's identical
+        # instrumentation (TODO_ISSUES.md B5: H2 was untestable from any
+        # artifact since nothing computed this anywhere).
+        select_next_wall_time_s: list = []
+        observe_wall_time_s: list = []
+        oracle_wall_time_s: list = []
 
         n_cycles_completed = 0
         terminated_early   = False
 
         for i in range(n_iterations):
+            _t0 = time.perf_counter()
             protocol, score, all_scores = self.select_next(
                 current_state,
                 candidate_protocols,
                 uncertainty_vector=current_uncertainty,
             )
+            select_next_wall_time_s.append(time.perf_counter() - _t0)
 
+            _t_oracle0 = time.perf_counter()
             try:
                 next_state = np.asarray(oracle_fn(protocol), dtype=float)
                 succeeded = True
-            except OracleFailure as exc:
+            except _base.ORACLE_FAILURES as exc:
                 log.warning(
                     "[BayesianDynamicsPolicy] oracle failure at iter %d — %s; "
                     "ending loop.",
@@ -640,12 +675,15 @@ class BayesianDynamicsPolicy(BasePolicy):
                 )
                 next_state = np.full_like(current_state, np.nan)
                 succeeded = False
+            oracle_wall_time_s.append(time.perf_counter() - _t_oracle0)
 
             # Always record — killing protocol is diagnostic data.
             selected_protocols.append(protocol)
             observed_states.append(next_state)
             scores_history.append(all_scores)
-            degradation_history.append(self.degradation_fn(next_state))
+            degradation_history.append(
+                self.degradation_fn(np.abs(next_state - current_state))
+            )
 
             if not succeeded:
                 terminated_early = True
@@ -658,9 +696,11 @@ class BayesianDynamicsPolicy(BasePolicy):
             )
 
             # observe() only on success — NaN state would corrupt dynamics model.
+            _t_observe0 = time.perf_counter()
             self.observe(
                 current_state, protocol, uncertainty_vector=current_uncertainty
             )
+            observe_wall_time_s.append(time.perf_counter() - _t_observe0)
 
             log.info(
                 f"[BayesianDynamicsPolicy] iter {i + 1}/{n_iterations}: "
@@ -668,15 +708,31 @@ class BayesianDynamicsPolicy(BasePolicy):
             )
 
             if on_step is not None:
-                on_step(
-                    iteration=i,
-                    protocol=protocol,
-                    state=current_state,
-                    next_state=next_state,
-                    degradation=degradation_history[-1],
-                    score=float(score),
-                    uncertainty_vector=current_uncertainty,
-                )
+                step_kw: dict = {
+                    "iteration":         i,
+                    "protocol":          protocol,
+                    "state":             current_state,
+                    "next_state":        next_state,
+                    "y_true":            next_state,
+                    "degradation":       degradation_history[-1],
+                    "score":             float(score),
+                    "uncertainty_vector": current_uncertainty,
+                }
+                if self.model is not None:
+                    try:
+                        x_sc = self._build_input(current_state, protocol)
+                        pred_mean_sc, pred_std_sc = self._predict(x_sc)
+                        step_kw["y_pred_mean"] = self._unscale_state(pred_mean_sc[0])
+                        if pred_std_sc is not None:
+                            step_kw["y_pred_std"] = pred_std_sc[0]
+                            step_kw["uncertainty"] = float(
+                                np.mean(np.abs(pred_std_sc[0]))
+                            )
+                        step_kw["model"] = self.model
+                        step_kw["input_features"] = x_sc
+                    except Exception:
+                        pass
+                on_step(**step_kw)
 
             current_state = next_state
             current_uncertainty = next_uncertainty
@@ -690,4 +746,7 @@ class BayesianDynamicsPolicy(BasePolicy):
             "policy":             self,
             "n_cycles_completed": n_cycles_completed,
             "terminated_early":   terminated_early,
+            "select_next_wall_time_s": select_next_wall_time_s,
+            "observe_wall_time_s":     observe_wall_time_s,
+            "oracle_wall_time_s":      oracle_wall_time_s,
         }
