@@ -752,7 +752,6 @@ def run(
     from traits_audit.stability import dmdc as dm
 
     from results.viz import (
-        check_grid_figures,
         plot_audit_evolution,
         plot_convergence,
         plot_discovery_rate,
@@ -761,6 +760,7 @@ def run(
         plot_pareto_frontier,
         plot_uncertainty_evolution,
         run_dmdc_lyapunov_analysis,
+        save_check_grid_figures,
     )
 
     # Build augmented state trajectory and compute per-step lambda_max via
@@ -931,7 +931,6 @@ def run(
     # Check-grid heatmap: rows = audit checks, cols = snapshot steps.
     # Columns come from hook.intermediate_reports (fired every check_every steps)
     # plus a "final" column from the end-of-run report.
-    fig_grid = None
     if hook.intermediate_reports:
         stage_reports = [
             (f"step {(i + 1) * check_every}", r)
@@ -943,35 +942,10 @@ def run(
         # merged in only after hook.on_end() via _make_ensemble_pipeline())
         # so the latter don't pad the main grid with empty columns for their
         # entire history.
-        fig_grid, fig_grid_final = check_grid_figures(stage_reports, _model_label)
-        if fig_grid is not None:
-            _grid_png = fig_dir / "fig10_check_grid.png"
-            try:
-                fig_grid.write_image(
-                    str(_grid_png),
-                    width=fig_grid.layout.width,
-                    height=fig_grid.layout.height,
-                    scale=2,
-                )
-                print("  Saved fig10_check_grid.png")
-            except Exception:
-                _grid_html = fig_dir / "fig10_check_grid.html"
-                fig_grid.write_html(str(_grid_html))
-                print("  Saved fig10_check_grid.html (install kaleido for PNG export)")
-        if fig_grid_final is not None:
-            _grid_final_png = fig_dir / "fig10b_check_grid_final_only.png"
-            try:
-                fig_grid_final.write_image(
-                    str(_grid_final_png),
-                    width=fig_grid_final.layout.width,
-                    height=fig_grid_final.layout.height,
-                    scale=2,
-                )
-                print("  Saved fig10b_check_grid_final_only.png")
-            except Exception:
-                _grid_final_html = fig_dir / "fig10b_check_grid_final_only.html"
-                fig_grid_final.write_html(str(_grid_final_html))
-                print("  Saved fig10b_check_grid_final_only.html (install kaleido for PNG export)")
+        save_check_grid_figures(
+            stage_reports, _model_label, fig_dir,
+            "fig10_check_grid.png", "fig10b_check_grid_final_only.png",
+        )
 
         # Pairwise Spearman correlations between check values across
         # snapshots (same figure as ta-cal-demo's metric_correlations_*.png).
@@ -1053,8 +1027,6 @@ def run(
             "lyapunov/n_stable":        int((lm < 1.0).sum()),
         })
         _mlflow.log_artifact(str(fig_dir / "lyapunov_stability.csv"), "lyapunov")
-        if fig_grid is not None:
-            _mlflow.log_figure(fig_grid, "audit/check_grid.html")
         _mlflow.log_artifacts(str(fig_dir), "figures")
         _run_ctx.__exit__(None, None, None)
 

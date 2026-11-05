@@ -2,7 +2,8 @@
 
 All public ``plot_*`` functions write publication-ready PNG figures to disk
 at 300 dpi.  Private helpers (prefixed ``_``) produce Plotly
-or matplotlib objects returned to callers (MLflow, demo scripts).
+or matplotlib objects returned to callers (MLflow, demo scripts).  Every
+figure saved as a PNG file is matplotlib, which renders without a browser.
 
 A single ``_RCPARAMS`` block is applied at import time so every figure
 produced by this module inherits the same typography and line weights.
@@ -19,7 +20,6 @@ from traits_audit import plotting as _ta_plot
 from traits_audit.plotting import (
     CHECK_ABBREVIATIONS,
     filter_stage_reports,
-    result_status,
     split_trackable_checks,
 )
 from traits_audit.stability.lyapunov_eq import (
@@ -615,237 +615,64 @@ def plot_convergence(
     _save(fig, out_dir, fig_title)
 
 
-# ── Plotly interactive figures ──────────────────────────────────────────────
-
-def _fig_check_grid(
-    stage_reports: list[tuple[str, Any]],
-    run_name: str,
-) -> Any:
-    """Plotly heatmap: rows = audit checks, cols = pipeline stages.
-
-    Cell intensity encodes how far the metric sits from the pass/fail
-    threshold: dark green = deeply passing, white = at threshold, dark red =
-    deeply failing. Two further states are distinct from both: a check with
-    no configured threshold ("report-only", e.g. ``CRPSCheck()`` by default)
-    and a check that was skipped for lack of data. Neither is a verdict, so
-    neither gets a colorscale colour — both render as an empty (NaN) cell
-    over the grey background, ringed by a hollow marker from the overlay
-    traces below, so they cannot be mistaken for "deeply passing" green.
-    """
-    try:
-        import plotly.graph_objects as go
-    except ModuleNotFoundError:
-        return None
-
-    # Union of check names across every stage report, ordered by first
-    # appearance. Using stage 0's names alone (the previous approach) silently
-    # dropped any check that is absent from the first stage report entirely
-    # -- e.g. a demo that merges a second, ensemble-only AuditPipeline's
-    # results into the *final* report only (CAMD's EnsembleIndependenceDeficit
-    # etc.): those checks never appear in hook.intermediate_reports at all,
-    # so stage 0 doesn't know about them, and they vanished from the grid
-    # without so much as a "skipped" marker.
-    check_names: list = []
-    for _, rep in stage_reports:
-        for r in rep.results:
-            if r.name not in check_names:
-                check_names.append(r.name)
-    abbrevs = [CHECK_ABBREVIATIONS.get(n, n) for n in check_names]
-    stage_labels = [label for label, _ in stage_reports]
-
-    # Build [stage][check] intermediate arrays then transpose to [check][stage].
-    #
-    # report-only/skipped cells get NO on-heatmap text (Heatmap.textfont.color
-    # is a single scalar in this plotly version, not a per-cell array, so
-    # there is no way to grey just those cells' numbers in the heatmap trace
-    # itself). Their value is instead drawn by the overlay scatter traces
-    # below, which do support their own per-trace text colour.
-    z_by_stage, text_by_stage, hover_by_stage, status_by_stage, celltext_by_stage = [], [], [], [], []
-    for label, rep in stage_reports:
-        results_by_name = {r.name: r for r in rep.results}
-        z_row, text_row, hover_row, status_row, celltext_row = [], [], [], [], []
-        for name in check_names:
-            result = results_by_name.get(name)
-            if result is None:
-                # Not evaluated at this stage at all (as opposed to evaluated
-                # and explicitly Skipped) -- from the viewer's perspective
-                # there is equally no data here, so render it identically.
-                z_row.append(np.nan)
-                status_row.append("skipped")
-                celltext_row.append("—")
-                text_row.append("")
-                hover_row.append(
-                    f"<b>{name}</b><br>Stage: {label}<br>"
-                    "— SKIPPED — not evaluated at this stage<br>"
-                    "<i>This check is only computed at a later stage "
-                    "(e.g. it needs data only available once the run ends).</i>"
-                )
-                continue
-            intensity, status = result_status(result)
-            report_or_skip = status in ("report_only", "skipped")
-            z_row.append(np.nan if report_or_skip else intensity)
-            status_row.append(status)
-            if result.value is None:
-                cell = "—"
-            else:
-                v = result.value
-                for fmt in (".3f", ".2f", ".1f", ".0f"):
-                    s = format(v, fmt)
-                    if len(s) <= 5:
-                        cell = s
-                        break
-                else:
-                    raw = f"{v:.0e}"
-                    mantissa, exp_part = raw.split("e")
-                    exp_sign = exp_part[0]
-                    exp_digits = exp_part[1:].lstrip("0") or "0"
-                    cell = f"{mantissa}e{exp_digits}" if exp_sign == "+" else f"{mantissa}e-{exp_digits}"
-            celltext_row.append(cell)
-            text_row.append("" if report_or_skip else cell)
-            t = result.threshold
-            if t is None:
-                thresh = "—"
-            elif isinstance(t, tuple):
-                thresh = f"[{t[0]:.3f}, {t[1]:.3f}]"
-            else:
-                thresh = f"{t:.3f}"
-            status_label = {
-                "pass": "✓ PASS", "fail": "✗ FAIL",
-                "report_only": "◦ REPORT ONLY — no threshold configured",
-                "skipped": "— SKIPPED — data unavailable",
-            }[status]
-            hover_row.append(
-                f"<b>{result.name}</b><br>"
-                f"Stage: {label}<br>"
-                f"Value: {celltext_row[-1]}<br>"
-                f"Threshold: {thresh}<br>"
-                f"{status_label}<br>"
-                f"<i>{result.message}</i>"
-            )
-        z_by_stage.append(z_row)
-        text_by_stage.append(text_row)
-        hover_by_stage.append(hover_row)
-        status_by_stage.append(status_row)
-        celltext_by_stage.append(celltext_row)
-
-    # Transpose so rows = checks, cols = stages.
-    n_checks = len(check_names)
-    n_stages = len(stage_labels)
-    z        = [[z_by_stage[s][c]        for s in range(n_stages)] for c in range(n_checks)]
-    text     = [[text_by_stage[s][c]     for s in range(n_stages)] for c in range(n_checks)]
-    hover    = [[hover_by_stage[s][c]    for s in range(n_stages)] for c in range(n_checks)]
-    status   = [[status_by_stage[s][c]   for s in range(n_stages)] for c in range(n_checks)]
-    celltext = [[celltext_by_stage[s][c] for s in range(n_stages)] for c in range(n_checks)]
-
-    fig = go.Figure(go.Heatmap(
-        z=z,
-        x=stage_labels,
-        y=abbrevs,
-        text=text,
-        customdata=hover,
-        texttemplate="<b>%{text}</b>",
-        textfont={"size": 11},
-        colorscale=[
-            [0.00, "#7b0000"],
-            [0.25, "#c0392b"],
-            [0.45, "#f0a09a"],
-            [0.50, "#f5f5f5"],
-            [0.55, "#9fd49f"],
-            [0.75, "#27ae60"],
-            [1.00, "#1a5e35"],
-        ],
-        zmin=0, zmax=1,
-        showscale=False,
-        hovertemplate="%{customdata}<extra></extra>",
-        xgap=2,
-        ygap=2,
-    ))
-
-    # Hollow-marker overlays for the two non-verdict states: a scatter trace
-    # keyed to the same categorical (stage, check) coordinates as the
-    # heatmap, so it lines up exactly without any pixel-coordinate
-    # arithmetic. Each also gets its own legend entry, which the bare
-    # heatmap otherwise has none of (showscale=False). The cell's numeric
-    # value is drawn here too (mode="markers+text"), in this trace's own
-    # muted colour, since the heatmap's own text was left blank for these
-    # cells above.
-    for state, symbol, color, legend_name in (
-        ("report_only", "square-open", "#7a7a7a", "Report-only (no threshold)"),
-        ("skipped", "circle-open", "#8888c0", "Skipped (no data)"),
-    ):
-        xs, ys, vals = [], [], []
-        for ci in range(n_checks):
-            for si in range(n_stages):
-                if status[ci][si] == state:
-                    xs.append(stage_labels[si])
-                    ys.append(abbrevs[ci])
-                    vals.append(celltext[ci][si])
-        if xs:
-            fig.add_trace(go.Scatter(
-                x=xs, y=ys, mode="markers+text",
-                marker={"symbol": symbol, "size": 32, "color": color, "line": {"width": 2, "color": color}},
-                text=vals,
-                textfont={"size": 11, "color": color},
-                name=legend_name,
-                showlegend=True,
-                hoverinfo="skip",
-            ))
-
-    fig.update_layout(
-        title={
-            "text": "",
-            "font": {"size": 15},
-        },
-        xaxis={"title": "", "side": "top", "tickfont": {"size": 13}},
-        yaxis={"title": "Audit check", "tickfont": {"size": 13}, "autorange": "reversed"},
-        height=max(260, n_checks * 44 + 100),
-        width=max(600, n_stages * 40 + 200),
-        margin={"l": 150, "r": 20, "t": 90, "b": 20},
-        plot_bgcolor="#dcdcdc",
-        legend={"orientation": "h", "yanchor": "bottom", "y": 1.0, "xanchor": "left", "x": 0},
-    )
-    return fig
-
+# ── Check grid ──────────────────────────────────────────────────────────────
 
 def check_grid_figures(
     stage_reports: list[tuple[str, Any]],
     run_name: str,
 ) -> tuple[Any, Any]:
-    """Build the check-grid figure(s) for a run, splitting step-trackable
-    checks from final-report-only ones (see
-    :func:`_split_stage_reports_by_trackability`) so neither drowns the
-    other: a pipeline with e.g. 12 step-trackable and 18 final-only checks
-    would otherwise render one 30-row grid where 18 rows are empty hollow
-    circles across every intermediate column but the last, which is both
-    hard to read and easy to mistake for something being broken rather than
-    working as designed.
+    """Check-grid figures for a run: step-trackable checks, and final-report-only ones.
+
+    Checks that only produce a value in the final report (a held-out test set,
+    ensembles, a refit sweep) get their own single-column grid, so they do not
+    fill the main grid with rows that are empty at every step but the last.
+    Both grids are drawn by :func:`traits_audit.plotting.plot_check_grid`.
 
     Returns
     -------
     (fig_trackable, fig_final_only)
-        ``fig_trackable`` covers every stage exactly as ``_fig_check_grid``
-        always has. ``fig_final_only`` is a single-column grid (``None`` if
-        every check turned out to be step-trackable) — same visual language
-        (colour, hollow markers for report-only checks among the final-only
-        set), just one column wide since there is only ever one stage's
-        worth of data for these checks.
+        matplotlib Figures.  Either is ``None`` when it would have no checks.
     """
     trackable_names, final_only_names = split_trackable_checks(stage_reports)
-    fig_trackable = _fig_check_grid(filter_stage_reports(stage_reports, trackable_names), run_name)
+    fig_trackable = None
+    if trackable_names:
+        fig_trackable = _ta_plot.plot_check_grid(
+            filter_stage_reports(stage_reports, trackable_names), title=run_name,
+        )
     fig_final_only = None
     if final_only_names:
-        final_stage = [stage_reports[-1]]
-        fig_final_only = _fig_check_grid(
-            filter_stage_reports(final_stage, final_only_names),
-            f"{run_name} — final-report-only checks",
+        fig_final_only = _ta_plot.plot_check_grid(
+            filter_stage_reports([stage_reports[-1]], final_only_names),
+            title=f"{run_name} — final-report-only checks",
         )
-        if fig_final_only is not None:
-            # The single-column grid's default width formula is sized for
-            # the check names alone; widen it enough for the title text too.
-            title_width = 14 * len(fig_final_only.layout.title.text) + 40
-            fig_final_only.update_layout(width=max(fig_final_only.layout.width, title_width))
     return fig_trackable, fig_final_only
 
+
+def save_check_grid_figures(
+    stage_reports: list[tuple[str, Any]],
+    run_name: str,
+    out_dir: Path,
+    filename: str,
+    final_only_filename: str,
+) -> list[Path]:
+    """Save :func:`check_grid_figures` as 300-dpi PNGs in ``out_dir``.
+
+    Returns the paths written; a grid with no checks is not written.
+    """
+    figures = check_grid_figures(stage_reports, run_name)
+    paths = []
+    for name, fig in zip((filename, final_only_filename), figures, strict=True):
+        if fig is None:
+            continue
+        path = Path(out_dir) / name
+        fig.savefig(path, dpi=300, bbox_inches="tight")
+        plt.close(fig)
+        print(f"  Saved {name}")
+        paths.append(path)
+    return paths
+
+
+# ── Plotly interactive figures ──────────────────────────────────────────────
 
 def _fig_state_heatmap(
     history: list[dict],
@@ -1183,7 +1010,7 @@ def _fig_metric_correlations(
     ax.set_xticks(range(n_checks))
     ax.set_yticks(range(n_checks))
 
-    # Abbreviate check names for display. Same fallback as _fig_check_grid
+    # Abbreviate check names for display. Same fallback as plot_check_grid
     # (the bare name) rather than a hard truncation — CHECK_ABBREVIATIONS now
     # covers every shipped check, so this only matters for a future
     # third-party check with no registered abbreviation.

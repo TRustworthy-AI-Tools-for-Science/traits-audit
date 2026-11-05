@@ -128,8 +128,8 @@ from results.viz import (
     _fig_metric_correlations,
     _fig_pareto_scenarios,
     _fig_state_heatmap,
-    check_grid_figures,
     plot_convergence,
+    save_check_grid_figures,
 )
 
 # ── Oracle: Forrester (2008), heteroscedastic, shared by all four scenarios ──
@@ -847,34 +847,15 @@ def _run_scenario(
         ]
         stage_reports.append(("final", report))
 
-        fig_grid, fig_grid_final = check_grid_figures(stage_reports, config.name)
-
         fig_dir = _ensure_cal_demo_dir()
         stem = {"perfectly_calibrated": "perfect", "overconfident": "over",
                 "underconfident": "under", "misspecified": "misspec"}[config.name]
-        if fig_grid is not None:
-            mlflow.log_figure(fig_grid, "audit/check_grid.html")
-            try:
-                fig_grid.write_image(
-                    str(fig_dir / f"check_grid_{stem}.png"),
-                    width=fig_grid.layout.width, height=fig_grid.layout.height, scale=2,
-                )
-            except Exception:
-                pass
-        if fig_grid_final is not None:
-            # Checks that only ever produce a value in the final report
-            # (held-out test set, ensembles, replication arm, refit sweeps --
-            # none of which are re-run at every intermediate check_every
-            # snapshot) get their own compact, single-column grid instead of
-            # padding the main one with mostly-empty columns.
-            mlflow.log_figure(fig_grid_final, "audit/check_grid_final_only.html")
-            try:
-                fig_grid_final.write_image(
-                    str(fig_dir / f"check_grid_{stem}_final_only.png"),
-                    width=fig_grid_final.layout.width, height=fig_grid_final.layout.height, scale=2,
-                )
-            except Exception:
-                pass
+        grid_paths = save_check_grid_figures(
+            stage_reports, config.name, fig_dir,
+            f"check_grid_{stem}.png", f"check_grid_{stem}_final_only.png",
+        )
+        for path in grid_paths:
+            mlflow.log_artifact(str(path), "audit")
 
         fig_hmap = _fig_state_heatmap(hook.history, config.name)
         if fig_hmap is not None:

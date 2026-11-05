@@ -300,5 +300,6 @@ def test_mo_correlation_matrix_is_well_formed():
     # is pre-existing behaviour, not multi-objective specific: the
     # single-objective arm has the same at this episode length.
     diag = np.diag(M)
-    assert np.all((np.abs(diag - 1.0) < 1e-9) | (diag == 0.0))
-    assert (diag == 1.0).sum() >= 13
+    is_one = np.abs(diag - 1.0) < 1e-9          # exact 1.0 depends on float rounding
+    assert np.all(is_one | (diag == 0.0))
+    assert is_one.sum() >= 13

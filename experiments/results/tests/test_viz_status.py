@@ -1,63 +1,51 @@
 """
-Tests for the paper's Plotly check grid in results.viz.
+Tests for the paper's check-grid figures in results.viz.
 
-The status logic it draws from (traits_audit.plotting.result_status) is
-tested in the library; this checks the Plotly rendering of the report-only
-and skipped states.
+The grid itself is traits_audit.plotting.plot_check_grid, tested in the
+library; this checks how results.viz splits and saves it.
 """
-import numpy as np
-import pytest
-from results.viz import _fig_check_grid
-from traits_audit.base import AuditCategory, AuditResult
+import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
+from results.viz import check_grid_figures, save_check_grid_figures
+from traits_audit.base import AuditCategory, AuditReport, AuditResult
 
 
-def _result(**kwargs):
-    defaults = {"name": "X", "passed": True, "category": AuditCategory.UNKNOWN}
-    defaults.update(kwargs)
-    return AuditResult(**defaults)
+def _result(name, value, threshold=None, message=""):
+    return AuditResult(name=name, passed=True, category=AuditCategory.UNKNOWN,
+                       value=value, threshold=threshold, message=message)
 
 
-# ── _fig_check_grid renders the new states distinctly ───────────────────────
+def _stage_reports():
+    """CalibrationError reports at every stage; ENCE only in the final report."""
+    skipped_ence = _result("ENCE", None, message="Skipped — needs the held-out set.")
+    stages = [
+        (f"step {k}", AuditReport(results=[_result("CalibrationError", 0.1 / k, 0.15), skipped_ence]))
+        for k in (1, 2)
+    ]
+    stages.append(("final", AuditReport(results=[_result("CalibrationError", 0.02, 0.15),
+                                                 _result("ENCE", 0.3, 0.5)])))
+    return stages
 
-def test_fig_check_grid_distinguishes_report_only_from_pass():
-    pytest.importorskip("plotly")
-    pass_result = _result(name="CalibrationError", value=0.01, threshold=0.15, passed=True)
-    report_only_result = _result(name="CRPS", value=13.47, threshold=None, passed=True)
-    skipped_result = _result(
-        name="PITUniformity", value=None, threshold=None, passed=True,
-        message="Skipped — y_true not available.",
-    )
 
-    class _FakeReport:
-        def __init__(self, results):
-            self.results = results
+def test_final_only_checks_get_their_own_grid():
+    fig_trackable, fig_final_only = check_grid_figures(_stage_reports(), "run")
+    assert isinstance(fig_trackable, Figure) and isinstance(fig_final_only, Figure)
+    trackable_rows = [t.get_text() for t in fig_trackable.axes[0].get_yticklabels()]
+    final_rows = [t.get_text() for t in fig_final_only.axes[0].get_yticklabels()]
+    assert trackable_rows == ["CE"] and final_rows == ["ENCE"]
+    plt.close("all")
 
-    stage_reports = [("final", _FakeReport([pass_result, report_only_result, skipped_result]))]
-    fig = _fig_check_grid(stage_reports, "test_run")
-    assert fig is not None
 
-    heatmap = fig.data[0]
-    z = np.array(heatmap.z, dtype=float)
-    # row order matches result order: pass, report_only, skipped
-    assert np.isfinite(z[0]).all()
-    assert np.isnan(z[1]).all()
-    assert np.isnan(z[2]).all()
-    # The heatmap's own on-cell text is blanked for non-verdict rows (their
-    # value is drawn by the overlay traces instead, checked below).
-    text = np.array(heatmap.text)
-    assert text[0][0] != ""
-    assert text[1][0] == ""
-    assert text[2][0] == ""
+def test_no_final_only_grid_when_every_check_is_trackable():
+    stages = [(label, AuditReport(results=[r for r in rep.results if r.name == "CalibrationError"]))
+              for label, rep in _stage_reports()]
+    fig_trackable, fig_final_only = check_grid_figures(stages, "run")
+    assert isinstance(fig_trackable, Figure) and fig_final_only is None
+    plt.close("all")
 
-    # Two overlay scatter traces (report_only, skipped) should be present,
-    # each with one point carrying the cell's numeric value, plus a legend
-    # entry each.
-    scatter_traces = [t for t in fig.data if t.type == "scatter"]
-    assert len(scatter_traces) == 2
-    names = {t.name for t in scatter_traces}
-    assert "Report-only (no threshold)" in names
-    assert "Skipped (no data)" in names
-    for t in scatter_traces:
-        assert t.mode == "markers+text"
-        if t.name == "Report-only (no threshold)":
-            assert t.text == ("13.47",)
+
+def test_save_writes_png_files(tmp_path):
+    paths = save_check_grid_figures(_stage_reports(), "run", tmp_path, "grid.png", "grid_final.png")
+    assert [p.name for p in paths] == ["grid.png", "grid_final.png"]
+    for path in paths:
+        assert path.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"

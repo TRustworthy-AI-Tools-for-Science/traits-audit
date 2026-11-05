@@ -447,7 +447,6 @@ def run(
     from traits_audit.stability.lyapunov_eq import make_gd_predictor
 
     from results.viz import (
-        check_grid_figures,
         plot_audit_evolution,
         plot_cie_trajectory,
         plot_convergence,
@@ -455,6 +454,7 @@ def run(
         plot_uncertainty_evolution,
         run_dmdc_lyapunov_analysis,
         run_lyapunov_analysis,
+        save_check_grid_figures,
     )
 
     op_states = np.array(queried_points)
@@ -568,21 +568,10 @@ def run(
         for i, r in enumerate(hook.intermediate_reports)
     ]
     stage_reports.append(("final", report))
-    fig_grid, fig_grid_final = check_grid_figures(stage_reports, "BoTorch-GP (SDL)")
-
-    for fname, fig in [
-        ("check_grid_sdl.png", fig_grid),
-        ("check_grid_sdl_final_only.png", fig_grid_final),
-    ]:
-        if fig is not None:
-            try:
-                fig.write_image(
-                    str(fig_dir / fname),
-                    width=fig.layout.width, height=fig.layout.height, scale=2,
-                )
-                print(f"  Saved {fname}")
-            except Exception:
-                pass
+    save_check_grid_figures(
+        stage_reports, "BoTorch-GP (SDL)", fig_dir,
+        "check_grid_sdl.png", "check_grid_sdl_final_only.png",
+    )
 
     # Pairwise Spearman correlations between check values across snapshots
     # (same figure as ta-cal-demo's metric_correlations_*.png).
