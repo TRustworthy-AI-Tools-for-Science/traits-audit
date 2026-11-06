@@ -9,8 +9,10 @@ one starting condition:
 * the starting condition decides the surrogate: a GP whose reported sigma is
   scaled (calibrated x1, overconfident x0.3, underconfident x2.5) or a
   bootstrap polynomial ensemble (misspecified);
-* every step, ten traits-audit checks are scored on a fixed reference grid and
-  z-scored against the warm start, giving the uncertainty state vector;
+* every step, thirteen traits-audit checks are scored on a fixed reference
+  grid and z-scored against the warm start, giving the uncertainty state
+  vector: ten that use only (y, mu, sigma), and three system metrics (DFR,
+  MRF, IWF) that need refits of the surrogate or a downstream decision;
 * the policy sees only the *steering* metrics; the *audit-only* metrics are
   recorded to detect Goodharting.
 
@@ -42,7 +44,6 @@ from results.policies import (
     LCBPolicy,
     StateSpacePolicy,
 )
-
 from traits_audit import checks as C
 
 PROBLEMS = ["forrester", "branin-currin-mo", "color"]
@@ -66,6 +67,10 @@ METRICS = {
     "PITUniformity": C.PITUniformityCheck,
     "VarianceAlignment": C.VarianceAlignmentCheck,
 }
+# System metrics need more than (y, mu, sigma): refits of the surrogate (MRF, IWF)
+# or a downstream decision (DFR).  They are computed by score_system_metrics.
+SYSTEM_METRICS = ["DecisionFlipRate", "MisspecificationResidualFloor", "ImprecisionWidthFraction"]
+ALL_METRICS = list(METRICS) + SYSTEM_METRICS
 DEFAULT_STEERING = ["CalibrationError", "NLL", "VarianceErrorCorrelation", "SignedBias"]
 
 
@@ -117,15 +122,95 @@ def score_metrics(Y_ref, MU_ref, SD_ref):
     return totals, categories
 
 
+def predicted_minimiser(prediction):
+    """The decision DFR resamples: which reference point the surrogate says is lowest."""
+    return int(np.argmin(prediction))
+
+
+def fit_one_model(problem, condition, X, y, n_members, seed, kernel):
+    """Refit a single-objective surrogate of the condition's kind; return its predict function.
+
+    GP refits reuse ``kernel``, the main surrogate's fitted kernel, without
+    re-optimising it: the refits then measure how the prediction varies with
+    the data, not with re-tuning the hyperparameters.
+    """
+    if condition == "misspecified":
+        model = PolynomialEnsemble(problem.dim, problem.degree, n_members, seed)
+        model.fit(X, y, refit_number=0)
+    else:
+        model = ScaledGP(SIGMA_SCALE[condition], seed, fixed_kernel=kernel)
+        model.fit(X, y)
+    return model.predict
+
+
+def score_system_metrics_one_objective(problem, condition, X, y, grid, y_ref, mu_ref, sd_ref, kernel,
+                                       args, seed):
+    rng = np.random.default_rng(seed)
+
+    def fit_fn(X_fit, y_fit, seed=0):
+        return fit_one_model(problem, condition, X_fit, y_fit, args.members, seed, kernel)
+
+    ensemble_means = []
+    ensemble_stds = []
+    for _ in range(args.ensemble_size):
+        rows = rng.integers(0, len(y), size=len(y))
+        predict = fit_fn(X[rows], y[rows], seed=int(rng.integers(2**31 - 1)))
+        mu, sd = predict(grid)
+        ensemble_means.append(mu)
+        ensemble_stds.append(sd)
+
+    check_seed = int(rng.integers(2**31 - 1))
+    results = {}
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        results["DecisionFlipRate"] = C.DecisionFlipRateCheck(n_resamples=100, seed=check_seed).run(
+            [], decision_fn=predicted_minimiser, y_pred_mean=mu_ref, y_pred_std=sd_ref)
+        results["MisspecificationResidualFloor"] = C.MisspecificationResidualFloorCheck(
+            subset_fracs=(0.25, 0.5, 0.75, 1.0), reps=args.mrf_reps, seed=check_seed,
+            n_bootstrap=0).run(
+            [], fit_fn=fit_fn, X_train=X, y_train=y, X_eval=grid, y_eval=y_ref)
+        results["ImprecisionWidthFraction"] = C.ImprecisionWidthFractionCheck().run(
+            [], y_pred_ensemble=np.array(ensemble_means), y_pred_std_ensemble=np.array(ensemble_stds),
+            y_pred_mean=mu_ref, y_pred_std=sd_ref)
+
+    values = {}
+    categories = {}
+    for name, result in results.items():
+        value = badness(name, result)
+        if not np.isfinite(value):
+            value = 0.0
+        values[name] = float(value)
+        categories[name] = result.category.value
+    return values, categories
+
+
+def score_system_metrics(problem, condition, X, Y, grid, Y_ref, MU_ref, SD_ref, kernels, args, seed):
+    """Badness of every system metric, averaged over objectives (higher is worse).
+
+    ``kernels``: the main surrogate's fitted kernel for each objective (None for
+    the polynomial surrogate).
+    """
+    n_objectives = Y_ref.shape[1]
+    totals = dict.fromkeys(SYSTEM_METRICS, 0.0)
+    categories = {}
+    for j in range(n_objectives):
+        values, categories = score_system_metrics_one_objective(
+            problem, condition, X, Y[:, j], grid, Y_ref[:, j], MU_ref[:, j], SD_ref[:, j],
+            kernels[j], args, seed=[*seed, j])
+        for name in SYSTEM_METRICS:
+            totals[name] += values[name] / n_objectives
+    return totals, categories
+
+
 def choose_steering(split, split_index, explicit_list):
     if explicit_list:
         return list(explicit_list)
     if split == "default":
         return list(DEFAULT_STEERING)
     if split == "all":
-        return list(METRICS)
+        return list(ALL_METRICS)
     if split == "random":
-        names = sorted(METRICS)
+        names = sorted(ALL_METRICS)
         order = np.random.default_rng([split_index, 99]).permutation(len(names))
         half = len(names) // 2
         return [names[i] for i in sorted(order[:half])]
@@ -143,14 +228,14 @@ class WarmStartBaseline:
         self.z_clip = z_clip
         self.mean = {}
         self.std = {}
-        for name in METRICS:
+        for name in ALL_METRICS:
             values = np.array([snapshot[name] for snapshot in warm_snapshots])
             self.mean[name] = float(values.mean())
             self.std[name] = max(float(values.std()), z_floor * abs(float(values.mean())) + 1e-9)
 
     def z_scores(self, snapshot):
         scores = {}
-        for name in METRICS:
+        for name in ALL_METRICS:
             z = (snapshot[name] - self.mean[name]) / self.std[name]
             if self.z_clip is not None:
                 z = min(max(z, -self.z_clip), self.z_clip)
@@ -161,17 +246,26 @@ class WarmStartBaseline:
 # ── Surrogates for the four starting conditions ───────────────────────────────
 
 class ScaledGP:
-    """GP with the cal_demo kernel; the reported sigma is multiplied by ``sigma_scale``."""
+    """GP with the cal_demo kernel; the reported sigma is multiplied by ``sigma_scale``.
 
-    def __init__(self, sigma_scale, seed):
+    With ``fixed_kernel`` the kernel hyperparameters are not optimised: the GP
+    uses that (already fitted) kernel as it is.
+    """
+
+    def __init__(self, sigma_scale, seed, fixed_kernel=None):
         self.sigma_scale = sigma_scale
         self.seed = seed
+        self.fixed_kernel = fixed_kernel
         self.gp = None
 
     def fit(self, x, y):
         from sklearn.gaussian_process import GaussianProcessRegressor
-        self.gp = GaussianProcessRegressor(kernel=_make_gp_kernel(), n_restarts_optimizer=1,
-                                           normalize_y=True, random_state=self.seed)
+        if self.fixed_kernel is None:
+            self.gp = GaussianProcessRegressor(kernel=_make_gp_kernel(), n_restarts_optimizer=1,
+                                               normalize_y=True, random_state=self.seed)
+        else:
+            self.gp = GaussianProcessRegressor(kernel=self.fixed_kernel, optimizer=None,
+                                               normalize_y=True, random_state=self.seed)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             self.gp.fit(x, y)
@@ -218,6 +312,12 @@ class Surrogate:
                 model.fit(X, Y[:, j], refit_number)
             else:
                 model.fit(X, Y[:, j])
+
+    def fitted_kernels(self):
+        """Each objective's fitted GP kernel, or None for the polynomial surrogate."""
+        if self.condition == "misspecified":
+            return [None] * len(self.models)
+        return [model.gp.kernel_ for model in self.models]
 
     def predict(self, X):
         means = []
@@ -318,7 +418,7 @@ class Campaign:
         self.seed = seed
         self.args = args
         if policy_name == "audit-state-space-all":
-            self.policy_sees = list(METRICS)
+            self.policy_sees = list(ALL_METRICS)
         else:
             self.policy_sees = steering
         self.grid = problem.grid
@@ -359,6 +459,11 @@ class Campaign:
         self.surrogate.fit(X, Y, refit_number=n_points)
         MU_ref, SD_ref = self.surrogate.predict(self.grid)
         snapshot, categories = score_metrics(self.Y_ref, MU_ref, SD_ref)
+        system_snapshot, system_categories = score_system_metrics(
+            self.problem, self.surrogate.condition, X, Y, self.grid, self.Y_ref, MU_ref, SD_ref,
+            self.surrogate.fitted_kernels(), self.args, seed=[self.seed, 6, n_points])
+        snapshot.update(system_snapshot)
+        categories.update(system_categories)
         best_so_far = min(self.scalarise(y) for y in Y)
         mean_sigma = float(np.mean(SD_ref / self.y_std))
         state = np.array([best_so_far, mean_sigma])
@@ -386,7 +491,7 @@ class Campaign:
         for i in range(self.problem.dim):
             row[f"x{i}"] = float(last_x[i])
         row["score"] = campaign_score(self.problem, self.clean_observed[:n_points])
-        for name in METRICS:
+        for name in ALL_METRICS:
             row[f"raw:{name}"] = snapshot[name]
             row[f"z:{name}"] = z[name]
         return row
@@ -446,14 +551,18 @@ def parse_args(argv):
     p.add_argument("--policies", nargs="+", default=POLICIES, choices=POLICIES)
     p.add_argument("--split", default="default", choices=["default", "random", "all"])
     p.add_argument("--split-index", type=int, default=0, help="which random split (--split random)")
-    p.add_argument("--steering", nargs="+", choices=list(METRICS),
+    p.add_argument("--steering", nargs="+", choices=ALL_METRICS,
                    help="explicit steering metrics; overrides --split")
     p.add_argument("--seeds", type=int, default=10, help="number of seeds")
     p.add_argument("--seed-start", type=int, default=0, help="first seed (for SLURM array tasks)")
     p.add_argument("--steps", type=int, default=100, help="total oracle queries per campaign")
-    p.add_argument("--n-init", type=int, default=12, help="random warm-start queries (>= degree + 3)")
+    p.add_argument("--n-init", type=int, default=24, help="random warm-start queries (>= degree + 3)")
     p.add_argument("--probe", type=float, default=0.1, help="random probe fraction")
     p.add_argument("--members", type=int, default=20, help="ensemble size (misspecified condition)")
+    p.add_argument("--ensemble-size", type=int, default=5,
+                   help="bootstrap refits per step for the IWF credal set")
+    p.add_argument("--mrf-reps", type=int, default=2,
+                   help="refits per subset size for the MRF learning curve")
     p.add_argument("--kappa", type=float, default=1.0)
     p.add_argument("--rank", type=int, default=4, help="SVD rank of the learned dynamics")
     p.add_argument("--min-fit-obs", type=int, default=5)
@@ -491,7 +600,7 @@ def main(argv=None):
     if args.n_init < get_problem(args.problem).degree + 3:
         raise SystemExit(f"--n-init must be at least degree + 3 for {args.problem}")
     steering = choose_steering(args.split, args.split_index, args.steering)
-    audit_only = [name for name in METRICS if name not in steering]
+    audit_only = [name for name in ALL_METRICS if name not in steering]
 
     rows = []
     categories = {}

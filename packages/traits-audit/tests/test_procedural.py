@@ -161,3 +161,21 @@ def test_mrf_route1_and_route2_agree():
         [], fit_fn=fit_fn, X_train=X, y_train=y, X_eval=X_eval, y_eval=y_eval
     )
     assert route1.value == pytest.approx(route2.value, abs=1e-6)
+
+
+def test_mrf_without_bootstrap_keeps_c_hat_and_drops_the_ci():
+    rng = np.random.default_rng(0)
+    Ns = np.array([10.0, 20.0, 40.0, 80.0, 160.0])
+    matrix = 2.0 * Ns[:, None] ** -0.5 + 0.3 + rng.normal(0, 0.01, size=(5, 3))
+    kwargs = {"learning_curve": (Ns, matrix.mean(axis=1))}
+    check_with_ci = MisspecificationResidualFloorCheck()
+    check_without = MisspecificationResidualFloorCheck(n_bootstrap=0)
+    check_with_ci._get_curve = lambda _: (Ns, matrix.mean(axis=1), matrix)
+    check_without._get_curve = lambda _: (Ns, matrix.mean(axis=1), matrix)
+
+    with_ci = check_with_ci.run([], **kwargs)
+    without = check_without.run([], **kwargs)
+
+    assert without.value == with_ci.value
+    assert with_ci.details["c_ci"] is not None
+    assert without.details["c_ci"] is None

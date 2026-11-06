@@ -247,6 +247,9 @@ class MisspecificationResidualFloorCheck(AuditCheck):
         RNG seed for Route 2 and the bootstrap CI.
     mrf_threshold : float or None
         Maximum acceptable c_hat. ``None`` (default) disables pass/fail.
+    n_bootstrap : int
+        Bootstrap resamples (over repetitions) for the 95% CI of c_hat, each
+        one a curve refit (default 200). 0 skips the CI; c_hat is unchanged.
 
     References
     ----------
@@ -266,11 +269,13 @@ class MisspecificationResidualFloorCheck(AuditCheck):
         reps: int = 3,
         seed: int = 0,
         mrf_threshold: float | None = None,
+        n_bootstrap: int = 200,
     ):
         self.subset_fracs = tuple(subset_fracs)
         self.reps = reps
         self.seed = seed
         self.mrf_threshold = mrf_threshold
+        self.n_bootstrap = n_bootstrap
 
     @property
     def name(self) -> str:
@@ -332,10 +337,10 @@ class MisspecificationResidualFloorCheck(AuditCheck):
             )
 
         c_ci = None
-        if matrix is not None and matrix.shape[1] >= 2:
+        if matrix is not None and matrix.shape[1] >= 2 and self.n_bootstrap > 0:
             rng = np.random.default_rng(self.seed)
             boot_c = []
-            for _ in range(200):
+            for _ in range(self.n_bootstrap):
                 rep_idx = rng.integers(0, matrix.shape[1], size=matrix.shape[1])
                 resampled_curve = matrix[:, rep_idx].mean(axis=1)
                 try:
