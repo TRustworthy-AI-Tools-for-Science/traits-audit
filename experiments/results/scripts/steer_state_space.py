@@ -5,7 +5,9 @@ Runs the campaigns of ``paper/steering_experiment_spec.md`` for one problem and
 one starting condition:
 
 * problems come from ``results.committee.problems`` (forrester,
-  branin-currin-mo, color);
+  branin-currin-mo, color, and forrester-drift: Forrester measured by an
+  instrument that heats up with use, whose temperature is logged and added to
+  the policy state);
 * the starting condition decides the surrogate: a GP whose reported sigma is
   scaled (calibrated x1, overconfident x0.3, underconfident x2.5) or a
   bootstrap polynomial ensemble (misspecified);
@@ -36,7 +38,7 @@ from pathlib import Path
 
 import numpy as np
 from results.cal_demo import _make_gp_kernel
-from results.committee.problems import PolyBootstrapSurrogate, get_problem
+from results.committee.problems import DriftingInstrumentForrester, PolyBootstrapSurrogate, get_problem
 from results.policies import (
     AuditBayesianDynamicsPolicy,
     AuditStateSpacePolicy,
@@ -44,12 +46,16 @@ from results.policies import (
     LCBPolicy,
     StateSpacePolicy,
 )
+from scipy.stats import norm
 from traits_audit import checks as C
 
-PROBLEMS = ["forrester", "branin-currin-mo", "color"]
+PROBLEMS = ["forrester", "branin-currin-mo", "color", "forrester-drift"]
 CONDITIONS = ["calibrated", "overconfident", "underconfident", "misspecified"]
 SIGMA_SCALE = {"calibrated": 1.0, "overconfident": 0.3, "underconfident": 2.5, "misspecified": 1.0}
-POLICIES = ["random", "lcb", "state-space", "bayes-dynamics",
+# Classic Bayesian-optimisation rules: they score the surrogate directly and
+# learn nothing about the experiment's dynamics.
+CLASSIC_POLICIES = ["expected-improvement", "probability-of-improvement", "thompson", "max-sigma"]
+POLICIES = ["random", "lcb", *CLASSIC_POLICIES, "state-space", "bayes-dynamics",
             "audit-state-space", "audit-bayes", "audit-state-space-all"]
 
 
@@ -274,6 +280,12 @@ class ScaledGP:
         mu, sd = self.gp.predict(x, return_std=True)
         return mu, sd * self.sigma_scale
 
+    def sample(self, x, rng):
+        """One joint draw from the predictive distribution, with sigma scaled like predict."""
+        draw = self.gp.sample_y(x, random_state=int(rng.integers(2**31 - 1)))[:, 0]
+        mu = self.gp.predict(x)
+        return mu + self.sigma_scale * (draw - mu)
+
 
 class PolynomialEnsemble:
     """Bootstrap polynomial ensemble: the misspecified surrogate."""
@@ -292,6 +304,11 @@ class PolynomialEnsemble:
 
     def predict(self, x):
         return self.model.predict(x)
+
+    def sample(self, x, rng):
+        """One joint draw: the prediction of one randomly chosen bootstrap member."""
+        members = self.model.predict_members(x)
+        return members[:, rng.integers(members.shape[1])]
 
 
 class Surrogate:
@@ -313,6 +330,10 @@ class Surrogate:
             else:
                 model.fit(X, Y[:, j])
 
+    def sample(self, X, rng):
+        """One joint draw from the surrogate on X, shape (n_points, n_objectives)."""
+        return np.column_stack([model.sample(X, rng) for model in self.models])
+
     def fitted_kernels(self):
         """Each objective's fitted GP kernel, or None for the polynomial surrogate."""
         if self.condition == "misspecified":
@@ -327,6 +348,17 @@ class Surrogate:
             means.append(mu)
             stds.append(sd)
         return np.column_stack(means), np.column_stack(stds)
+
+
+def make_problem(name):
+    if name == "forrester-drift":
+        return DriftingInstrumentForrester()
+    return get_problem(name)
+
+
+def has_instrument(problem):
+    """True for problems whose instrument state is logged (a temperature sensor)."""
+    return hasattr(problem, "temperature")
 
 
 # ── Campaign score: simple regret, or log hypervolume difference ──────────────
@@ -346,23 +378,27 @@ def campaign_score(problem, clean_values):
 # on the reference grid]; action u = [x_1..x_d, mu(x), sigma(x)], with mu and
 # sigma averaged over objectives.  The "model" predicts the next best-so-far
 # as min(best, mu(x)) with uncertainty sigma(x), so the LCB fallback is an
-# ordinary LCB on the surrogate.
+# ordinary LCB on the surrogate.  On a problem with a logged instrument the
+# state also holds the instrument reading, which the model passes through.
 
-N_STATE = 2
+
+def state_size(problem):
+    return 3 if has_instrument(problem) else 2
 
 
 class SurrogateView:
-    def __init__(self, dim):
+    def __init__(self, dim, n_state):
         self.dim = dim
+        self.n_state = n_state
 
     def predict_with_uncertainty(self, X):
         X = np.atleast_2d(X)
-        state = X[:, :N_STATE]
-        mu_of_query = X[:, N_STATE + self.dim]
-        sigma_of_query = X[:, N_STATE + self.dim + 1]
+        state = X[:, :self.n_state]
+        mu_of_query = X[:, self.n_state + self.dim]
+        sigma_of_query = X[:, self.n_state + self.dim + 1]
         mean = state.copy()
         mean[:, 0] = np.minimum(state[:, 0], mu_of_query)
-        std = np.column_stack([sigma_of_query, sigma_of_query])
+        std = np.column_stack([sigma_of_query] * self.n_state)
         return {"mean": mean, "std": std}
 
 
@@ -383,11 +419,11 @@ def make_health_function(scale):
 
 
 def make_policy(name, problem, args):
-    common = dict(model=SurrogateView(problem.dim), num_action_features=problem.dim + 2,
+    common = dict(model=SurrogateView(problem.dim, state_size(problem)), num_action_features=problem.dim + 2,
                   degradation_fn=progress)
     dynamics = dict(common, n_components=args.rank, kappa=args.kappa, Q_weight=1.0, R_weight=0.0,
                     min_fit_obs=args.min_fit_obs, uncertainty_weight=1.0)
-    if name == "random":
+    if name == "random" or name in CLASSIC_POLICIES:
         return None
     if name == "lcb":
         return LCBPolicy(kappa=args.kappa, **common)
@@ -428,10 +464,14 @@ class Campaign:
         self.stateful = isinstance(self.policy, (StateSpacePolicy, BayesianDynamicsPolicy))
 
         reference_rng = np.random.default_rng([seed, 0])
-        self.Y_ref = problem.observe(self.grid, reference_rng) / self.y_scales
+        if hasattr(problem, "observe_at_rest"):
+            self.Y_ref = problem.observe_at_rest(self.grid, reference_rng) / self.y_scales
+        else:
+            self.Y_ref = problem.observe(self.grid, reference_rng) / self.y_scales
         self.x_observed = []
         self.y_observed = []
         self.clean_observed = []
+        self.temperature_history = []
         warm_start_rng = np.random.default_rng([seed, 5])
         for _ in range(args.n_init):
             self.query(warm_start_rng.uniform(0.0, 1.0, problem.dim))
@@ -448,6 +488,8 @@ class Campaign:
         self.x_observed.append(x_row[0])
         self.y_observed.append(self.problem.observe(x_row, noise_rng)[0] / self.y_scales)
         self.clean_observed.append(self.problem.clean(x_row)[0])
+        if has_instrument(self.problem):
+            self.temperature_history.append(self.problem.temperature)
 
     def scalarise(self, values_per_objective):
         return float(np.mean((values_per_objective - self.y_mean) / self.y_std))
@@ -466,7 +508,10 @@ class Campaign:
         categories.update(system_categories)
         best_so_far = min(self.scalarise(y) for y in Y)
         mean_sigma = float(np.mean(SD_ref / self.y_std))
-        state = np.array([best_so_far, mean_sigma])
+        state = [best_so_far, mean_sigma]
+        if has_instrument(self.problem):
+            state.append(self.temperature_history[n_points - 1])
+        state = np.array(state)
         return snapshot, categories, state
 
     def candidate_actions(self):
@@ -477,6 +522,31 @@ class Campaign:
             sigma_scalar = float(np.mean(sd / self.y_std))
             actions.append(np.concatenate([x, [mu_scalar, sigma_scalar]]))
         return actions
+
+    def classic_choice(self, candidates, state, step):
+        """Index of the candidate a classic Bayesian-optimisation rule picks (minimisation).
+
+        Uses the same scalarised, standardised mu and sigma of each candidate as
+        the other policies; ``state[0]`` is the best scalarised value seen so far.
+        """
+        mu = np.array([candidate[self.problem.dim] for candidate in candidates])
+        sigma = np.array([candidate[self.problem.dim + 1] for candidate in candidates])
+        sigma = np.maximum(sigma, 1e-12)
+        best = state[0]
+        if self.policy_name == "max-sigma":
+            return int(np.argmax(sigma))
+        if self.policy_name == "expected-improvement":
+            z = (best - mu) / sigma
+            improvement = (best - mu) * norm.cdf(z) + sigma * norm.pdf(z)
+            return int(np.argmax(improvement))
+        if self.policy_name == "probability-of-improvement":
+            z = (best - mu - self.args.pi_margin) / sigma
+            return int(np.argmax(norm.cdf(z)))
+        if self.policy_name == "thompson":
+            rng = np.random.default_rng([self.seed, 7, step])
+            draw = self.surrogate.sample(self.grid, rng)
+            return int(np.argmin([self.scalarise(row) for row in draw]))
+        raise ValueError(self.policy_name)
 
     def action_for(self, x):
         MU, SD = self.surrogate.predict(np.asarray(x).reshape(1, -1))
@@ -491,6 +561,8 @@ class Campaign:
         for i in range(self.problem.dim):
             row[f"x{i}"] = float(last_x[i])
         row["score"] = campaign_score(self.problem, self.clean_observed[:n_points])
+        if has_instrument(self.problem):
+            row["temperature"] = self.temperature_history[n_points - 1]
         for name in ALL_METRICS:
             row[f"raw:{name}"] = snapshot[name]
             row[f"z:{name}"] = z[name]
@@ -527,9 +599,11 @@ class Campaign:
             candidates = self.candidate_actions()
             visible = visible_vector(snapshot)
             probe = np.random.default_rng([self.seed, 3, step]).random() < args.probe
-            if self.policy is None or probe:
+            if self.policy_name == "random" or probe:
                 pick = np.random.default_rng([self.seed, 4, step]).integers(len(candidates))
                 action = candidates[int(pick)]
+            elif self.policy_name in CLASSIC_POLICIES:
+                action = candidates[self.classic_choice(candidates, state, step)]
             elif self.stateful:
                 action, _, _ = self.policy.select_next(state, candidates, uncertainty_vector=visible)
             else:
@@ -564,6 +638,8 @@ def parse_args(argv):
     p.add_argument("--mrf-reps", type=int, default=2,
                    help="refits per subset size for the MRF learning curve")
     p.add_argument("--kappa", type=float, default=1.0)
+    p.add_argument("--pi-margin", type=float, default=0.01,
+                   help="improvement margin for probability-of-improvement (standardised units)")
     p.add_argument("--rank", type=int, default=4, help="SVD rank of the learned dynamics")
     p.add_argument("--min-fit-obs", type=int, default=5)
     p.add_argument("--gamma-health", type=float, default=0.5)
@@ -597,7 +673,7 @@ def write_outputs(args, rows, steering, audit_only, categories, problem):
 
 def main(argv=None):
     args = parse_args(argv)
-    if args.n_init < get_problem(args.problem).degree + 3:
+    if args.n_init < make_problem(args.problem).degree + 3:
         raise SystemExit(f"--n-init must be at least degree + 3 for {args.problem}")
     steering = choose_steering(args.split, args.split_index, args.steering)
     audit_only = [name for name in ALL_METRICS if name not in steering]
@@ -607,7 +683,7 @@ def main(argv=None):
     start = time.time()
     for policy_name in args.policies:
         for seed in range(args.seed_start, args.seed_start + args.seeds):
-            problem = get_problem(args.problem)
+            problem = make_problem(args.problem)
             campaign = Campaign(problem, args.condition, policy_name, seed, args, steering)
             campaign_rows, categories = campaign.run()
             rows.extend(campaign_rows)

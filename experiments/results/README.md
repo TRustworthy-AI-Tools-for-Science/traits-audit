@@ -97,7 +97,8 @@ python experiments/results/scripts/steer_state_space.py --problem forrester --co
 python experiments/results/scripts/analyze_steering.py --in _results/steering/forrester/overconfident
 ```
 
-- `--problem`: `forrester`, `branin-currin-mo` or `color`, from `results.committee.problems`.
+- `--problem`: `forrester`, `branin-currin-mo` or `color`, from `results.committee.problems`,
+  or `forrester-drift`, Forrester measured by an instrument that heats with use.
 - `--condition`: `calibrated`, `overconfident` or `underconfident` (a GP whose
   reported sigma is scaled by 1, 0.3 or 2.5), or `misspecified` (a bootstrap
   polynomial ensemble).
@@ -108,8 +109,10 @@ python experiments/results/scripts/analyze_steering.py --in _results/steering/fo
   `random --split-index k`, `all`) or list them with `--steering`.
 - `--seed-start` and `--seeds` let SLURM array tasks each run a block of seeds.
 
-The arms are Random, LCB, StateSpace, BayesianDynamics, their health-steered
-`audit-*` variants, and `audit-state-space-all`, which steers on every metric.
+The arms are the classic Bayesian-optimisation rules (Random, LCB, expected and
+probability of improvement, Thompson sampling, max-σ), StateSpace,
+BayesianDynamics, their health-steered `audit-*` variants, and
+`audit-state-space-all`, which steers on every metric.
 Seeds are paired across arms.
 
 `analyze_steering.py` tests predictions P1 to P4 of the spec against the random

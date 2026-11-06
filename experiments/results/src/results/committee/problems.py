@@ -44,6 +44,7 @@ import numpy as np
 from results.cal_demo import BootstrapSurrogate
 from results.cal_demo import oracle as forrester_oracle
 from results.cal_demo import oracle_clean as forrester_clean
+from results.cal_demo import true_sigma as forrester_sigma
 
 
 class PolyBootstrapSurrogate:
@@ -93,6 +94,10 @@ class PolyBootstrapSurrogate:
     def predict(self, x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         preds = self._phi(x) @ self._coefs.T  # (n_points, n_estimators)
         return preds.mean(1), preds.std(1) * self.std_scale
+
+    def predict_members(self, x: np.ndarray) -> np.ndarray:
+        """Every bootstrap member's prediction, shape ``(n_points, n_estimators)``."""
+        return self._phi(x) @ self._coefs.T
 
 
 class _Forrester1DSurrogate:
@@ -308,6 +313,51 @@ class ForresterProblem(Problem):
         # so existing Forrester regret figures don't shift.
         xs = np.linspace(0.0, 1.0, 100_000)
         return float(self.clean(xs[:, None])[:, 0].min())
+
+
+class DriftingInstrumentForrester(ForresterProblem):
+    """Forrester measured by an instrument that heats up with use.
+
+    The objective is unchanged (regret is scored on ``clean``), but the
+    instrument has its own state, a temperature ``h`` that every query raises
+    and that cools between queries::
+
+        h <- cooling * h + heating * x
+
+    A hot instrument reads high and noisy: offset ``+ bias_gain * h`` and noise
+    ``sigma(x) * (1 + noise_gain * h)``.  Repeatedly sampling near the minimum
+    (x ~ 0.76) heats it to h ~ 1.1, so the measurements there become biased
+    and several times noisier.  The temperature is logged (``temperature``),
+    like a real instrument sensor; a policy can use it or ignore it.
+
+    Steering-experiment benchmark: not registered in :data:`PROBLEMS`.
+    """
+
+    name = "forrester-drift"
+
+    def __init__(self, heating: float = 0.3, cooling: float = 0.8,
+                 bias_gain: float = 1.0, noise_gain: float = 4.0):
+        super().__init__()
+        self.heating = heating
+        self.cooling = cooling
+        self.bias_gain = bias_gain
+        self.noise_gain = noise_gain
+        self.temperature = 0.0
+
+    def observe(self, x: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+        """Measure each point in turn, heating the instrument after each one."""
+        readings = []
+        for x_i in np.asarray(x, dtype=float)[:, 0]:
+            noise_sd = forrester_sigma(np.array([x_i]))[0] * (1.0 + self.noise_gain * self.temperature)
+            reading = forrester_clean(np.array([x_i]))[0] + self.bias_gain * self.temperature
+            readings.append(reading + rng.normal(0.0, noise_sd))
+            self.temperature = self.cooling * self.temperature + self.heating * x_i
+        return np.array(readings)[:, None]
+
+    def observe_at_rest(self, x: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+        """Measurements with the instrument cold; the temperature is not changed."""
+        x = np.asarray(x, dtype=float)[:, 0]
+        return (forrester_clean(x) + rng.normal(0.0, forrester_sigma(x)))[:, None]
 
 
 class BraninCurrinProblem(Problem):
