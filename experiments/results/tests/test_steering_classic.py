@@ -60,3 +60,15 @@ def test_classic_arms_run_end_to_end(tmp_path, condition):
         rows = [r for r in csv.DictReader(fh) if r["phase"] == "steer"]
     assert {r["policy"] for r in rows} == set(module.CLASSIC_POLICIES)
     assert all(0.0 <= float(r["x0"]) <= 1.0 for r in rows)
+
+
+def test_gp_joint_draw_survives_a_near_singular_posterior():
+    module = _load_script()
+    gp = module.ScaledGP(sigma_scale=0.3, seed=0)
+    x = np.repeat(np.linspace(0, 1, 6), 4)[:, None]                 # repeated points
+    gp.fit(x, np.sin(6 * x[:, 0]))
+    grid = np.linspace(0, 1, 400)[:, None]                         # dense: covariance near-singular
+    draw = gp.sample(grid, np.random.default_rng(0))
+    assert draw.shape == (400,) and np.all(np.isfinite(draw))
+    mu, _ = gp.predict(grid)
+    assert np.max(np.abs(draw - mu)) < 10 * np.max(np.abs(mu) + 1)

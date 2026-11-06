@@ -476,6 +476,23 @@ class BraninCurrinMOProblem(BraninCurrinProblem):
         """
         return self.hypervolume(self.clean(_grid(120, self.dim)))
 
+    @cached_property
+    def pareto_front(self) -> np.ndarray:
+        """Non-dominated clean values on the same dense grid as ``hv_max``, shape (n, 2).
+
+        Two objectives, both minimised: sorted by the first objective, a point is
+        on the front when its second objective beats every point before it.
+        """
+        values = self.clean(_grid(120, self.dim))
+        values = values[np.lexsort((values[:, 1], values[:, 0]))]
+        front = []
+        best_second = np.inf
+        for point in values:
+            if point[1] < best_second:
+                front.append(point)
+                best_second = point[1]
+        return np.array(front)
+
 
 class BeamDamageBraninCurrin(BraninCurrinMOProblem):
     """Branin and Currin as two properties of a sample mapped by a damaging X-ray beam.

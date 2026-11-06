@@ -87,3 +87,16 @@ def test_beam_steering_and_analysis_end_to_end(tmp_path):
     for entry in summary.values():
         assert 0.0 <= entry["damaged_query_share"] <= 1.0
         assert np.isfinite(entry["dose_at_query_median"])
+        assert np.isfinite(entry["cumulative_regret_median"]) and entry["cumulative_regret_median"] >= 0.0
+
+
+def test_query_regret_is_zero_on_the_front_and_grows_away_from_it():
+    steer = _load("steer_state_space")
+    problem = BeamDamageBraninCurrin()
+    front = problem.pareto_front
+    assert np.all(np.diff(front[:, 0]) > 0) and np.all(np.diff(front[:, 1]) < 0)   # non-dominated
+    assert steer.query_regret(problem, front[len(front) // 2]) == 0.0
+    corner = front[len(front) // 2] + 0.1 * problem.y_scales
+    farther = front[len(front) // 2] + 0.5 * problem.y_scales
+    assert 0.0 < steer.query_regret(problem, corner) < steer.query_regret(problem, farther)
+    assert steer.query_regret(problem, front.min(axis=0) - 1.0) == 0.0               # beyond the front

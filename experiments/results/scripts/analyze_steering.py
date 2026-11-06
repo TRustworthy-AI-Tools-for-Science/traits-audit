@@ -8,9 +8,10 @@ P1  Steered metrics improve:          ΔS(policy) − ΔS(reference) < 0
 P2  Audit-only metrics do not worsen: ΔH(policy) − ΔH(reference) ≥ 0
 P3  Co-movement of S and H breaks:    Spearman ρ of first differences, late vs early half
 P4  Closing the loop changes A:       ‖A_late − A_early‖ / ‖A_early‖
-P5  Outcome: final score, cumulative regret (sum of each query's regret; single
-    objective only), time to target (first step whose running best reaches the
-    random arm's median final score), failure rate, stuck rate, link to the warm start
+P5  Outcome: final score, cumulative regret (sum of each query's regret;
+    epsilon-indicator to the Pareto front with several objectives), time to target
+    (first step whose running best reaches the random arm's median final score),
+    failure rate, stuck rate, link to the warm start
 P6  Relative recovery (needs ``--reference``, the calibrated run of the same
     problem): the share of the starting distance to the calibrated run's end
     level that a campaign closes (1 = reached it, 0 = no progress, < 0 = worse).

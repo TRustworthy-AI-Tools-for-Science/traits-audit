@@ -292,10 +292,26 @@ class ScaledGP:
         return mu, sd * self.sigma_scale
 
     def sample(self, x, rng):
-        """One joint draw from the predictive distribution, with sigma scaled like predict."""
-        draw = self.gp.sample_y(x, random_state=int(rng.integers(2**31 - 1)))[:, 0]
-        mu = self.gp.predict(x)
-        return mu + self.sigma_scale * (draw - mu)
+        """One joint draw from the predictive distribution, with sigma scaled like predict.
+
+        The covariance on a dense grid can be numerically singular, so it is
+        factorised with a small jitter that grows until the Cholesky
+        factorisation succeeds.  If the covariance is not even finite, the draw
+        falls back to independent points with the predictive std.
+        """
+        mu, cov = self.gp.predict(x, return_cov=True)
+        if not np.isfinite(cov).all():
+            _, sd = self.gp.predict(x, return_std=True)
+            return mu + self.sigma_scale * sd * rng.standard_normal(len(mu))
+        cov = 0.5 * (cov + cov.T)
+        jitter = 1e-10 * max(float(np.mean(np.diag(cov))), 1e-12)
+        while True:
+            try:
+                factor = np.linalg.cholesky(cov + jitter * np.eye(len(mu)))
+                break
+            except np.linalg.LinAlgError:
+                jitter *= 10.0
+        return mu + self.sigma_scale * (factor @ rng.standard_normal(len(mu)))
 
 
 class PolynomialEnsemble:
@@ -396,10 +412,17 @@ def action_size(problem):
 # ── Campaign score: simple regret, or log hypervolume difference ──────────────
 
 def query_regret(problem, clean_value):
-    """Regret of one query: its clean objective minus the optimum (NaN for multi-objective)."""
-    if problem.n_objectives != 1:
-        return np.nan
-    return float(clean_value[0] - problem.true_min)
+    """Regret of one query: its clean objective minus the optimum.
+
+    With several objectives: the additive epsilon-indicator of the query against
+    the Pareto front, with each objective divided by its scale.  It is the
+    smallest shift that puts some front point at or below the query in every
+    objective, so it is 0 on the front.
+    """
+    if problem.n_objectives == 1:
+        return float(clean_value[0] - problem.true_min)
+    gaps = (np.asarray(clean_value) - problem.pareto_front) / problem.y_scales
+    return float(max(0.0, gaps.max(axis=1).min()))
 
 
 def campaign_score(problem, clean_values):
@@ -604,7 +627,7 @@ class Campaign:
             action.append(dose_feature(self.problem, x))
         return np.concatenate([x, action])
 
-    def row(self, n_points, phase, probe, snapshot, baseline):
+    def row(self, n_points, phase, probe, snapshot, baseline, state):
         z = baseline.z_scores(snapshot)
         row = {"problem": self.problem.name, "condition": self.surrogate.condition,
                "policy": self.policy_name, "seed": self.seed, "step": n_points,
@@ -614,6 +637,7 @@ class Campaign:
             row[f"x{i}"] = float(last_x[i])
         row["score"] = campaign_score(self.problem, self.clean_observed[:n_points])
         row["query_regret"] = query_regret(self.problem, self.clean_observed[n_points - 1])
+        row["mean_sigma"] = float(state[1])
         if has_instrument(self.problem):
             row["instrument"] = self.instrument_history[n_points - 1]
         if has_dose_map(self.problem):
@@ -646,8 +670,8 @@ class Campaign:
                                     uncertainty_vector=visible_vector(snapshot))
 
         rows = []
-        for n_points, snapshot, _ in warm:
-            rows.append(self.row(n_points, "warm", False, snapshot, baseline))
+        for n_points, snapshot, warm_state in warm:
+            rows.append(self.row(n_points, "warm", False, snapshot, baseline, warm_state))
 
         snapshot, categories, state = self.refit_and_measure(len(self.x_observed))
         for step in range(len(self.x_observed), args.steps):
@@ -667,7 +691,7 @@ class Campaign:
             if self.stateful:
                 self.policy.observe(state, action, uncertainty_vector=visible)
             snapshot, categories, state = self.refit_and_measure(len(self.x_observed))
-            rows.append(self.row(len(self.x_observed), "steer", probe, snapshot, baseline))
+            rows.append(self.row(len(self.x_observed), "steer", probe, snapshot, baseline, state))
         return rows, categories
 
 
