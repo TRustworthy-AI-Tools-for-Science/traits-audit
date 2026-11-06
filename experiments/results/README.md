@@ -98,7 +98,8 @@ python experiments/results/scripts/analyze_steering.py --in _results/steering/fo
 ```
 
 - `--problem`: `forrester`, `branin-currin-mo` or `color`, from `results.committee.problems`,
-  or `forrester-drift`, Forrester measured by an instrument that heats with use.
+  `forrester-drift`, Forrester measured by an instrument that heats with use, or
+  `forrester-wear`, one damaged by use that never recovers.
 - `--condition`: `calibrated`, `overconfident` or `underconfident` (a GP whose
   reported sigma is scaled by 1, 0.3 or 2.5), or `misspecified` (a bootstrap
   polynomial ensemble).

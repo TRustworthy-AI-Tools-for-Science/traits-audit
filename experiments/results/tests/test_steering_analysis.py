@@ -37,6 +37,14 @@ def test_relative_recovery_is_the_share_of_the_gap_closed():
     assert np.isnan(analyze.relative_recovery(np.array([[0.5], [0.4]]), target, scale, window=1))
 
 
+def test_time_to_target_is_the_first_step_at_or_below_it():
+    analyze = _load("analyze_steering")
+    steps = np.arange(25, 30)
+    score = np.array([0.9, 0.5, 0.2, 0.2, 0.1])
+    assert analyze.time_to_target(score, steps, target=0.2) == 27
+    assert analyze.time_to_target(score, steps, target=0.01) == 30          # never: one past the end
+
+
 def test_recovery_needs_three_steps_at_or_below_target():
     analyze = _load("analyze_steering")
     steps = np.arange(10, 20)
@@ -67,6 +75,8 @@ def test_analysis_and_aggregation_end_to_end(tmp_path, capsys):
         assert 0.0 <= entry["recovered_share"] <= 1.0
         assert 0.0 <= entry["settled_share"] <= 1.0
     assert summary["state-space"]["dH_minus_state_space"] == 0.0
+    for entry in summary.values():
+        assert entry["cumulative_regret_median"] >= entry["final_score_median"]
     run = json.loads((tmp_path / "overconfident" / "steering_run.json").read_text())
     assert run["condition"] == "overconfident"
 

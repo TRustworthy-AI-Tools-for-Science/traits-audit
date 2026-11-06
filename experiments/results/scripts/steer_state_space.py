@@ -6,8 +6,11 @@ one starting condition:
 
 * problems come from ``results.committee.problems`` (forrester,
   branin-currin-mo, color, and forrester-drift: Forrester measured by an
-  instrument that heats up with use, whose temperature is logged and added to
-  the policy state);
+  instrument that heats up with use, forrester-wear: one damaged by use that
+  never recovers, and branin-currin-beam: a 2-D sample mapped by an X-ray beam
+  that damages the spots it measures; the instrument's state is logged and
+  added to the policy state, and on the beam problem the dose already absorbed
+  at each candidate is part of the action);
 * the starting condition decides the surrogate: a GP whose reported sigma is
   scaled (calibrated x1, overconfident x0.3, underconfident x2.5) or a
   bootstrap polynomial ensemble (misspecified);
@@ -38,7 +41,13 @@ from pathlib import Path
 
 import numpy as np
 from results.cal_demo import _make_gp_kernel
-from results.committee.problems import DriftingInstrumentForrester, PolyBootstrapSurrogate, get_problem
+from results.committee.problems import (
+    BeamDamageBraninCurrin,
+    DriftingInstrumentForrester,
+    PolyBootstrapSurrogate,
+    WearingInstrumentForrester,
+    get_problem,
+)
 from results.policies import (
     AuditBayesianDynamicsPolicy,
     AuditStateSpacePolicy,
@@ -49,12 +58,14 @@ from results.policies import (
 from scipy.stats import norm
 from traits_audit import checks as C
 
-PROBLEMS = ["forrester", "branin-currin-mo", "color", "forrester-drift"]
+PROBLEMS = ["forrester", "branin-currin-mo", "color", "forrester-drift", "forrester-wear", "branin-currin-beam"]
 CONDITIONS = ["calibrated", "overconfident", "underconfident", "misspecified"]
 SIGMA_SCALE = {"calibrated": 1.0, "overconfident": 0.3, "underconfident": 2.5, "misspecified": 1.0}
 # Classic Bayesian-optimisation rules: they score the surrogate directly and
 # learn nothing about the experiment's dynamics.
 CLASSIC_POLICIES = ["expected-improvement", "probability-of-improvement", "thompson", "max-sigma"]
+# Needs a problem with a dose map; not in the default arm list.
+DOSE_POLICIES = ["dose-aware-lcb"]
 POLICIES = ["random", "lcb", *CLASSIC_POLICIES, "state-space", "bayes-dynamics",
             "audit-state-space", "audit-bayes", "audit-state-space-all"]
 
@@ -353,15 +364,43 @@ class Surrogate:
 def make_problem(name):
     if name == "forrester-drift":
         return DriftingInstrumentForrester()
+    if name == "forrester-wear":
+        return WearingInstrumentForrester()
+    if name == "branin-currin-beam":
+        return BeamDamageBraninCurrin()
     return get_problem(name)
 
 
 def has_instrument(problem):
-    """True for problems whose instrument state is logged (a temperature sensor)."""
-    return hasattr(problem, "temperature")
+    """True for problems whose instrument state is logged (temperature, wear or dose)."""
+    return hasattr(problem, "instrument_reading")
+
+
+def has_dose_map(problem):
+    """True for problems that know the dose already absorbed at every position."""
+    return hasattr(problem, "dose_at")
+
+
+def dose_feature(problem, x):
+    """Dose already absorbed at x, in units of the half dose (0 for problems without a dose map)."""
+    if not has_dose_map(problem):
+        return 0.0
+    return float(problem.dose_at(np.asarray(x).reshape(1, -1))[0] / problem.half_dose)
+
+
+def action_size(problem):
+    """Action u = [x, mu(x), sigma(x)], plus the dose at x on problems with a dose map."""
+    return problem.dim + 3 if has_dose_map(problem) else problem.dim + 2
 
 
 # ── Campaign score: simple regret, or log hypervolume difference ──────────────
+
+def query_regret(problem, clean_value):
+    """Regret of one query: its clean objective minus the optimum (NaN for multi-objective)."""
+    if problem.n_objectives != 1:
+        return np.nan
+    return float(clean_value[0] - problem.true_min)
+
 
 def campaign_score(problem, clean_values):
     """``clean_values``: noise-free objectives of every point queried so far."""
@@ -419,11 +458,11 @@ def make_health_function(scale):
 
 
 def make_policy(name, problem, args):
-    common = dict(model=SurrogateView(problem.dim, state_size(problem)), num_action_features=problem.dim + 2,
+    common = dict(model=SurrogateView(problem.dim, state_size(problem)), num_action_features=action_size(problem),
                   degradation_fn=progress)
     dynamics = dict(common, n_components=args.rank, kappa=args.kappa, Q_weight=1.0, R_weight=0.0,
                     min_fit_obs=args.min_fit_obs, uncertainty_weight=1.0)
-    if name == "random" or name in CLASSIC_POLICIES:
+    if name == "random" or name in CLASSIC_POLICIES or name in DOSE_POLICIES:
         return None
     if name == "lcb":
         return LCBPolicy(kappa=args.kappa, **common)
@@ -471,7 +510,8 @@ class Campaign:
         self.x_observed = []
         self.y_observed = []
         self.clean_observed = []
-        self.temperature_history = []
+        self.instrument_history = []
+        self.dose_at_query = []
         warm_start_rng = np.random.default_rng([seed, 5])
         for _ in range(args.n_init):
             self.query(warm_start_rng.uniform(0.0, 1.0, problem.dim))
@@ -486,10 +526,11 @@ class Campaign:
         noise_rng = np.random.default_rng([self.seed, 1, step])
         x_row = np.asarray(x, dtype=float).reshape(1, -1)
         self.x_observed.append(x_row[0])
+        self.dose_at_query.append(dose_feature(self.problem, x_row[0]))
         self.y_observed.append(self.problem.observe(x_row, noise_rng)[0] / self.y_scales)
         self.clean_observed.append(self.problem.clean(x_row)[0])
         if has_instrument(self.problem):
-            self.temperature_history.append(self.problem.temperature)
+            self.instrument_history.append(self.problem.instrument_reading)
 
     def scalarise(self, values_per_objective):
         return float(np.mean((values_per_objective - self.y_mean) / self.y_std))
@@ -510,7 +551,7 @@ class Campaign:
         mean_sigma = float(np.mean(SD_ref / self.y_std))
         state = [best_so_far, mean_sigma]
         if has_instrument(self.problem):
-            state.append(self.temperature_history[n_points - 1])
+            state.append(self.instrument_history[n_points - 1])
         state = np.array(state)
         return snapshot, categories, state
 
@@ -520,7 +561,10 @@ class Campaign:
         for x, mu, sd in zip(self.grid, MU, SD, strict=True):
             mu_scalar = self.scalarise(mu)
             sigma_scalar = float(np.mean(sd / self.y_std))
-            actions.append(np.concatenate([x, [mu_scalar, sigma_scalar]]))
+            action = [mu_scalar, sigma_scalar]
+            if has_dose_map(self.problem):
+                action.append(dose_feature(self.problem, x))
+            actions.append(np.concatenate([x, action]))
         return actions
 
     def classic_choice(self, candidates, state, step):
@@ -542,6 +586,11 @@ class Campaign:
         if self.policy_name == "probability-of-improvement":
             z = (best - mu - self.args.pi_margin) / sigma
             return int(np.argmax(norm.cdf(z)))
+        if self.policy_name == "dose-aware-lcb":
+            if not has_dose_map(self.problem):
+                raise ValueError("dose-aware-lcb needs a problem with a dose map")
+            dose = np.array([candidate[self.problem.dim + 2] for candidate in candidates])
+            return int(np.argmin(mu - self.args.kappa * sigma + self.args.dose_penalty * dose))
         if self.policy_name == "thompson":
             rng = np.random.default_rng([self.seed, 7, step])
             draw = self.surrogate.sample(self.grid, rng)
@@ -550,7 +599,10 @@ class Campaign:
 
     def action_for(self, x):
         MU, SD = self.surrogate.predict(np.asarray(x).reshape(1, -1))
-        return np.concatenate([x, [self.scalarise(MU[0]), float(np.mean(SD[0] / self.y_std))]])
+        action = [self.scalarise(MU[0]), float(np.mean(SD[0] / self.y_std))]
+        if has_dose_map(self.problem):
+            action.append(dose_feature(self.problem, x))
+        return np.concatenate([x, action])
 
     def row(self, n_points, phase, probe, snapshot, baseline):
         z = baseline.z_scores(snapshot)
@@ -561,8 +613,11 @@ class Campaign:
         for i in range(self.problem.dim):
             row[f"x{i}"] = float(last_x[i])
         row["score"] = campaign_score(self.problem, self.clean_observed[:n_points])
+        row["query_regret"] = query_regret(self.problem, self.clean_observed[n_points - 1])
         if has_instrument(self.problem):
-            row["temperature"] = self.temperature_history[n_points - 1]
+            row["instrument"] = self.instrument_history[n_points - 1]
+        if has_dose_map(self.problem):
+            row["dose_at_query"] = self.dose_at_query[n_points - 1]
         for name in ALL_METRICS:
             row[f"raw:{name}"] = snapshot[name]
             row[f"z:{name}"] = z[name]
@@ -602,7 +657,7 @@ class Campaign:
             if self.policy_name == "random" or probe:
                 pick = np.random.default_rng([self.seed, 4, step]).integers(len(candidates))
                 action = candidates[int(pick)]
-            elif self.policy_name in CLASSIC_POLICIES:
+            elif self.policy_name in CLASSIC_POLICIES or self.policy_name in DOSE_POLICIES:
                 action = candidates[self.classic_choice(candidates, state, step)]
             elif self.stateful:
                 action, _, _ = self.policy.select_next(state, candidates, uncertainty_vector=visible)
@@ -622,7 +677,7 @@ def parse_args(argv):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--problem", default="forrester", choices=PROBLEMS)
     p.add_argument("--condition", default="calibrated", choices=CONDITIONS)
-    p.add_argument("--policies", nargs="+", default=POLICIES, choices=POLICIES)
+    p.add_argument("--policies", nargs="+", default=POLICIES, choices=POLICIES + DOSE_POLICIES)
     p.add_argument("--split", default="default", choices=["default", "random", "all"])
     p.add_argument("--split-index", type=int, default=0, help="which random split (--split random)")
     p.add_argument("--steering", nargs="+", choices=ALL_METRICS,
@@ -638,6 +693,8 @@ def parse_args(argv):
     p.add_argument("--mrf-reps", type=int, default=2,
                    help="refits per subset size for the MRF learning curve")
     p.add_argument("--kappa", type=float, default=1.0)
+    p.add_argument("--dose-penalty", type=float, default=1.0,
+                   help="dose-aware-lcb: penalty per half dose already absorbed at a candidate")
     p.add_argument("--pi-margin", type=float, default=0.01,
                    help="improvement margin for probability-of-improvement (standardised units)")
     p.add_argument("--rank", type=int, default=4, help="SVD rank of the learned dynamics")

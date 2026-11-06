@@ -359,6 +359,35 @@ class DriftingInstrumentForrester(ForresterProblem):
         x = np.asarray(x, dtype=float)[:, 0]
         return (forrester_clean(x) + rng.normal(0.0, forrester_sigma(x)))[:, None]
 
+    @property
+    def instrument_reading(self) -> float:
+        """The logged instrument state: the temperature (or, for wear, the damage)."""
+        return self.temperature
+
+
+class WearingInstrumentForrester(DriftingInstrumentForrester):
+    """Forrester measured by an instrument that is damaged by use and never recovers.
+
+    Like :class:`DriftingInstrumentForrester`, but the state is accumulated
+    damage ``w`` with no cooling::
+
+        w <- w + wear_rate * x
+
+    so heavier queries (larger x) do more damage and spreading queries out does
+    not undo it.  A damaged instrument reads high and noisy in the same way
+    (offset ``+ bias_gain * w``, noise ``sigma(x) * (1 + noise_gain * w)``).
+    A hundred queries near the minimum (x ~ 0.76) reach w ~ 1.1.  The damage is
+    logged as ``temperature`` so the steering script treats both instruments
+    alike.
+
+    Steering-experiment benchmark: not registered in :data:`PROBLEMS`.
+    """
+
+    name = "forrester-wear"
+
+    def __init__(self, wear_rate: float = 0.015, bias_gain: float = 1.0, noise_gain: float = 4.0):
+        super().__init__(heating=wear_rate, cooling=1.0, bias_gain=bias_gain, noise_gain=noise_gain)
+
 
 class BraninCurrinProblem(Problem):
     name = "branin-currin"
@@ -446,6 +475,77 @@ class BraninCurrinMOProblem(BraninCurrinProblem):
         the scale interpretable.
         """
         return self.hypervolume(self.clean(_grid(120, self.dim)))
+
+
+class BeamDamageBraninCurrin(BraninCurrinMOProblem):
+    """Branin and Currin as two properties of a sample mapped by a damaging X-ray beam.
+
+    The unit square is the sample surface and a query is a beam position.  Each
+    exposure deposits dose with a Gaussian beam profile (dose proportional to
+    the local beam intensity, as in spatially resolved dose models such as
+    RADDOSE-3D; Zeldin, Gerstel & Garman 2013, J. Appl. Cryst. 46, 1225)::
+
+        D(p) += dose_per_exposure * exp(-|p - q|^2 / (2 s^2)),   s = FWHM / 2.355
+
+    and the measured signal falls linearly with the dose already absorbed at
+    the measured spot, halving at ``half_dose`` (Owen, Rudino-Pinera & Garman
+    2006, PNAS 103, 4912: diffracted intensity decays in proportion to dose,
+    D_1/2 = 43 MGy)::
+
+        reading = max(0, 1 - D / (2 * half_dose)) * f(p) + noise
+
+    Defaults: ~10 MGy per exposure at the beam centre (the order of magnitude
+    of Holton 2009, J. Synchrotron Rad. 16, 133: ~1 MGy per 20 s for a 100 um,
+    1e12 photon/s beam), so a spot is half-damaged after ~4 exposures; beam
+    FWHM = one candidate-grid spacing.  Both objectives are minimised, so a
+    damaged spot reads *low*: damage creates false minima.  A minimal, proof of
+    concept model, not a dose simulation.
+
+    Both objectives are audited (as in ``branin-currin-mo``) and scored on the
+    pristine sample.  Steering-experiment benchmark: not registered in
+    :data:`PROBLEMS`.
+    """
+
+    name = "branin-currin-beam"
+
+    def __init__(self, dose_per_exposure: float = 10.0, half_dose: float = 43.0,
+                 beam_fwhm: float = 1.0 / 14.0):
+        self.dose_per_exposure = dose_per_exposure
+        self.half_dose = half_dose
+        self.beam_sigma = beam_fwhm / (2.0 * np.sqrt(2.0 * np.log(2.0)))
+        self.exposures: list[np.ndarray] = []
+
+    def dose_at(self, points: np.ndarray) -> np.ndarray:
+        """Total dose (MGy) absorbed so far at each point, shape (n,)."""
+        points = np.asarray(points, dtype=float).reshape(-1, self.dim)
+        dose = np.zeros(len(points))
+        for centre in self.exposures:
+            squared_distance = np.sum((points - centre) ** 2, axis=1)
+            dose += self.dose_per_exposure * np.exp(-squared_distance / (2.0 * self.beam_sigma ** 2))
+        return dose
+
+    def intensity(self, dose: np.ndarray) -> np.ndarray:
+        """Fraction of the pristine signal left after absorbing ``dose``."""
+        return np.maximum(0.0, 1.0 - np.asarray(dose) / (2.0 * self.half_dose))
+
+    def observe(self, x: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+        """Expose and measure each point in turn: the reading reflects the dose absorbed before it."""
+        readings = []
+        for point in np.asarray(x, dtype=float).reshape(-1, self.dim):
+            signal = self.intensity(self.dose_at(point))[0] * self.clean(point[None, :])[0]
+            readings.append(signal + rng.normal(0.0, self.noise_std))
+            self.exposures.append(point.copy())
+        return np.array(readings)
+
+    def observe_at_rest(self, x: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+        """Measurements of the pristine sample (a pre-characterisation scan); no dose."""
+        y = self.clean(x)
+        return y + rng.normal(0.0, self.noise_std, size=y.shape)
+
+    @property
+    def instrument_reading(self) -> float:
+        """The logged state: total dose delivered, in units of the half dose."""
+        return len(self.exposures) * self.dose_per_exposure / self.half_dose
 
 
 class ColorMatchingProblem(Problem):

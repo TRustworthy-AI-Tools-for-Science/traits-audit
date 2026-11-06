@@ -49,6 +49,21 @@ def test_steering_runs_with_the_temperature_in_the_state(tmp_path):
                  "--policies", "lcb", "state-space", "audit-state-space", "--out", str(tmp_path)])
     with open(tmp_path / "steps.csv", newline="") as fh:
         rows = list(csv.DictReader(fh))
-    temperatures = [float(row["temperature"]) for row in rows]
+    temperatures = [float(row["instrument"]) for row in rows]
     assert min(temperatures) >= 0.0 and max(temperatures) > 0.0
     assert module.state_size(module.make_problem("forrester-drift")) == 3
+
+
+def test_wear_accumulates_with_use_and_never_recovers():
+    from results.committee.problems import WearingInstrumentForrester
+
+    light, heavy = WearingInstrumentForrester(), WearingInstrumentForrester()
+    rng = np.random.default_rng(3)
+    for _ in range(100):
+        light.observe(np.array([[0.2]]), rng)
+        heavy.observe(np.array([[0.76]]), rng)
+    assert heavy.temperature == pytest.approx(100 * 0.015 * 0.76)
+    assert heavy.temperature > light.temperature
+    damage = heavy.temperature
+    heavy.observe(np.array([[0.0]]), rng)
+    assert heavy.temperature == damage                                  # a zero-dose query adds nothing, removes nothing

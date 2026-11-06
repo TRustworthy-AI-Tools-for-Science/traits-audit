@@ -8,7 +8,9 @@ P1  Steered metrics improve:          ΔS(policy) − ΔS(reference) < 0
 P2  Audit-only metrics do not worsen: ΔH(policy) − ΔH(reference) ≥ 0
 P3  Co-movement of S and H breaks:    Spearman ρ of first differences, late vs early half
 P4  Closing the loop changes A:       ‖A_late − A_early‖ / ‖A_early‖
-P5  Outcome: final score, failure rate, stuck rate, link to the warm start
+P5  Outcome: final score, cumulative regret (sum of each query's regret; single
+    objective only), time to target (first step whose running best reaches the
+    random arm's median final score), failure rate, stuck rate, link to the warm start
 P6  Relative recovery (needs ``--reference``, the calibrated run of the same
     problem): the share of the starting distance to the calibrated run's end
     level that a campaign closes (1 = reached it, 0 = no progress, < 0 = worse).
@@ -16,6 +18,10 @@ P6  Relative recovery (needs ``--reference``, the calibrated run of the same
     recovery is not expected; the share closed is comparable across arms.
 P7  Stability: windowed spectral radius ρ(A) of the metric state, when it
     settles below 1, and whether healthier end states go with smaller ρ
+P9  On problems with a logged instrument state (drift, wear, beam dose): does
+    the steering-metric badness S_t track that state (Spearman, per campaign)?
+    On the beam problem also: dose at the queried spots, and the share of
+    queries on already-damaged spots (dose >= half the half dose)
 
 S_t / H_t are the mean z-scored badness of the steering / audit-only metrics
 (higher = worse); Δ is the mean over the last ``--window`` steering steps minus
@@ -71,13 +77,24 @@ def load_run(path):
             "step": np.array([int(row["step"]) for row in steer]),
             "x": np.array([[float(row[f"x{i}"]) for i in range(config["dim"])] for row in steer]),
             "score": np.array([float(row["score"]) for row in steer]),
+            "query_regret": np.array([float(row["query_regret"]) if row.get("query_regret") not in (None, "")
+                                      else np.nan for row in steer]),
             "warm_score": float(warm[-1]["score"]),
             "Z": Z,
             "S": Z[:, :n_steering].mean(axis=1),
             "H": Z[:, n_steering:].mean(axis=1) if Z.shape[1] > n_steering else np.zeros(len(steer)),
             "raw_steering": np.array([[float(row[f"raw:{m}"]) for m in config["steering"]] for row in steer]),
+            "instrument": optional_column(steer, "instrument"),
+            "dose_at_query": optional_column(steer, "dose_at_query"),
         }
     return campaigns, config
+
+
+def optional_column(rows, name):
+    """A numeric column as an array, or None when the run did not record it."""
+    if not rows or name not in rows[0]:
+        return None
+    return np.array([float(row[name]) for row in rows])
 
 
 # ── Per-campaign measures ─────────────────────────────────────────────────────
@@ -156,6 +173,21 @@ def recovery_step(raw_steering, steps, target, scale):
     return None
 
 
+def tracks_instrument(S, instrument):
+    """P9: Spearman ρ between the steering-metric badness and the instrument state (NaN without one)."""
+    if instrument is None or np.std(S) == 0 or np.std(instrument) == 0:
+        return np.nan
+    return float(stats.spearmanr(S, instrument).statistic)
+
+
+def time_to_target(score, steps, target):
+    """First steering step whose running best is at or below ``target`` (one past the end if never)."""
+    reached = np.flatnonzero(score <= target)
+    if len(reached) == 0:
+        return int(steps[-1]) + 1
+    return int(steps[reached[0]])
+
+
 def measure(campaign, window, rho_window):
     early, late = comovement(campaign["S"], campaign["H"])
     drift, _, _ = a_drift(campaign["Z"], campaign["x"])
@@ -169,6 +201,12 @@ def measure(campaign, window, rho_window):
         "score": float(campaign["score"][-1]),
         "warm_score": campaign["warm_score"],
         "stuck": bool(campaign["score"][-1] >= campaign["warm_score"]),
+        "cumulative_regret": float(np.sum(campaign["query_regret"])),
+        "metrics_vs_instrument": tracks_instrument(campaign["S"], campaign["instrument"]),
+        "dose_at_query_median": (float(np.median(campaign["dose_at_query"]))
+                                 if campaign["dose_at_query"] is not None else np.nan),
+        "damaged_query_share": (float(np.mean(campaign["dose_at_query"] >= 0.5))
+                                if campaign["dose_at_query"] is not None else np.nan),
         "settle_step": settle,
         "last_rho": last_rho,
         "final_S": float(campaign["S"][-window:].mean()),
@@ -188,6 +226,12 @@ def paired_difference(values, reference):
         p = np.nan
     mean = float(differences.mean()) if len(differences) else np.nan
     return mean, p, len(differences)
+
+
+def finite_median(values):
+    """Median of the finite values, or NaN when there are none."""
+    finite = [value for value in values if np.isfinite(value)]
+    return float(np.median(finite)) if finite else np.nan
 
 
 def per_seed(per_campaign, policy, key):
@@ -248,6 +292,8 @@ def main(argv=None):
 
     random_finals = [v["score"] for (q, _), v in per_campaign.items() if q == "random"]
     failure_level = float(np.median(random_finals)) if random_finals else np.nan
+    for key, campaign in campaigns.items():
+        per_campaign[key]["time_to_target"] = time_to_target(campaign["score"], campaign["step"], failure_level)
 
     print(f"Steering: {', '.join(config['steering'])}")
     print(f"Audit-only: {', '.join(config['audit_only'])}\n")
@@ -284,11 +330,14 @@ def main(argv=None):
             entry["warm_vs_final_spearman"] = float(stats.spearmanr(warm, finals).statistic)
         else:
             entry["warm_vs_final_spearman"] = np.nan
+        entry["cumulative_regret_median"] = float(np.nanmedian([v["cumulative_regret"] for v in mine.values()]))
+        entry["time_to_target_median"] = float(np.median([v["time_to_target"] for v in mine.values()]))
         for reference in ("random", "lcb", "state-space"):
-            mean, p, _ = paired_difference(per_seed(per_campaign, policy, "score"),
-                                           per_seed(per_campaign, reference, "score"))
-            entry[f"score_minus_{reference}"] = mean
-            entry[f"score_vs_{reference}_p"] = p
+            for name in ("score", "cumulative_regret", "time_to_target"):
+                mean, p, _ = paired_difference(per_seed(per_campaign, policy, name),
+                                               per_seed(per_campaign, reference, name))
+                entry[f"{name}_minus_{reference}"] = mean
+                entry[f"{name}_vs_{reference}_p"] = p
 
         # P6
         if reference_campaigns is not None:
@@ -306,6 +355,11 @@ def main(argv=None):
         entry["settled_share"] = len(settled) / len(settles)
         entry["settle_step_median"] = float(np.median(settled)) if settled else np.nan
         entry["last_rho_median"] = float(np.nanmedian([v["last_rho"] for v in mine.values()]))
+
+        # P9
+        entry["metrics_vs_instrument_median"] = finite_median([v["metrics_vs_instrument"] for v in mine.values()])
+        entry["dose_at_query_median"] = finite_median([v["dose_at_query_median"] for v in mine.values()])
+        entry["damaged_query_share"] = finite_median([v["damaged_query_share"] for v in mine.values()])
 
         summary[policy] = entry
 
@@ -341,14 +395,15 @@ def print_tables(summary, policies, args, health_vs_rho, have_recovery):
     print("Goodharting shows as ΔS < 0 with ΔH ≥ 0 against state-space, plus weaker late co-movement.")
 
     print("\nP5 outcome (failure = final score worse than the random arm's median; stuck = no gain after warm start)")
-    header = (f"{'policy':24s} {'median':>9s} {'mean':>9s} {'fail':>5s} {'stuck':>5s} {'ρ(warm,final)':>13s}"
-              f" {'p vs lcb':>8s} {'p vs ss':>8s}")
+    header = (f"{'policy':24s} {'median':>9s} {'mean':>9s} {'cum.regret':>10s} {'t→target':>8s}"
+              f" {'fail':>5s} {'stuck':>5s} {'ρ(warm,final)':>13s} {'p vs lcb':>8s} {'p cum vs lcb':>12s}")
     print(header + "\n" + "-" * len(header))
     for policy in policies:
         e = summary[policy]
-        print(f"{policy:24s} {e['final_score_median']:9.4f} {e['final_score_mean']:9.4f} {e['failure_rate']:5.2f}"
+        print(f"{policy:24s} {e['final_score_median']:9.4f} {e['final_score_mean']:9.4f}"
+              f" {e['cumulative_regret_median']:10.2f} {e['time_to_target_median']:8.0f} {e['failure_rate']:5.2f}"
               f" {e['stuck_rate']:5.2f} {fmt(e['warm_vs_final_spearman'], 2):>13s}"
-              f" {fmt_p(e['score_vs_lcb_p']):>8s} {fmt_p(e['score_vs_state-space_p']):>8s}")
+              f" {fmt_p(e['score_vs_lcb_p']):>8s} {fmt_p(e['cumulative_regret_vs_lcb_p']):>12s}")
 
     print("\nP6 relative recovery (share of the gap to the calibrated end level closed) and P7 stability")
     header = (f"{'policy':24s} {'gap closed':>10s} {'−ss':>7s} {'p vs ss':>8s} {'reached':>7s}"
@@ -365,6 +420,16 @@ def print_tables(summary, policies, args, health_vs_rho, have_recovery):
               f" {e['last_rho_median']:7.3f}")
     print(f"Health vs stability: Spearman(final S, last ρ) over all campaigns = {fmt(health_vs_rho, 2)}"
           " (> 0: healthier end states have smaller ρ)")
+
+    if any(np.isfinite(summary[policy]["metrics_vs_instrument_median"]) for policy in policies):
+        print("\nP9 does the audit track the instrument state?")
+        header = f"{'policy':24s} {'ρ(S, instrument)':>16s} {'dose at query':>13s} {'damaged share':>13s}"
+        print(header + "\n" + "-" * len(header))
+        for policy in policies:
+            e = summary[policy]
+            print(f"{policy:24s} {fmt(e['metrics_vs_instrument_median'], 2):>16s}"
+                  f" {fmt(e['dose_at_query_median'], 2):>13s} {fmt(e['damaged_query_share'], 2):>13s}")
+        print("ρ > 0: the steering metrics get worse as the instrument state grows. Dose in units of the half dose.")
 
 
 def draw_figure(campaigns, policies, config, out):

@@ -28,6 +28,8 @@ PREDICTIONS = {
     "P4 A drift vs random": ("A_drift_minus_null", "A_drift_p"),
     "P5 final score vs lcb": ("score_minus_lcb", "score_vs_lcb_p"),
     "P5 final score vs state-space": ("score_minus_state-space", "score_vs_state-space_p"),
+    "P5 cumulative regret vs lcb": ("cumulative_regret_minus_lcb", "cumulative_regret_vs_lcb_p"),
+    "P5 time to target vs lcb": ("time_to_target_minus_lcb", "time_to_target_vs_lcb_p"),
     "P6 gap closed vs state-space": ("recovery_closed_minus_state_space", "recovery_closed_vs_state_space_p"),
 }
 
