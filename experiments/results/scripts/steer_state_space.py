@@ -88,6 +88,11 @@ METRICS = {
 # or a downstream decision (DFR).  They are computed by score_system_metrics.
 SYSTEM_METRICS = ["DecisionFlipRate", "MisspecificationResidualFloor", "ImprecisionWidthFraction"]
 ALL_METRICS = list(METRICS) + SYSTEM_METRICS
+# The blocks of the metric-space analysis, by the re-pairing test (Methods): DFR is
+# computed with the system metrics because it needs a seed, but it reads only
+# (mu, sigma) on the reference grid, so it belongs to the fiber block.
+FIBER_BLOCK = [*METRICS, "DecisionFlipRate"]
+HISTORY_BLOCK = ["MisspecificationResidualFloor", "ImprecisionWidthFraction"]
 DEFAULT_STEERING = ["CalibrationError", "NLL", "VarianceErrorCorrelation", "SignedBias"]
 
 
@@ -104,7 +109,7 @@ def badness(name, result):
     if name == "PITUniformity":
         return result.details["ks_statistic"]
     if name == "VarianceAlignment":
-        return abs(np.log(result.value))
+        return abs(np.log(max(result.value, 1e-12)))
     return result.value
 
 
@@ -119,24 +124,28 @@ def score_metrics_one_objective(y_ref, mu_ref, sd_ref):
         warnings.simplefilter("ignore")
         for name, check_class in METRICS.items():
             result = check_class().run(history)
-            value = badness(name, result)
-            if not np.isfinite(value):
-                value = 0.0
-            values[name] = float(value)
+            values[name] = float(badness(name, result))      # NaN when the check cannot report
             categories[name] = result.category.value
     return values, categories
 
 
+def average_over_objectives(per_objective, names):
+    """Mean of each metric over the objectives that reported it (NaN if none did)."""
+    totals = {}
+    for name in names:
+        reported = [values[name] for values in per_objective if np.isfinite(values[name])]
+        totals[name] = float(np.mean(reported)) if reported else np.nan
+    return totals
+
+
 def score_metrics(Y_ref, MU_ref, SD_ref):
     """Badness of every metric on the reference grid, averaged over objectives."""
-    n_objectives = Y_ref.shape[1]
-    totals = dict.fromkeys(METRICS, 0.0)
+    per_objective = []
     categories = {}
-    for j in range(n_objectives):
+    for j in range(Y_ref.shape[1]):
         values, categories = score_metrics_one_objective(Y_ref[:, j], MU_ref[:, j], SD_ref[:, j])
-        for name in METRICS:
-            totals[name] += values[name] / n_objectives
-    return totals, categories
+        per_objective.append(values)
+    return average_over_objectives(per_objective, METRICS), categories
 
 
 def predicted_minimiser(prediction):
@@ -193,10 +202,7 @@ def score_system_metrics_one_objective(problem, condition, X, y, grid, y_ref, mu
     values = {}
     categories = {}
     for name, result in results.items():
-        value = badness(name, result)
-        if not np.isfinite(value):
-            value = 0.0
-        values[name] = float(value)
+        values[name] = float(badness(name, result))          # NaN when the check cannot report
         categories[name] = result.category.value
     return values, categories
 
@@ -207,16 +213,14 @@ def score_system_metrics(problem, condition, X, Y, grid, Y_ref, MU_ref, SD_ref, 
     ``kernels``: the main surrogate's fitted kernel for each objective (None for
     the polynomial surrogate).
     """
-    n_objectives = Y_ref.shape[1]
-    totals = dict.fromkeys(SYSTEM_METRICS, 0.0)
+    per_objective = []
     categories = {}
-    for j in range(n_objectives):
+    for j in range(Y_ref.shape[1]):
         values, categories = score_system_metrics_one_objective(
             problem, condition, X, Y[:, j], grid, Y_ref[:, j], MU_ref[:, j], SD_ref[:, j],
             kernels[j], args, seed=[*seed, j])
-        for name in SYSTEM_METRICS:
-            totals[name] += values[name] / n_objectives
-    return totals, categories
+        per_objective.append(values)
+    return average_over_objectives(per_objective, SYSTEM_METRICS), categories
 
 
 def choose_steering(split, split_index, explicit_list):
@@ -247,12 +251,20 @@ class WarmStartBaseline:
         self.std = {}
         for name in ALL_METRICS:
             values = np.array([snapshot[name] for snapshot in warm_snapshots])
+            values = values[np.isfinite(values)]
+            if len(values) == 0:
+                self.mean[name], self.std[name] = 0.0, 1.0
+                continue
             self.mean[name] = float(values.mean())
             self.std[name] = max(float(values.std()), z_floor * abs(float(values.mean())) + 1e-9)
 
     def z_scores(self, snapshot):
+        """z-score of each metric; a metric that did not report gets z = 0 (neutral)."""
         scores = {}
         for name in ALL_METRICS:
+            if not np.isfinite(snapshot[name]):
+                scores[name] = 0.0
+                continue
             z = (snapshot[name] - self.mean[name]) / self.std[name]
             if self.z_clip is not None:
                 z = min(max(z, -self.z_clip), self.z_clip)
@@ -492,13 +504,15 @@ def make_policy(name, problem, args):
     if name == "state-space":
         return StateSpacePolicy(**dynamics)
     if name == "bayes-dynamics":
-        return BayesianDynamicsPolicy(gamma_info=args.gamma_info, gamma_sub=0.0, **dynamics)
+        return BayesianDynamicsPolicy(gamma_info=args.gamma_info, gamma_sub=0.0,
+                                      reanchor_freq=args.reanchor, **dynamics)
     if name in ("audit-state-space", "audit-state-space-all"):
         return AuditStateSpacePolicy(gamma_health=args.gamma_health,
                                      health_fn=make_health_function(args.health_scale),
                                      **dynamics)
     if name == "audit-bayes":
         return AuditBayesianDynamicsPolicy(gamma_info=args.gamma_info, gamma_sub=0.0,
+                                           reanchor_freq=args.reanchor,
                                            gamma_health=args.gamma_health,
                                            health_fn=make_health_function(args.health_scale),
                                            **dynamics)
@@ -722,6 +736,8 @@ def parse_args(argv):
     p.add_argument("--pi-margin", type=float, default=0.01,
                    help="improvement margin for probability-of-improvement (standardised units)")
     p.add_argument("--rank", type=int, default=4, help="SVD rank of the learned dynamics")
+    p.add_argument("--reanchor", type=int, default=10,
+                   help="bayes arms: refit the reduced basis every this many observations")
     p.add_argument("--min-fit-obs", type=int, default=5)
     p.add_argument("--gamma-health", type=float, default=0.5)
     p.add_argument("--health-scale", type=float, default=2.0,
@@ -729,7 +745,8 @@ def parse_args(argv):
     p.add_argument("--gamma-info", type=float, default=0.5)
     p.add_argument("--z-floor", type=float, default=1e-3,
                    help="smallest warm-start std, as a fraction of the metric's warm-start mean")
-    p.add_argument("--z-clip", type=float, default=None, help="limit every z-score to +/- this value")
+    p.add_argument("--z-clip", type=float, default=10.0,
+                   help="limit every z-score to +/- this value (a metric constant in the warm start has a tiny std)")
     p.add_argument("--out", type=Path, default=Path("_results/steering"))
     return p.parse_args(argv)
 

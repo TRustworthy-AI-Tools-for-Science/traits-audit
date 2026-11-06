@@ -89,7 +89,7 @@ audit pipeline.
 | 0 | $\alpha$ | `VarianceAlignmentCheck` | $\bar{\sigma}^2_\text{pred} / \bar{\sigma}^2_\text{true}$ | ideal = 1.0 |
 | 1 | $\mathrm{CE}$ | `KuleshovCalibrationCheck` | $\int_0^1 |F_\text{pred}(p) - p| \, dp$ (Kuleshov 2018) | lower ↓ |
 | 2 | $\mathrm{ENCE}$ | `ENCECheck` | $\frac{1}{B} \sum_b |\hat{\sigma}_b - \sigma_b| / \sigma_b$ (Levi 2022) | lower ↓ |
-| 3 | $\mathrm{MCA}$ | `TraitsCalibrationCheck` (`details["miscalibration_area"]`) | Area between calibration curve and diagonal | lower ↓ |
+| 3 | $\mathrm{MCA}$ | AuditResult `"TraitsCalibration"` (`details["miscalibration_area"]`), from battery-forecast's checks, not a traits-audit check | Area between calibration curve and diagonal | lower ↓ |
 | 4 | $\rho$ | `VarianceErrorCorrelationCheck` | $r_S(\sigma^2_\text{pred}, |y - \hat{y}|)$ (Spearman) | higher ↑ |
 | 5 | $d$ | `UncertaintyEvolutionCheck` | Channels with slope $< -1\%$/step | lower ↓ |
 | 6 | $\phi$ | `UncertaintyAnomalyCheck` | Fraction $|z\text{-score}| > 3$ | lower ↓ |
@@ -97,7 +97,8 @@ audit pipeline.
 #### Part B — EIS inference quality (indices 7–11)
 
 These metrics assess the upstream measurement and parameter-fitting pipeline.
-They are produced by the Inference audit stage and the DRT analysis module.
+They are produced by the Inference audit stage and the DRT analysis module of
+battery-forecast (`battery_forecast.audit`), not by traits-audit checks.
 
 | Idx | Symbol | Source / AuditResult name | Physical question | Direction |
 |-----|--------|--------------------------|-------------------|-----------|
@@ -181,13 +182,20 @@ v = make_audit_health_vector(
 ```
 
 Fields whose check did not report (not run, skipped, or a non-finite value) are
-filled with a **neutral value**: the value at which the field contributes
-nothing to the health score of §4.  That is $1$ for the two ratio fields
-($\alpha$, $q$) and $0$ for every other field (`NEUTRAL_AUDIT_HEALTH`).  A
-check that has not reported then neither rewards nor penalises a protocol.
-Filling the ratio fields with 0 instead would charge the full conformal penalty
-until the conformal check has enough samples, and show the dynamics model a
-spurious jump when it starts reporting.
+filled with a **neutral value**: the value at which the field adds 0 to the
+health score $h_\text{score}$ of §4.  That is $\rho = 0$, $\lambda^\text{st} = 0$,
+$q = 1$ (so $|q - 1| = 0$), $\alpha = 1$ (`variance_alignment`), and $0$ for
+every other field (`NEUTRAL_AUDIT_HEALTH`).  A check that has not reported then
+neither rewards nor penalises a protocol.  Filling the ratio fields with 0
+instead would charge the full conformal penalty until the conformal check has
+enough samples.  A check that starts reporting can still move its field away
+from the neutral value in one step, a jump in the state the dynamics model
+sees; this is accepted.
+
+A step with no vector at all (`uncertainty_vector=None`) is filled by the
+policy (`_missing_uncertainty`): with the policy's `neutral_uncertainty`, which
+the audit policies set to `NEUTRAL_AUDIT_HEALTH`, when it has the right length,
+and otherwise with zeros (the neutral value for a vector of z-scores, §4.3).
 
 ---
 
@@ -235,8 +243,26 @@ The DMDc regression identifies $[A_r | B_r]$ from the augmented projected states
 
 $$
 z_{t+1} = A_r z_t + B_r a_t,
-\qquad z_t = \tilde{s}_t^\text{audit} U_r \in \mathbb{R}^r.
+\qquad z_t = d_t U_r \in \mathbb{R}^r,
 $$
+
+where for `AuditStateSpacePolicy` $d_t$ is the detrended augmented state
+(`RegimeDetrender`, single regime; §4.1 of `state_space_bayes_derivation.md`)
+and for `AuditBayesianDynamicsPolicy` $d_t = \tilde{s}_t^\text{audit}$ (raw).
+The detrender has two phases:
+
+* **Warm-up** (the first 20 updates): the reference is the running global
+  mean *including* the current state,
+  $d_t = \tilde{s}_t - \frac{1}{t}\sum_{k \le t} \tilde{s}_k$.
+  `reconstruct` inverts this for the next state:
+  $\tilde{s} = \frac{n+1}{n} d + S/n$, with $S$ and $n$ the sum and count of
+  the states so far.
+* **After warm-up**: the reference is the regime-group EMA of the *earlier*
+  states, $d_t = \tilde{s}_t - b_{t-1}$, and `reconstruct` gives
+  $\tilde{s} = b + d$.
+
+In the steering experiment the warm start replays about 20 observations, so
+the first steering steps still fall inside the warm-up phase.
 
 The linear model now captures how EIS validity and ECM model quality co-evolve
 with the battery state under each charge protocol.  If certain protocols
@@ -249,37 +275,44 @@ encodes this, and the health bonus penalises those protocols.
 
 ### 4.1  Definition of the health score
 
-Define the **scalar health score** $h_\text{score}: \mathbb{R}^{14} \to [-5, 2]$:
+Define the **scalar health score** $h_\text{score}: \mathbb{R}^{14} \to [-6, 2]$:
 
 $$
 \boxed{
 h_\text{score}(v)
-= \rho
-+ \lambda^\text{st}
-- \mathrm{CE}
-- \phi
+= \operatorname{clip}(\rho, -1, 1)
++ \operatorname{clip}(\lambda^\text{st}, 0, 1)
+- \operatorname{clip}(\mathrm{CE}, 0, 1)
+- \operatorname{clip}(\phi, 0, 1)
 - \operatorname{clip}\!\left(\frac{\ell}{0.05}, 0, 1\right)
 - \operatorname{clip}\!\left(\frac{\kappa}{0.05}, 0, 1\right)
-- \operatorname{clip}\!\left(|q - 1|, 0, 1\right)
+- \min\!\left(|q - 1|, 1\right)
 }
 $$
 
-where $\operatorname{clip}(x, 0, 1) = \min(\max(x, 0), 1)$.
+where $\operatorname{clip}(x, a, b) = \min(\max(x, a), b)$.  Every term is
+clipped to its range (the lower bound 0 included on both EIS terms), so a
+predicted, linearly extrapolated vector cannot earn a reward outside the
+range.  A non-finite entry takes its neutral value (§2.3), which adds 0.  The
+default health function requires the 14-field vector and raises an error
+otherwise; other layouts pass `health_fn` (§4.2).
 
 Each term and its contribution:
 
 | Term | Range | Direction | Physical interpretation |
 |------|-------|-----------|------------------------|
-| $\rho = v[4]$ | $[-1, 1]$ | higher ↑ | Model knows when it is uncertain |
-| $\lambda^\text{st} = v[12]$ | $[0, 1]$ | higher ↑ | Surrogate landscape is locally stable |
-| $-\mathrm{CE} = -v[1]$ | $[-1, 0]$ | less negative ↑ | Calibration quality |
-| $-\phi = -v[6]$ | $[-1, 0]$ | less negative ↑ | Absence of anomalous uncertainties |
+| $\operatorname{clip}(\rho, -1, 1)$, $\rho = v[4]$ | $[-1, 1]$ | higher ↑ | Model knows when it is uncertain |
+| $\operatorname{clip}(\lambda^\text{st}, 0, 1)$, $\lambda^\text{st} = v[12]$ | $[0, 1]$ | higher ↑ | Surrogate landscape is locally stable |
+| $-\operatorname{clip}(\mathrm{CE}, 0, 1)$, $\mathrm{CE} = v[1]$ | $[-1, 0]$ | less negative ↑ | Calibration quality |
+| $-\operatorname{clip}(\phi, 0, 1)$, $\phi = v[6]$ | $[-1, 0]$ | less negative ↑ | Absence of anomalous uncertainties |
 | $-\operatorname{clip}(\ell/0.05, 0, 1)$ | $[-1, 0]$ | less negative ↑ | EIS data quality (LinKK) |
 | $-\operatorname{clip}(\kappa/0.05, 0, 1)$ | $[-1, 0]$ | less negative ↑ | ECM model quality (kkV) |
-| $-\operatorname{clip}(|q - 1|, 0, 1)$ | $[-1, 0]$ | less negative ↑ | Conformal coverage at the nominal rate |
+| $-\min(|q - 1|, 1)$ | $[-1, 0]$ | less negative ↑ | Conformal coverage at the nominal rate |
 
-Perfect health gives $h_\text{score} = 2$; an all-bad experiment gives $-5$.
-A field at its neutral value (§2.3) contributes 0.
+Perfect health ($\rho = 1$, $\lambda^\text{st} = 1$, every penalty 0) gives
+$h_\text{score} = 2$; the worst experiment ($\rho = -1$, $\mathrm{CE} = 1$,
+$\phi = 1$, both EIS terms at 1, $|q - 1| \ge 1$) gives $-6$.  A field at its
+neutral value (§2.3) contributes 0.
 
 **Why seven terms, not fourteen?**  The explicit health cost uses the seven most
 interpretable and independently meaningful metrics.  The remaining seven fields
@@ -293,12 +326,9 @@ acceptance criteria in the audit checks (`LinKKCheck.QUALITY_THRESHOLD` and
 `"Model Self-Consistency — Simulated Mean"`, both 0.05).  Normalising by the
 threshold makes the penalty proportional to how far the metric is from passing,
 and caps it at 1 (no additional penalty for extreme failures, avoiding score
-instability when data is very bad).
-
-**Shorter vectors.**  Indices beyond the length of $v$, and non-finite entries,
-are treated as neutral, so the score is defined for any prefix of the layout.
-The conformal term $|q - 1|$ is normalised by 1, the deviation at which the
-conformal quantile is double, or zero, the nominal one.
+instability when data is very bad).  The conformal term $|q - 1|$ is
+normalised by 1, the deviation at which the conformal quantile is double, or
+zero, the nominal one.
 
 ### 4.2  Health cost in the acquisition score
 
@@ -311,10 +341,14 @@ v^\text{pred}_\text{next} = \tilde{s}^\text{dyn}_\text{next}[n{:}] / w,
 $$
 
 with $\tilde{s}^\text{dyn}_\text{next}$ the one-step prediction of the base
-policy: $b_t + U_r (A_r z + B_r a)$ for `AuditStateSpacePolicy`, whose
-dynamics are fitted to detrended states (§4.1 of
-`state_space_bayes_derivation.md`), and $U_r (A_r z + B_r a)$ for
-`AuditBayesianDynamicsPolicy`.
+policy.  For `AuditStateSpacePolicy`, whose dynamics are fitted to detrended
+states (§3.3; §4.1 of `state_space_bayes_derivation.md`), it is
+$\operatorname{reconstruct}\bigl(U_r (A_r z + B_r a)\bigr)$ with
+$z = d_t U_r$: during the detrender's warm-up
+$\frac{n+1}{n}\,U_r(A_r z + B_r a) + S/n$, afterwards
+$b_t + U_r (A_r z + B_r a)$ with $b_t$ the EMA including $\tilde{s}_t$.  For
+`AuditBayesianDynamicsPolicy` it is $U_r (A_r z + B_r a)$ with
+$z = \tilde{s}_t U_r$.
 
 The health bonus is then:
 
@@ -328,11 +362,14 @@ This is **prospective**: the policy evaluates the experiment health it
 
 **Other health functions.**  The policies accept any `health_fn` in place of
 $h_\text{score}$, for health vectors with a different layout.  It should be
-bounded, as $h_\text{score}$ is: $\gamma_\text{health}$ is then the largest
-amount of objective the policy will trade for health, and a linear
-extrapolation of $v$ to an extreme candidate cannot dominate the score.  A
-smooth bound keeps the term informative beyond any threshold.  For a vector of
-z-scored "badness" metrics, as in the steering experiment, the health is
+bounded for *every* input, as $h_\text{score}$ is because each of its terms is
+clipped (§4.1): $v^\text{pred}_\text{next}$ is a linear extrapolation and can
+leave the natural ranges of §2.2, but $h_\text{score}$ of it stays in
+$[-6, 2]$.  $\gamma_\text{health}$ is then the largest amount of objective the
+policy will trade for health, and an extreme candidate cannot dominate the
+score.  A smooth bound keeps the term informative beyond any threshold.  For a
+vector of z-scored "badness" metrics, as in the steering experiment (§4.3), the
+health is
 
 $$
 h(v) = -\frac{1}{m} \sum_{i=1}^{m} \tanh\!\left(\frac{v_i}{k}\right) \in [-1, 1],
@@ -340,6 +377,19 @@ $$
 
 with $k$ the z-score at which a metric counts as clearly better or worse than
 its warm-start level (default $k = 2$).
+
+### 4.3  Layout in the steering experiment
+
+`experiments/results/scripts/steer_state_space.py` does not use the 14-field
+layout or $h_\text{score}$.  It feeds the policy
+$v_t = (z_1, \ldots, z_m)$, the z-scored *badness* of the metrics the policy
+sees: the 4 default steering metrics (`CalibrationError`, `NLL`,
+`VarianceErrorCorrelation`, `SignedBias`), or all 13 for
+`audit-state-space-all`.  Each metric is z-scored against its values during
+the warm start; a metric whose check did not report (NaN) gets $z = 0$, the
+neutral value; every $z$ is clipped to $\pm 10$ by default (`--z-clip`).  The
+health function is $h(v) = -\frac{1}{m}\sum_i \tanh(z_i / k)$ with $k = 2$
+(`--health-scale`), passed as `health_fn`.
 
 ---
 
@@ -351,11 +401,19 @@ $$
 \boxed{
 \text{score}(a)
 = Q \, \delta(s^\text{dyn}_\text{next})
-+ R \, \|a\|^2
++ R \, \|\hat{a}\|^2
 - \kappa_\text{LCB} \, \bar{\sigma}_\text{GP}
+- C_\text{rate} \, \hat{a}_1
 - \gamma_\text{health} \, h_\text{score}(v^\text{pred}_\text{next})
 }
 $$
+
+where $\hat{a} = a \oslash p$ is the protocol normalised component-wise by
+`prot_scale`, $p_j = \max\bigl(\max_{a' \in \mathcal{A}} |a'_j|, 1\bigr)$ over
+the candidate pool, and $C_\text{rate}\,\hat{a}_1$ (`C_rate_bonus`, default 0)
+rewards a higher normalised first protocol component (first-stage charge
+current).  Both are inert in the steering experiment, which sets $R = 0$ and
+leaves $C_\text{rate} = 0$.
 
 ### 5.2  AuditBayesianDynamicsPolicy
 
@@ -363,24 +421,31 @@ $$
 \boxed{
 \text{score}(a)
 = Q \, \delta(s^\text{dyn}_\text{next})
-+ R \, \|a\|^2
++ R \, \|\hat{a}\|^2
 - \kappa_\text{LCB} \, \bar{\sigma}_\text{GP}
 - \gamma_\text{info} \, \log\bigl(1 + h(z, a)\bigr)
 - \gamma_\text{sub} \, \rho_\text{sub}(\hat{s}_\text{GP})
+- C_\text{rate} \, \hat{a}_1
 - \gamma_\text{health} \, h_\text{score}(v^\text{pred}_\text{next})
 }
 $$
+
+with $\hat{a}$ and $C_\text{rate}$ as in §5.1.  Note that $h(z, a)$ is the
+leverage score and $h_\text{score}$ (or `health_fn`) the health score; they
+are unrelated.
 
 Symbol table:
 
 | Symbol | Definition |
 |--------|-----------|
-| $z$ | Belief state projected to the rank-$r$ audit subspace (detrended for `AuditStateSpacePolicy`) |
+| $z$ | Belief state projected to the rank-$r$ audit subspace: $z = d_t U_r$ (detrended, §3.3) for `AuditStateSpacePolicy`, $z = \tilde{s}_t U_r$ for `AuditBayesianDynamicsPolicy` |
+| $\hat{a} = a \oslash p$ | Protocol normalised by `prot_scale` (§5.1) |
+| $C_\text{rate}$ | `C_rate_bonus` (default 0) |
 | $s^\text{dyn}_\text{next} = \tilde{s}^\text{dyn}_\text{next}[:n]$ | Predicted next ECM state |
 | $v^\text{pred}_\text{next} = \tilde{s}^\text{dyn}_\text{next}[n:] / w$ | Predicted next audit health vector (14-dim) |
 | $h(z,a) = [z\|a]^\top G_T^{-1} [z\|a]$ | Leverage score in the health-augmented dynamics space |
 | $\rho_\text{sub}(\hat{s}_\text{GP})$ | Normalised subspace residual of GP-predicted next state |
-| $h_\text{score}(v) \in [-5, 2]$ | Scalar health score (§4.1) |
+| $h_\text{score}(v) \in [-6, 2]$ | Scalar health score (§4.1) |
 | $Q, R, \kappa_\text{LCB}, \gamma_\text{info}, \gamma_\text{sub}, \gamma_\text{health}$ | Hyperparameters |
 
 ---

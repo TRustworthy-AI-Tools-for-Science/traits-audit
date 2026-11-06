@@ -11,7 +11,7 @@ The policies in this module instead append the **audit health vector**
 Rather than asking "how uncertain is each parameter?", this vector asks
 "how well is the experiment's uncertainty characterisation functioning?"
 
-It encodes two classes of experiment health:
+It encodes three classes of experiment health:
 
 **Predictive-quality fields** (from TSModel + Evaluate audit):
 
@@ -22,9 +22,8 @@ It encodes two classes of experiment health:
       0    variance_alignment     VarianceAlignmentCheck     ≈ 1.0
       1    calibration_error      KuleshovCalibrationCheck   lower ↓
       2    ence                   ENCECheck                  lower ↓
-      3    miscalibration_area    (legacy; filled by         lower ↓
-                                  TraitsCalibrationCheck
-                                  from run_evaluate_audit)
+      3    miscalibration_area    "TraitsCalibration"         lower ↓
+                                  (battery-forecast check)
       4    variance_error_corr    VarianceErrorCorrelation   higher ↑
       5    n_decreasing_channels  UncertaintyEvolution       lower ↓
       6    anomalous_fraction     UncertaintyAnomalies       lower ↓
@@ -117,7 +116,7 @@ AUDIT_HEALTH_FIELDS: List[str] = [
     "calibration_error",         # 1: Kuleshov CE ∈ [0, 1]; lower is better
     "ence",                      # 2: ENCE ≥ 0; lower is better
     "miscalibration_area",       # 3: area under |predicted_pi − observed_pi|; lower is better
-    "variance_error_corr",       # 4: Spearman ρ(true_var, |error|) ∈ [-1, 1]; higher is better
+    "variance_error_corr",       # 4: Spearman ρ(σ²_pred, |error|) ∈ [-1, 1]; higher is better
     "n_decreasing_channels",     # 5: channels whose uncertainty slope < −1%/step; lower is better
     "anomalous_fraction",        # 6: fraction of steps beyond 3 σ from baseline; lower is better
     # ── EIS-specific inference quality (Inference audit) ──────────────────
@@ -145,7 +144,7 @@ NEUTRAL_AUDIT_HEALTH: np.ndarray = np.array(
 def make_audit_health_vector(results: list, fill_value: Optional[float] = None) -> np.ndarray:
     """Assemble a canonical 14-D audit health vector from a list of AuditResult objects.
 
-    Covers two audit stages:
+    Covers three audit stages:
 
     * **Predictive-quality** (indices 0–6): extracted from TSModel and Evaluate
       audit checks (VarianceAlignment, TraitsCalibration, VarianceErrorCorrelation,
@@ -153,6 +152,8 @@ def make_audit_health_vector(results: list, fill_value: Optional[float] = None) 
     * **EIS inference quality** (indices 7–11): extracted from Inference audit
       checks (LinKKCheck, ECMStabilityCheck, model self-consistency checks, and the
       DRT peak-count mismatch produced by :func:`drt_peak_mismatch_result`).
+    * **Surrogate / coverage quality** (indices 12–13): LyapunovStability and
+      ConformalCoverage.
 
     Fields not present in ``results`` are filled with ``fill_value``, or with
     :data:`NEUTRAL_AUDIT_HEALTH` when ``fill_value`` is ``None``.
@@ -253,33 +254,30 @@ def _health_score(v: np.ndarray) -> float:
       penalises both over- and under-coverage.  Defaults to 1 (no penalty) when
       not populated.
 
-    ``h`` ∈ [-5, 2].  Perfect health gives h = 2; all-bad experiment gives h = -5.
-
-    Indices 7–13 gracefully degrade to neutral values (0 / 1) when not present
-    in ``v`` or when the value is ``np.nan``, so the function is backward-compatible
-    with shorter vectors from earlier pipeline runs or the run_evaluate_audit pipeline.
+    Every term is clipped to its range, so a predicted (extrapolated) vector
+    cannot earn a reward outside it: ``h`` ∈ [-6, 2].  Perfect health gives
+    h = 2; the worst experiment (ρ = −1, every penalty at 1) gives h = −6.
+    A non-finite entry takes its neutral value, which adds 0 to ``h``.
     """
-    n = len(v)
-    rho  = float(v[4]) if n > 4 and np.isfinite(v[4]) else 0.0
-    ce   = float(v[1]) if n > 1 and np.isfinite(v[1]) else 0.0
-    frac = float(v[6]) if n > 6 and np.isfinite(v[6]) else 0.0
+    v = np.asarray(v, dtype=float)
+    if len(v) != AUDIT_HEALTH_VECTOR_DIM:
+        raise ValueError(
+            f"_health_score needs the {AUDIT_HEALTH_VECTOR_DIM}-field audit health vector, got "
+            f"{len(v)} fields; pass health_fn for other layouts"
+        )
 
-    # EIS validity: normalised by acceptance threshold, capped at 1
-    linkk_norm = (
-        min(float(v[7]) / 0.05, 1.0)
-        if n > 7 and np.isfinite(v[7]) else 0.0
-    )
-    kk_sc_norm = (
-        min(float(v[9]) / 0.05, 1.0)
-        if n > 9 and np.isfinite(v[9]) else 0.0
-    )
+    def term(index, low, high, neutral):
+        value = v[index] if np.isfinite(v[index]) else neutral
+        return float(np.clip(value, low, high))
 
-    # Lyapunov: fraction stable ∈ [0, 1]; defaults 0 when not populated
-    lyap = float(v[12]) if n > 12 and np.isfinite(v[12]) else 0.0
-
-    # Conformal: deviation from ideal ratio of 1; defaults 1 → no penalty
-    conf_ratio = float(v[13]) if n > 13 and np.isfinite(v[13]) else 1.0
-    conf_dev = min(abs(conf_ratio - 1.0), 1.0)
+    rho = term(4, -1.0, 1.0, 0.0)
+    lyap = term(12, 0.0, 1.0, 0.0)
+    ce = term(1, 0.0, 1.0, 0.0)
+    frac = term(6, 0.0, 1.0, 0.0)
+    linkk_norm = float(np.clip(v[7] / 0.05, 0.0, 1.0)) if np.isfinite(v[7]) else 0.0
+    kk_sc_norm = float(np.clip(v[9] / 0.05, 0.0, 1.0)) if np.isfinite(v[9]) else 0.0
+    conf_ratio = v[13] if np.isfinite(v[13]) else 1.0
+    conf_dev = min(abs(float(conf_ratio) - 1.0), 1.0)
 
     return rho + lyap - ce - frac - linkk_norm - kk_sc_norm - conf_dev
 
@@ -371,12 +369,12 @@ class AuditStateSpacePolicy(StateSpacePolicy):
 
     The augmented belief state is::
 
-        s̃_t = [s_t | uncertainty_weight · v_audit_t]  ∈ ℝ^{n + 12}
+        s̃_t = [s_t | uncertainty_weight · v_audit_t]  ∈ ℝ^{n + 14}
 
-    where ``v_audit_t`` encodes variance alignment, calibration error, ENCE,
-    miscalibration area, variance-error correlation, decreasing-channel count,
-    anomaly fraction, linKK RMSE, ECM max CV, ECM KK self-consistency,
-    posterior KK fraction, and DRT peak mismatch at cycle ``t``.
+    where ``v_audit_t`` is the 14-field audit health vector at cycle ``t``
+    (:data:`AUDIT_HEALTH_FIELDS`).  With ``health_fn`` set, ``v_audit_t`` can be
+    any vector that ``health_fn`` scores, such as the z-scored badness of the
+    steering metrics in the steering experiment.
 
     An additional **health cost** term is added to the acquisition score::
 
@@ -387,7 +385,7 @@ class AuditStateSpacePolicy(StateSpacePolicy):
 
     where ``v_audit_next`` is the predicted next audit health vector extracted
     from the linear-dynamics prediction of the augmented state, and
-    ``h(v) = rho − CE − anomaly_frac`` (see :func:`_health_score`).
+    ``h(v)`` is ``health_fn`` (default :func:`_health_score`, seven clipped terms).
 
     The :meth:`make_audit_health_vector` class method assembles ``v_audit``
     from a list of ``battery_forecast.audit.AuditResult`` objects.
@@ -407,6 +405,8 @@ class AuditStateSpacePolicy(StateSpacePolicy):
         the audit vector has a different layout.
     All other parameters are inherited from StateSpacePolicy.
     """
+
+    neutral_uncertainty = NEUTRAL_AUDIT_HEALTH
 
     def __init__(
         self,
@@ -512,7 +512,7 @@ class AuditBayesianDynamicsPolicy(BayesianDynamicsPolicy):
 
     The augmented belief state is::
 
-        s̃_t = [s_t | uncertainty_weight · v_audit_t]  ∈ ℝ^{n + 12}
+        s̃_t = [s_t | uncertainty_weight · v_audit_t]  ∈ ℝ^{n + 14}
 
     An additional **health cost** term is added to the acquisition score::
 
@@ -525,7 +525,7 @@ class AuditBayesianDynamicsPolicy(BayesianDynamicsPolicy):
 
     where ``v_audit_next`` is extracted from the linear-dynamics prediction
     of the augmented state and
-    ``h_score(v) = rho − CE − anomaly_frac`` (see :func:`_health_score`).
+    ``h_score(v)`` is ``health_fn`` (default :func:`_health_score`, seven clipped terms).
 
     Parameters
     ----------
@@ -536,6 +536,8 @@ class AuditBayesianDynamicsPolicy(BayesianDynamicsPolicy):
         As for :class:`AuditStateSpacePolicy`.
     All other parameters are inherited from BayesianDynamicsPolicy.
     """
+
+    neutral_uncertainty = NEUTRAL_AUDIT_HEALTH
 
     def __init__(
         self,

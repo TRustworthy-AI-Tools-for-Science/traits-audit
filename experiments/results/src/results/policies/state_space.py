@@ -78,8 +78,13 @@ class StateSpacePolicy(BasePolicy):
        following the belief-state MDP of Kaelbling et al. (1998).
     2. Once ``min_fit_obs`` transitions are available, fit the model:
 
-       * **Detrending**: each augmented state minus its causal EMA baseline,
-         ``d_t = s̃_t − b_{t−1}`` (``traits_audit.stability.dmdc.detrend_trajectory``).
+       * **Detrending**: each augmented state minus a causal baseline
+         (``traits_audit.stability.dmdc.detrend_trajectory``).  For the first
+         20 states (the detrender's warmup) the baseline is the running mean
+         *including* the current state, ``d_t = s̃_t − (1/t) Σ_{k≤t} s̃_k``;
+         afterwards it is the EMA of earlier states, ``d_t = s̃_t − b_{t−1}``.
+         Predictions are mapped back with ``RegimeDetrender.reconstruct``,
+         the exact inverse of the next update in either phase.
        * **SVD** of the ``(T × n_aug)`` detrended-state matrix identifies the
          ``n_components`` principal axes ``U_r ∈ ℝ^{n_aug × r}`` (similar to
          Dynamic Mode Decomposition).
@@ -131,6 +136,9 @@ class StateSpacePolicy(BasePolicy):
         ``f(state: np.ndarray) -> float``.  Higher = more degraded.
     scaler : sklearn-compatible scaler, optional
     """
+
+    # Fill for a step with no uncertainty vector; None means zeros (see _missing_uncertainty).
+    neutral_uncertainty: Optional[np.ndarray] = None
 
     def __init__(
         self,
@@ -209,6 +217,8 @@ class StateSpacePolicy(BasePolicy):
         """Concatenate ECM state with scaled uncertainty vector.
 
         Returns the state unchanged when no uncertainty vector is available.
+        A step with no vector (``None``) uses :meth:`_missing_uncertainty` once
+        vectors have been seen, so every augmented state has the same length.
         Scaling by ``uncertainty_weight`` lets the caller control how much
         influence the uncertainty dimensions have on the SVD basis relative
         to the ECM parameter dimensions.
@@ -218,10 +228,26 @@ class StateSpacePolicy(BasePolicy):
         variables (here, ECM parameters) rather than a point estimate.
         """
         if uncertainty is None:
+            uncertainty = self._missing_uncertainty()
+        if uncertainty is None:
             return state
         return np.concatenate(
             [state, self.uncertainty_weight * np.asarray(uncertainty, dtype=float)]
         )
+
+    def _missing_uncertainty(self) -> Optional[np.ndarray]:
+        """Stand-in for a step whose uncertainty vector is missing (None if none seen yet).
+
+        The policy's ``neutral_uncertainty`` when it has the right length (the
+        audit policies set it to ``NEUTRAL_AUDIT_HEALTH``), else zeros, which is
+        neutral for z-scored vectors.
+        """
+        u_dim = next((len(u) for u in self._uncertainty_history if u is not None), 0)
+        if u_dim == 0:
+            return None
+        if self.neutral_uncertainty is not None and len(self.neutral_uncertainty) == u_dim:
+            return np.array(self.neutral_uncertainty, dtype=float)
+        return np.zeros(u_dim)
 
     # ── Stateful history ──────────────────────────────────────────────────
 
@@ -295,14 +321,8 @@ class StateSpacePolicy(BasePolicy):
             uncertainty_hist = uncertainty_hist[-(self.window + 1):]
             action_hist = action_hist[-(self.window + 1):]
 
-        # Infer uncertainty dimension from the first non-None entry so that
-        # None entries (no audit data available yet) are replaced with zeros
-        # of the same length, keeping the augmented state shape homogeneous.
-        u_dim = next(
-            (len(u) for u in uncertainty_hist if u is not None), 0
-        )
         aug_states = np.array([
-            self._build_augmented(s, u if u is not None else np.zeros(u_dim))
+            self._build_augmented(s, u)
             for s, u in zip(state_hist, uncertainty_hist, strict=True)
         ])  # (T, n_aug)
         A = np.array(action_hist[:-1])  # (T-1, n_action)

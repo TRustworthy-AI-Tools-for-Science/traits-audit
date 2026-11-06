@@ -44,6 +44,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -149,17 +150,22 @@ def stability(Z, x, window):
 
 
 def distance_to_target(raw_steering, target, scale):
-    """Per step: the steering metrics' mean distance above the target level, in units of its spread."""
-    return ((raw_steering - target) / scale).mean(axis=1)
+    """Per step: the steering metrics' mean distance above the target level, in units of its spread.
+
+    Metrics that did not report (NaN) are left out of that step's mean.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        return np.nanmean((raw_steering - target) / scale, axis=1)
 
 
 def relative_recovery(raw_steering, target, scale, window):
     """P6: share of the starting distance to the target closed by the end (NaN if it starts at the target)."""
     distance = distance_to_target(raw_steering, target, scale)
     start = distance[0]
-    if start <= 0:
+    if not np.isfinite(start) or start <= 0:
         return np.nan
-    end = distance[-window:].mean()
+    end = np.nanmean(distance[-window:])
     return float((start - end) / start)
 
 
@@ -245,8 +251,8 @@ def recovery_targets(reference_campaigns, policy, window):
     if not ends:
         return None, None
     pooled = np.vstack(ends)
-    target = np.median(pooled, axis=0)
-    q75, q25 = np.percentile(pooled, [75, 25], axis=0)
+    target = np.nanmedian(pooled, axis=0)
+    q75, q25 = np.nanpercentile(pooled, [75, 25], axis=0)
     return target, np.maximum(q75 - q25, 1e-12)
 
 

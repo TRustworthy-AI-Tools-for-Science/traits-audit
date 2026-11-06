@@ -72,3 +72,20 @@ def test_gp_joint_draw_survives_a_near_singular_posterior():
     assert draw.shape == (400,) and np.all(np.isfinite(draw))
     mu, _ = gp.predict(grid)
     assert np.max(np.abs(draw - mu)) < 10 * np.max(np.abs(mu) + 1)
+
+
+def test_unreported_metric_is_neutral_and_constant_metric_is_clipped():
+    module = _load_script()
+    warm = []
+    for i in range(6):
+        snapshot = dict.fromkeys(module.ALL_METRICS, 0.0)
+        snapshot["NLL"] = 1.0 + 0.1 * i
+        warm.append(snapshot)                              # every other metric constant at 0
+    baseline = module.WarmStartBaseline(warm, z_floor=1e-3, z_clip=10.0)
+    later = dict.fromkeys(module.ALL_METRICS, 0.5)
+    later["NLL"] = np.nan
+    z = baseline.z_scores(later)
+    assert z["NLL"] == 0.0                                  # did not report: neutral
+    assert z["CRPS"] == 10.0                                # tiny warm-start std: clipped, not ~5e8
+    per_objective = [{"CRPS": np.nan}, {"CRPS": 2.0}]
+    assert module.average_over_objectives(per_objective, ["CRPS"])["CRPS"] == 2.0

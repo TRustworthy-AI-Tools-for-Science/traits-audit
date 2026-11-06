@@ -7,10 +7,10 @@ by default), as in Methods, "Uncertainty State Space Construction":
 1. Separability: can the starting condition (calibrated, overconfident,
    underconfident, misspecified) be told apart from a campaign's metrics?
    Leave-one-seed-out nearest-centroid classification with all metrics, with
-   each metric alone, with the fiber or system block, and with the mean sigma
+   each metric alone, with the fiber or history block, and with the mean sigma
    alone.  Chance is one over the number of conditions.
 2. Orthogonality: the residual r_i of each metric's trajectory against the
-   column basis of the fiber block (system metrics) and against the mean sigma
+   column basis of the fiber block (history metrics) and against the mean sigma
    (every metric).  r = 1 means orthogonal, r = 0 means fully explained.
 3. Participation ratio of the eigenvalues lambda_i = s_i^2 / (T - 1):
    PR(fiber block), PR(all metrics) and their difference, per campaign.
@@ -43,15 +43,18 @@ def load_steer_script():
 
 
 steer = load_steer_script()
-FIBER_METRICS = list(steer.METRICS)
-SYSTEM_METRICS = list(steer.SYSTEM_METRICS)
-ALL_METRICS = FIBER_METRICS + SYSTEM_METRICS
+FIBER_METRICS = list(steer.FIBER_BLOCK)
+HISTORY_METRICS = list(steer.HISTORY_BLOCK)
+ALL_METRICS = FIBER_METRICS + HISTORY_METRICS
 
 
 # ── Loading ───────────────────────────────────────────────────────────────────
 
 def load_campaigns(runs, problem, arms, conditions):
-    """{(condition, arm, seed): {"metrics": T x m raw badness, "sigma": T mean sigma}}, steering phase only."""
+    """{(condition, arm, seed): {"metrics": T x m raw badness, "sigma": T mean sigma}}, steering phase only.
+
+    Steps where a check did not report (NaN) are left out.
+    """
     campaigns = {}
     for condition in conditions:
         path = Path(runs) / problem / condition / "steps.csv"
@@ -69,7 +72,8 @@ def load_campaigns(runs, problem, arms, conditions):
             rows.sort(key=lambda row: int(row["step"]))
             metrics = np.array([[float(row[f"raw:{name}"]) for name in ALL_METRICS] for row in rows])
             sigma = np.array([float(row["mean_sigma"]) for row in rows])
-            campaigns[key] = {"metrics": metrics, "sigma": sigma}
+            complete = np.isfinite(metrics).all(axis=1) & np.isfinite(sigma)    # steps where every check reported
+            campaigns[key] = {"metrics": metrics[complete], "sigma": sigma[complete]}
     return campaigns
 
 
@@ -144,8 +148,8 @@ def leave_one_seed_out_accuracy(campaigns, columns):
 def separability(campaigns):
     sigma_column = len(ALL_METRICS)
     fiber = [ALL_METRICS.index(name) for name in FIBER_METRICS]
-    system = [ALL_METRICS.index(name) for name in SYSTEM_METRICS]
-    feature_sets = {"all metrics": fiber + system, "fiber block": fiber, "system block": system,
+    history = [ALL_METRICS.index(name) for name in HISTORY_METRICS]
+    feature_sets = {"all metrics": fiber + history, "fiber block": fiber, "history block": history,
                     "mean sigma": [sigma_column]}
     for i, name in enumerate(ALL_METRICS):
         feature_sets[name] = [i]
@@ -165,7 +169,7 @@ def per_campaign_geometry(campaign):
     geometry["PR increase"] = geometry["PR all"] - geometry["PR fiber"]
     for i, name in enumerate(ALL_METRICS):
         geometry[f"r vs sigma: {name}"] = orthogonal_residual(metrics[:, i], campaign["sigma"])
-    for i, name in enumerate(SYSTEM_METRICS):
+    for i, name in enumerate(HISTORY_METRICS):
         column = metrics[:, len(FIBER_METRICS) + i]
         geometry[f"r vs fiber: {name}"] = orthogonal_residual(column, fiber)
     return geometry
@@ -192,6 +196,16 @@ def geometry_by_condition(campaigns):
 
 # ── 4. Partition test ─────────────────────────────────────────────────────────
 
+def metrics_for_history(campaign, condition, X, Y, fibers, kernels, args, seed):
+    """Every metric for one acquisition history (X, Y), with the reference fibers given."""
+    Y_ref, MU_ref, SD_ref = fibers
+    values, _ = steer.score_metrics(Y_ref, MU_ref, SD_ref)
+    system, _ = steer.score_system_metrics(campaign.problem, condition, X, Y, campaign.grid,
+                                           Y_ref, MU_ref, SD_ref, kernels, args, seed=[seed, 6, len(X)])
+    values.update(system)
+    return values
+
+
 def partition_test(problem_name, condition, seeds, steps):
     """Largest change of each metric when the history's (x, y) pairing is shuffled, fibers fixed.
 
@@ -212,17 +226,9 @@ def partition_test(problem_name, condition, seeds, steps):
         MU_ref, SD_ref = campaign.surrogate.predict(campaign.grid)
         kernels = campaign.surrogate.fitted_kernels()
         shuffled_Y = Y[np.random.default_rng([seed, 43]).permutation(len(Y))]
-
-        def all_metrics(history_Y):
-            values, _ = steer.score_metrics(campaign.Y_ref, MU_ref, SD_ref)
-            system, _ = steer.score_system_metrics(problem, condition, X, history_Y, campaign.grid,
-                                                   campaign.Y_ref, MU_ref, SD_ref, kernels, args,
-                                                   seed=[seed, 6, len(X)])
-            values.update(system)
-            return values
-
-        original = all_metrics(Y)
-        shuffled = all_metrics(shuffled_Y)
+        fibers = (campaign.Y_ref, MU_ref, SD_ref)
+        original = metrics_for_history(campaign, condition, X, Y, fibers, kernels, args, seed)
+        shuffled = metrics_for_history(campaign, condition, X, shuffled_Y, fibers, kernels, args, seed)
         for name in ALL_METRICS:
             original_values[name].append(original[name])
             changes[name].append(abs(shuffled[name] - original[name]))

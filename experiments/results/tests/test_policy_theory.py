@@ -180,6 +180,29 @@ def test_unreported_checks_neither_reward_nor_penalise_health():
     assert _health_score(perfect) == 2.0
 
 
+def test_extrapolated_health_vectors_stay_inside_the_score_range():
+    from results.policies.state_space_audit import _health_score
+
+    worst = np.array([0, 1, 0, 0, -1, 0, 1, 1, 0, 1, 0, 0, 0, 3], dtype=float)
+    assert _health_score(worst) == -6.0
+    overshoot = np.array([1, -5, 0, 0, 7, 0, -4, -2, 0, -2, 0, 0, 9, 1], dtype=float)
+    assert _health_score(overshoot) == 2.0                 # negatives cannot earn a reward
+    with pytest.raises(ValueError):
+        _health_score(np.zeros(4))
+
+
+def test_missing_vector_is_filled_with_the_policys_neutral_value():
+    from results.policies import NEUTRAL_AUDIT_HEALTH
+    from results.policies.state_space_audit import AuditStateSpacePolicy
+
+    policy = AuditStateSpacePolicy(_NoModel(), num_action_features=2, min_fit_obs=50)
+    assert policy._missing_uncertainty() is None
+    policy.observe(np.zeros(3), np.zeros(2), uncertainty_vector=np.full(14, 0.3))
+    assert np.array_equal(policy._missing_uncertainty(), NEUTRAL_AUDIT_HEALTH)
+    augmented = policy._build_augmented(np.zeros(3), None)
+    assert len(augmented) == 3 + 14
+
+
 # ── Information bonus is the D-optimal gain log(1 + h) (§11.3) ──
 
 def test_info_gain_is_log_one_plus_leverage():

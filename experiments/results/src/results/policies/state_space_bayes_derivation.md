@@ -115,7 +115,7 @@ $$
 $$
 
 The OLS estimate exists and is unique only when $X_\text{fit}$ has full
-column rank, which needs more transitions than unknowns: $T - 1 > r + m$.
+column rank, which needs at least as many transitions as unknowns: $T - 1 \ge r + m$.
 `StateSpacePolicy` clips the rank $r$ to keep the system overdetermined.
 `BayesianDynamicsPolicy` uses the posterior mean of §9 instead, which the
 prior keeps defined for any $T$.
@@ -321,9 +321,8 @@ $$
 
 | Symbol | Definition |
 |--------|-----------|
-| $z = \tilde{s}_t U_r$ | Current belief state in rank-$r$ subspace |
-| $s^\text{dyn}_\text{next} = (b_t + U_r(A_r z + B_r a))_{[:n]}$ | DMDc one-step state prediction (§4.1) |
-| $z = d_t^\top U_r$, $d_t = \tilde{s}_t - b_{t-1}$ | Current detrended belief state in the rank-$r$ subspace |
+| $s^\text{dyn}_\text{next} = \operatorname{reconstruct}(U_r(A_r z + B_r a))_{[:n]}$ | DMDc one-step state prediction (§4.1): $b_t + U_r(\cdot)$ after the warm-up, $\frac{t+2}{t+1}U_r(\cdot) + S_t/(t+1)$ during it |
+| $z = d_t^\top U_r$ | Current detrended belief state in the rank-$r$ subspace; $d_t = \tilde{s}_t - b_{t-1}$ after the warm-up, $\tilde{s}_t - b_t$ (running mean including $\tilde{s}_t$) during it |
 | $\delta(\cdot)$ | Degradation proxy |
 | $\bar{\sigma}_\text{GP}$ | Mean GP posterior std (output-dimension average) |
 | $Q, R, \kappa$ | Hyperparameters |
@@ -334,14 +333,15 @@ $$
 history = []
 
 For each cycle t = 1, 2, ...:
-  1. [Warm-up] If t < min_fit_obs: select via LCB fallback; go to step 3.
+  1. [Warm-up] If t < min_fit_obs: select via LCB fallback; go to step 4.
   2. [Fit] Detrend the history: D = S − baseline (§4.1);
            SVD of D^T → U_r; OLS of [Z[:-1] | A[:-1]] → A_r, B_r  (Z = D @ U_r).
   3. [Score] For each candidate a_i ∈ A:
        z           = d_t @ U_r          (s̃_t detrended against the same baseline)
-       s_dyn_next  = (b_t + U_r @ (A_r @ z + B_r @ a_i))[:n]
+       s_dyn_next  = reconstruct(U_r @ (A_r @ z + B_r @ a_i))[:n]   (§4.1)
        _, σ_gp     = GP(s_t, a_i)
-       score(a_i)  = Q δ(s_dyn_next) + R ‖a_i‖² − κ mean(σ_gp)
+       â_i         = a_i / prot_scale
+       score(a_i)  = Q δ(s_dyn_next) + R ‖â_i‖² − κ mean(σ_gp) − C_rate â_i[0]
      Select a* = argmin score(a_i)
   4. [Execute] Apply a*; observe s_{t+1}.
   5. Append (s_t, a*) to history; go to 2.
@@ -405,17 +405,27 @@ $$
 \qquad \lambda = \sigma^2 / \tau^2,
 $$
 
-and posterior covariance $G_T^{-1}$.  The posterior **predictive variance**
-for a new feature vector $x = [z \;|\; a]^\top$ is
+and the posterior covariance of each output's weight column is
+$\sigma^2 G_T^{-1}$.  For a new feature vector $x = [z \;|\; a]^\top$ the
+predictive variance of the mean output $x^\top W$ is
 
 $$
-\operatorname{Var}\!\bigl(\hat{y} \mid x, G_T\bigr)
-= x^\top G_T^{-1} x
-\equiv h(x).
+\operatorname{Var}\!\bigl(x^\top W \mid G_T\bigr)
+= \sigma^2 \, x^\top G_T^{-1} x
+\equiv \sigma^2 \, h(x),
 $$
+
+and that of a new observation is $\sigma^2 (1 + h(x))$.  So
+$h(x) = x^\top G_T^{-1} x$ is the predictive variance in units of $\sigma^2$;
+the factor $\sigma^2$ is common to all candidates and changes neither the
+rankings nor the determinant-lemma gain of §11.2.
 
 $h(x)$ is the **leverage score** of $x$: it measures how far $x$ is from
-the centroid of the existing design in the metric defined by $G_T^{-1}$.
+the origin in the metric defined by $G_T^{-1}$ (there is no centring or
+intercept in the regression).  (Notation: $h$ is always this leverage score
+here; the audit health score of `state_space_audit_derivation.md`, written
+$h(v)$ or $h_\text{score}$ there, is a different quantity, called
+$h_\text{health}$ when both appear in one score.)
 A large leverage score means the candidate $(z, a)$ is poorly covered by
 the current regression design — observing it will most reduce the posterior
 uncertainty about $W$.
@@ -455,10 +465,20 @@ the observation operator $H$, and the new observation $y = z'$ as the
 — which is exactly the Sherman–Morrison formula above.  The SVD of $H =
 x_\text{new}^\top$ has one non-zero singular value along the direction
 $x_\text{new} / \|x_\text{new}\|$; all other directions are in the null
-space of $H$ and receive no update.  This is the observability structure
-analysed by Eldredge & Mousavi (2026, §II.B, Eq. 14): only the component of
-$W$ aligned with the current observation direction is updated; the
-orthogonal complement remains at its prior.
+space of $H$.  This is the observability structure analysed by Eldredge &
+Mousavi (2026, §II.B, Eq. 14): one observation informs only the component of
+$W$ along $x_\text{new}$.  The update itself moves $W$ along the gain
+$G_T^{-1} x_\text{new}$, which in general is not parallel to $x_\text{new}$,
+so correlated directions are also corrected; only for the first update from
+the isotropic prior ($G^{-1} = \lambda^{-1} I$) does the orthogonal
+complement stay at its prior.
+
+**Numerical details.**  After each rank-1 update $G^{-1}$ is re-symmetrised,
+$G^{-1} \leftarrow \tfrac12 (G^{-1} + G^{-\top})$, against round-off.  If the
+outcome of a pending design point is non-finite, that point is removed again
+by the opposite-sign update
+$G^{-1} \leftarrow G^{-1} + G^{-1} x x^\top G^{-1} / (1 - x^\top G^{-1} x)$,
+so that $\hat{W} = G^{-1} X^\top Y$ still holds over the transitions learned.
 
 **Initialisation.**  At warm-up (after $T_0$ = `min_fit_obs` observations),
 the posterior over the observed transitions is computed directly:
@@ -471,7 +491,9 @@ $$
 $\hat{W}_{T_0}$ is the posterior mean under the prior of §9, not the OLS
 estimate of §4.  With few transitions the regression is underdetermined; the
 prior then keeps unobserved directions of $W$ at zero instead of an arbitrary
-interpolant, and the Kalman updates correct them as transitions arrive.
+interpolant, and the Kalman updates correct them as transitions arrive.  If
+the initial fit cannot be made at $T_0$ (e.g. non-finite states), it is
+retried on each later observation until it succeeds.
 
 Subsequent observations update $G^{-1}$ and $\hat{W}$ recursively, so the
 $O((r+m)^3)$ inversion is paid only once (or once per reanchor).  After any
@@ -501,7 +523,8 @@ the last $w$ transitions after every observation instead.
 
 ### 11.1  Scalar predictive variance reduction
 
-Before observing $x_\text{new}$, the predictive variance is $h$.
+Before observing $x_\text{new}$, the predictive variance is $h$ (in units of
+$\sigma^2$, §9).
 After the update (using the formula from §10):
 
 $$
@@ -577,38 +600,32 @@ $$
   \cdot x_q^\top G_T^{-2} x_q.
 $$
 
-Since $y_q$ is unknown at query time, treat the residual as fixed at
-$\sigma^2$ (the noise level).  The selection criterion becomes:
+Since $y_q$ is unknown at query time, take its expectation under the
+posterior predictive: the expected squared residual is
+$\sigma^2 (1 + h_q)$ (§9).  The expected model change is then
 
 $$
-x_q^* = \arg\max_{x_q \in \mathcal{A}} \frac{x_q^\top G_T^{-2} x_q}{(1+h_q)^2}.
+\mathbb{E}\,\|\Delta w\|^2
+= \sigma^2 \, \frac{\|G_T^{-1} x_q\|^2}{1 + h_q},
+\qquad
+x_q^\text{MMC} = \arg\max_{x_q \in \mathcal{A}} \frac{\|G_T^{-1} x_q\|^2}{1+h_q}.
 $$
 
-**Relation to the leverage score.**  By the Cauchy–Schwarz inequality applied
-to $G_T^{-1}$:
+**Relation to the leverage score.**  MMC is related to, but not equivalent to,
+the criterion used here.  The numerator $\|G_T^{-1} x_q\|^2 = x_q^\top G_T^{-2} x_q$
+weights the directions of $x_q$ by the squared eigenvalues of $G_T^{-1}$, $h_q$
+by the eigenvalues themselves, and the ratio is not monotone in $h_q$.  Two
+candidates with the same $h_q$ can differ in expected model change, and a
+candidate with larger $h_q$ can have smaller expected model change.  The
+difference is largest when the prior is vague (small $\lambda$): the
+eigenvalues of $G_T^{-1}$ then span a wide range (near $1/\lambda$ in
+directions not yet covered), so maximising $h$ can rank candidates
+differently from MMC.
 
-$$
-x_q^\top G_T^{-2} x_q
-= \|G_T^{-1} x_q\|^2
-\leq \lambda_{\max}(G_T^{-1}) \cdot \underbrace{x_q^\top G_T^{-1} x_q}_{= h_q}.
-$$
-
-Equality holds in the top eigendirection of $G_T^{-1}$.  In the **margin
-region** — high-uncertainty candidates, where the top eigendirection of
-$G_T^{-1}$ dominates — maximising $h_q$ ranks candidates identically to
-maximising the true MMC.
-
-**RKHS interpretation.**  Cai et al. (2014, Eq. 10) express the MMC for
-kernel SVMs as the squared norm in the feature space:
-$\|\phi(x_q)\|_\Phi^2$.  In the reproducing kernel Hilbert space view of
-Bayesian linear regression, the feature map is the whitened input
-$\phi(x) = G_T^{-1/2} x$, so
-$\|\phi(x_q)\|_\Phi^2 = x_q^\top G_T^{-1} x_q = h_q$.  **The leverage score
-$h$ therefore implements the Cai MMC criterion exactly** when the feature
-map is the Bayesian posterior whitening transform.
-
-The bonus $\log(1+h)$ of §11.3 is monotone in $h$, so it ranks candidates as
-$h$ does, and equals the log-determinant gain of §11.2.
+The policy uses $\log(1+h)$ (§11.3), which is the D-optimal criterion: it
+equals the log-determinant gain of §11.2, and is monotone in $h$, so it ranks
+candidates as $h$ does.  MMC motivates the same intuition (query where the
+model would change most) but is not what the score computes.
 
 ---
 
@@ -680,16 +697,27 @@ $$
 \boxed{
 \text{score}_\text{BDP}(a) =
 \underbrace{Q \, \delta(s^\text{dyn}_\text{next})}_{\text{state cost (LQR)}}
-+ \underbrace{R \, \|a\|^2}_{\text{control cost (LQR)}}
++ \underbrace{R \, \|\hat{a}\|^2}_{\text{control cost (LQR)}}
 - \underbrace{\kappa \, \bar{\sigma}_\text{GP}}_{\text{LCB exploration}}
-- \underbrace{\gamma_\text{info} \, \log\bigl(1 + h(z, a)\bigr)}_{\text{info gain (Cai / Eldredge)}}
+- \underbrace{\gamma_\text{info} \, \log\bigl(1 + h(z, a)\bigr)}_{\text{info gain (D-optimal / Eldredge)}}
 - \underbrace{\gamma_\text{sub} \, \rho\!\bigl(\hat{s}_\text{GP}(a)\bigr)}_{\text{subspace residual (Li)}}
+- \underbrace{C_\text{rate} \, \hat{a}_1}_{\text{charge-rate reward}}
 }
 $$
+
+Here $\hat{a} = a \oslash p$ is the protocol normalised component-wise by
+`prot_scale`, $p_j = \max\bigl(\max_{a' \in \mathcal{A}} |a'_j|, 1\bigr)$ over
+the candidate pool, so the control cost is dimensionless whatever the units of
+the protocol; $C_\text{rate}$ (`C_rate_bonus`, default 0) rewards a higher
+normalised first protocol component (first-stage charge current).
+`StateSpacePolicy` computes its control cost and $C_\text{rate}$ term the same
+way.  Both are inert in the steering experiment ($R = 0$, $C_\text{rate} = 0$).
 
 | Symbol | Definition |
 |--------|-----------|
 | $z = \tilde{s}_t U_r$ | Belief state projected to rank-$r$ subspace |
+| $\hat{a} = a \oslash p$ | Protocol normalised by `prot_scale` |
+| $C_\text{rate}$ | `C_rate_bonus` (default 0) |
 | $s^\text{dyn}_\text{next} = (U_r(A_r z + B_r a))_{[:n]}$ | One-step linear dynamics prediction |
 | $\delta(\cdot)$ | Degradation proxy (e.g.\ sum of resistance means) |
 | $\bar{\sigma}_\text{GP}$ | Mean GP posterior std over output dimensions |
@@ -703,8 +731,8 @@ $$
 Initialise:  history = []
 
 For each cycle t = 1, 2, ...:
-  1. [Warm-up] If t < min_fit_obs: select via LCB fallback; go to step 3.
-  2. [Initial fit, once] SVD of S^T → U_r;
+  1. [Warm-up] If t < min_fit_obs: select via LCB fallback; go to step 4.
+  2. [Initial fit, once; retried each step until it succeeds] SVD of S^T → U_r;
                          G = λI + X_fit^T X_fit; G_inv = inv(G);
                          W = G_inv X_fit^T Y_fit  (posterior mean; A_r, B_r from W).
   3. [Score] For each candidate a_i ∈ A:
@@ -713,16 +741,18 @@ For each cycle t = 1, 2, ...:
        s_gp, σ_gp = GP(s_t, a_i)
        x          = [z | a_i];  h = x^T G_inv x
        ρ          = ‖s_gp − U_s U_s^T s_gp‖ / (‖s_gp‖ + ε)
-       score(a_i) = Q δ(s_dyn_next) + R ‖a_i‖²
-                  − κ mean(σ_gp) − γ_info log(1+h) − γ_sub ρ
+       â_i        = a_i / prot_scale
+       score(a_i) = Q δ(s_dyn_next) + R ‖â_i‖²
+                  − κ mean(σ_gp) − γ_info log(1+h) − γ_sub ρ − C_rate â_i[0]
      Select a* = argmin score(a_i)
   4. [Execute] Apply a*; observe s_{t+1}.
   5. [observe(s_t, a*), O((r+m)²)]:
        Mean update for the previous action, whose outcome is s_t:
          z = s̃_t @ U_r;  K = G_inv @ x_prev;  W ← W + outer(K, z − W^T x_prev)
+         (z non-finite: g = G_inv @ x_prev; G_inv ← G_inv + outer(g, g) / (1 − x_prev @ g))
        Precision update for a*:
          x = [z | a*];  g = G_inv @ x;  G_inv ← G_inv − outer(g, g) / (1 + x @ g)
-         x_prev ← x
+         G_inv ← (G_inv + G_inv^T) / 2;  x_prev ← x
   6. [Reanchor, optional] Every reanchor_freq steps:
        Refit SVD → U_r; recompute G, G_inv and W from all transitions in
        the new basis (as in step 2).

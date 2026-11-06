@@ -11,8 +11,9 @@ each grounded in the accompanying literature:
 
        G_t = X_t^T X_t + λI  ∈ ℝ^{(r+m) × (r+m)},
 
-   and updates G_t^{-1} via the rank-1 Sherman–Morrison formula after each
-   new transition (x_new → y_new) is recorded::
+   and updates G_t^{-1} via the rank-1 Sherman–Morrison formula as soon as an
+   action is chosen (the precision does not depend on the outcome); the mean
+   is updated when the outcome arrives::
 
        G_{t+1}^{-1} = G_t^{-1}
                     − (G_t^{-1} x x^T G_t^{-1})
@@ -25,13 +26,13 @@ each grounded in the accompanying literature:
 
 2. **Information-gain exploration (Cai et al., 2014; Eldredge & Mousavi, 2026)**
 
-   The *leverage score* h = x^T G^{-1} x satisfies two simultaneously:
-
-   * It is the *Maximum Model Change* (MMC) criterion of Cai et al. (2014,
-     Eq. 10): the candidate that maximises |Δmodel| under the new observation.
-   * It is the one-step *Kalman information gain* (Eldredge & Mousavi, 2026,
-     Eq. 33): the posterior-variance reduction tr(ΔG^{-1}) equals
-     ||G^{-1/2} x||² / (1 + h), which is monotone in h.
+   The *leverage score* h = x^T G^{-1} x is the predictive variance of the
+   candidate in units of the noise variance σ² (the posterior covariance of
+   each output is σ² G^{-1}).  Its log is the one-step D-optimal *Kalman
+   information gain* (Eldredge & Mousavi, 2026, Eq. 33).  It is related to,
+   but not the same as, the *Maximum Model Change* criterion of Cai et al.
+   (2014): the expected model change is ||G^{-1} x||² / (1 + h), which is not
+   monotone in h.
 
    The bonus is the D-optimal gain log(1 + h) = log det G_{t+1} − log det G_t
    (the matrix determinant lemma), subtracted from the composite score (i.e.
@@ -52,9 +53,8 @@ each grounded in the accompanying literature:
 
        ρ(a) = ||ŝ_GP − P_s ŝ_GP||₂ / (||ŝ_GP||₂ + ε)
 
-   with P_s the orthogonal projector onto the span of the state rows of U_r.
-
-   where ŝ_GP is the GP posterior mean for the next state under protocol a.
+   where ŝ_GP is the GP posterior mean for the next state under protocol a
+   and P_s the orthogonal projector onto the span of the state rows of U_r.
    Large ρ indicates that the protocol leads to a region of ECM-parameter
    space not yet captured by the current subspace — querying it expands the
    manifold coverage, matching the ALSL_U principle of Li et al. (2021,
@@ -75,7 +75,8 @@ at every :meth:`observe` call.  BayesianDynamicsPolicy fits the SVD basis
 once at warm-up (and optionally re-anchors every ``reanchor_freq`` steps),
 then updates the Bayesian posterior of [A_r | B_r] online — the O((r+m)²)
 Kalman-filter update of both the posterior mean and the precision inverse
-G^{-1}, without ever re-inverting the O((r+m)³) Gram matrix.
+G^{-1}, without re-inverting the O((r+m)³) Gram matrix (except in ``window``
+mode, which refits the posterior on the window at every :meth:`observe`).
 
 References
 ----------
@@ -132,8 +133,8 @@ class BayesianDynamicsPolicy(BasePolicy):
     Exploration is driven by two complementary bonuses:
 
     * **Information gain** — log(1 + h) of the leverage score h, the Bayesian
-      D-optimal information gain (Eldredge & Mousavi, 2026, Eq. 33); h itself
-      is the MMC criterion of Cai et al. (2014, Eq. 10).
+      D-optimal information gain (Eldredge & Mousavi, 2026, Eq. 33) (related to, but
+      not the same as, the MMC criterion of Cai et al. 2014).
     * **Subspace residual** — the normalised reconstruction residual of the
       GP-predicted next state under the current SVD basis, following the
       ALSL_U principle of Li et al. (2021, Eq. 4).
@@ -185,6 +186,9 @@ class BayesianDynamicsPolicy(BasePolicy):
         ``f(state: np.ndarray) -> float``.  Higher = more degraded.
     scaler : sklearn-compatible scaler, optional
     """
+
+    # Fill for a step with no uncertainty vector; None means zeros (see _missing_uncertainty).
+    neutral_uncertainty: Optional[np.ndarray] = None
 
     def __init__(
         self,
@@ -266,12 +270,30 @@ class BayesianDynamicsPolicy(BasePolicy):
         Follows the belief-state MDP augmentation of Kaelbling et al. (1998)
         used in ``results.policies.StateSpacePolicy``.
         Returns the state unchanged when no uncertainty vector is available.
+        A step with no vector (``None``) uses :meth:`_missing_uncertainty` once
+        vectors have been seen, so every augmented state has the same length.
         """
+        if uncertainty is None:
+            uncertainty = self._missing_uncertainty()
         if uncertainty is None:
             return state
         return np.concatenate(
             [state, self.uncertainty_weight * np.asarray(uncertainty, dtype=float)]
         )
+
+    def _missing_uncertainty(self) -> Optional[np.ndarray]:
+        """Stand-in for a step whose uncertainty vector is missing (None if none seen yet).
+
+        The policy's ``neutral_uncertainty`` when it has the right length (the
+        audit policies set it to ``NEUTRAL_AUDIT_HEALTH``), else zeros, which is
+        neutral for z-scored vectors.
+        """
+        u_dim = next((len(u) for u in self._uncertainty_history if u is not None), 0)
+        if u_dim == 0:
+            return None
+        if self.neutral_uncertainty is not None and len(self.neutral_uncertainty) == u_dim:
+            return np.array(self.neutral_uncertainty, dtype=float)
+        return np.zeros(u_dim)
 
     # ── Dynamics fitting ──────────────────────────────────────────────────
 
@@ -291,11 +313,8 @@ class BayesianDynamicsPolicy(BasePolicy):
             uncertainty_hist = uncertainty_hist[-(self.window + 1):]
             action_hist = action_hist[-(self.window + 1):]
 
-        u_dim = next(
-            (len(u) for u in uncertainty_hist if u is not None), 0
-        )
         aug_states = np.array([
-            self._build_augmented(s, u if u is not None else np.zeros(u_dim))
+            self._build_augmented(s, u)
             for s, u in zip(state_hist, uncertainty_hist, strict=True)
         ])  # (T, n_aug)
         actions = np.array(action_hist[:-1])  # (T-1, m)
@@ -393,6 +412,7 @@ class BayesianDynamicsPolicy(BasePolicy):
             return
         g = self._G_inv @ x          # (r+m,)
         self._G_inv -= np.outer(g, g) / (1.0 + float(x @ g))
+        self._G_inv = 0.5 * (self._G_inv + self._G_inv.T)    # keep it symmetric against round-off
         self._pending_x = x
 
     def _learn_from_outcome(self, z_next: np.ndarray) -> None:
@@ -406,7 +426,17 @@ class BayesianDynamicsPolicy(BasePolicy):
         This is the recursive form of the batch posterior mean, so after any
         number of steps ``W`` equals ``G^{-1} X^T Y`` over all transitions seen.
         """
-        if self._pending_x is None or not np.isfinite(z_next).all():
+        if self._pending_x is None:
+            return
+        if not np.isfinite(z_next).all():
+            # No outcome to learn from: take the pending point back out of the
+            # precision (Sherman–Morrison with the opposite sign), so that
+            # G^{-1} and W keep describing the same transitions.
+            x = self._pending_x
+            g = self._G_inv @ x
+            self._G_inv += np.outer(g, g) / (1.0 - float(x @ g))
+            self._G_inv = 0.5 * (self._G_inv + self._G_inv.T)
+            self._pending_x = None
             return
         x = self._pending_x
         gain = self._G_inv @ x                                   # (r+m,)
@@ -459,8 +489,9 @@ class BayesianDynamicsPolicy(BasePolicy):
 
         n = len(self._state_history)
 
-        # Initial warm-up fit — sets U_r and the posterior (W, G_inv)
-        if n == self.min_fit_obs:
+        # Initial warm-up fit — sets U_r and the posterior (W, G_inv); retried
+        # on later observations if it could not be made at min_fit_obs
+        if self._U_r is None and n >= self.min_fit_obs:
             self._fit_dynamics()
             return
 
@@ -484,13 +515,7 @@ class BayesianDynamicsPolicy(BasePolicy):
             return
 
         # Online Kalman update (Eldredge 2026 Eq 33): mean, then precision
-        u_dim = next(
-            (len(u) for u in self._uncertainty_history if u is not None), 0
-        )
-        aug = self._build_augmented(
-            state,
-            uncertainty_vector if uncertainty_vector is not None else np.zeros(u_dim),
-        )
+        aug = self._build_augmented(state, uncertainty_vector)
         z = aug @ self._U_r
         self._learn_from_outcome(z)
         self._add_design_point(z, action)
@@ -500,12 +525,10 @@ class BayesianDynamicsPolicy(BasePolicy):
     def _info_gain(self, z: np.ndarray, action: np.ndarray) -> float:
         """D-optimal information gain log(1 + h), h = x^T G^{-1} x.
 
-        The leverage score h simultaneously implements:
-
-        * Maximum Model Change (Cai et al., 2014, Eq. 10): the query that
-          most changes the learned linear dynamics model.
-        * Bayesian information gain (Eldredge & Mousavi, 2026, Eq. 33): the
-          one-step posterior-variance reduction tr(ΔG^{-1}) is monotone in h.
+        h is the candidate's predictive variance in units of the noise variance.
+        It is related to, but not the same as, the Maximum Model Change
+        criterion of Cai et al. (2014), whose expected change ||G^{-1} x||² / (1 + h)
+        is not monotone in h.
 
         log(1 + h) is the gain in log det G from observing x (matrix
         determinant lemma).  It grows without bound but slowly, so it keeps
